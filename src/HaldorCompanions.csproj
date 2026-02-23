@@ -1,0 +1,72 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net472</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>HaldorCompanions</RootNamespace>
+    <AssemblyName>HaldorCompanions</AssemblyName>
+    <Nullable>disable</Nullable>
+    <Optimize>true</Optimize>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <OutputPath>..\build\bin\$(Configuration)\$(TargetFramework)\</OutputPath>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- BepInEx / Harmony -->
+    <Reference Include="0Harmony">
+      <HintPath>C:\Program Files (x86)\Steam\steamapps\common\Valheim\BepInEx\core\0Harmony.dll</HintPath>
+    </Reference>
+    <Reference Include="BepInEx">
+      <HintPath>C:\Program Files (x86)\Steam\steamapps\common\Valheim\BepInEx\core\BepInEx.dll</HintPath>
+    </Reference>
+    <Reference Include="BepInEx.Harmony">
+      <HintPath>C:\Program Files (x86)\Steam\steamapps\common\Valheim\BepInEx\core\BepInEx.Harmony.dll</HintPath>
+    </Reference>
+    <!-- Unity / Valheim assemblies -->
+    <Reference Include="UnityEngine">
+      <HintPath>C:\Program Files (x86)\Steam\steamapps\common\Valheim\Valheim_Data\Managed\UnityEngine.dll</HintPath>
+    </Reference>
+    <Reference Include="UnityEngine.CoreModule">
+      <HintPath>C:\Program Files (x86)\Steam\steamapps\common\Valheim\Valheim_Data\Managed\UnityEngine.CoreModule.dll</HintPath>
+    </Reference>
+    <Reference Include="UnityEngine.UI">
+      <HintPath>C:\Program Files (x86)\Steam\steamapps\common\Valheim\Valheim_Data\Managed\UnityEngine.UI.dll</HintPath>
+    </Reference>
+    <Reference Include="UnityEngine.UIModule">
+      <HintPath>C:\Program Files (x86)\Steam\steamapps\common\Valheim\Valheim_Data\Managed\UnityEngine.UIModule.dll</HintPath>
+    </Reference>
+    <Reference Include="UnityEngine.InputLegacyModule">
+      <HintPath>C:\Program Files (x86)\Steam\steamapps\common\Valheim\Valheim_Data\Managed\UnityEngine.InputLegacyModule.dll</HintPath>
+    </Reference>
+    <Reference Include="Unity.TextMeshPro">
+      <HintPath>C:\Program Files (x86)\Steam\steamapps\common\Valheim\Valheim_Data\Managed\Unity.TextMeshPro.dll</HintPath>
+    </Reference>
+    <Reference Include="assembly_valheim">
+      <HintPath>C:\Program Files (x86)\Steam\steamapps\common\Valheim\Valheim_Data\Managed\assembly_valheim.dll</HintPath>
+    </Reference>
+    <Reference Include="assembly_utils">
+      <HintPath>C:\Program Files (x86)\Steam\steamapps\common\Valheim\Valheim_Data\Managed\assembly_utils.dll</HintPath>
+    </Reference>
+    <Reference Include="assembly_guiutils">
+      <HintPath>C:\Program Files (x86)\Steam\steamapps\common\Valheim\Valheim_Data\Managed\assembly_guiutils.dll</HintPath>
+    </Reference>
+    <Reference Include="Splatform">
+      <HintPath>C:\Program Files (x86)\Steam\steamapps\common\Valheim\Valheim_Data\Managed\Splatform.dll</HintPath>
+    </Reference>
+    <!-- HaldorOverhaul (hard dependency) -->
+    <Reference Include="HaldorOverhaul">
+      <HintPath>C:\Program Files (x86)\Steam\steamapps\common\Valheim\BepInEx\plugins\HaldorOverhaul\HaldorOverhaul.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+
+  <!-- Auto-deploy to BepInEx plugins folder after every build -->
+  <Target Name="DeployToPlugins" AfterTargets="Build">
+    <PropertyGroup>
+      <PluginDir>C:\Program Files (x86)\Steam\steamapps\common\Valheim\BepInEx\plugins\$(AssemblyName)</PluginDir>
+    </PropertyGroup>
+    <MakeDir Directories="$(PluginDir)" />
+    <Copy SourceFiles="$(OutputPath)$(AssemblyName).dll"
+          DestinationFolder="$(PluginDir)"
+          SkipUnchangedFiles="true" />
+    <Message Text="Deployed $(AssemblyName).dll to $(PluginDir)" Importance="high" />
+  </Target>
+</Project>
