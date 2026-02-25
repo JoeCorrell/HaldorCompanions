@@ -6,6 +6,9 @@ namespace Companions
     /// Custom stamina system for companions. Valheim's stamina is Player-only,
     /// so this provides a lightweight equivalent with regen/drain and ZDO persistence.
     ///
+    /// Base stamina = 25. Food provides additional stamina via CompanionFood.
+    /// MaxStamina = BaseStamina + food bonuses (dynamic).
+    ///
     /// Stamina is consumed by:
     /// - Combat attacks (via Harmony patch on Character.UseStamina → Drain)
     /// - Blocking (via Harmony patch on Character.UseStamina → Drain)
@@ -16,21 +19,42 @@ namespace Companions
     /// </summary>
     public class CompanionStamina : MonoBehaviour
     {
-        public float MaxStamina = 100f;
-        public float Stamina    { get; private set; }
+        public float MaxStamina
+        {
+            get
+            {
+                float bonus = _food != null ? _food.TotalStaminaBonus : 0f;
+                return CompanionFood.BaseStamina + bonus;
+            }
+        }
+
+        public float Stamina { get; private set; }
+
+        /// <summary>When true (sitting by campfire), regen rate is doubled.</summary>
+        public bool IsResting { get; set; }
+
+        /// <summary>Set by CompanionAIPatches.Follow_Patch when companion is running.</summary>
+        public bool IsRunning { get; set; }
 
         private const float RegenRate    = 6f;    // per second when idle
+        private const float RunDrainRate = 10f;   // stamina/sec while running
+        private const float SwimDrainRate = 10f;  // stamina/sec while swimming
         private const float RegenDelay   = 1f;    // seconds after stamina use before regen starts
         private const float SaveInterval = 5f;
 
-        private ZNetView  _nview;
-        private float     _saveTimer;
-        private float     _regenDelayTimer;
-        private bool      _initialized;
+        private ZNetView      _nview;
+        private CompanionFood _food;
+        private Character     _character;
+        private float         _saveTimer;
+        private float         _regenDelayTimer;
+        private float         _remoteSyncTimer;
+        private bool          _initialized;
 
         private void Awake()
         {
-            _nview = GetComponent<ZNetView>();
+            _nview     = GetComponent<ZNetView>();
+            _food      = GetComponent<CompanionFood>();
+            _character = GetComponent<Character>();
         }
 
         private void Start()
@@ -43,6 +67,9 @@ namespace Companions
             if (_initialized) return;
             if (_nview == null || _nview.GetZDO() == null) return;
 
+            if (_food == null) _food = GetComponent<CompanionFood>();
+            if (_character == null) _character = GetComponent<Character>();
+
             float saved = _nview.GetZDO().GetFloat(CompanionSetup.StaminaHash, MaxStamina);
             Stamina = Mathf.Clamp(saved, 0f, MaxStamina);
             _initialized = true;
@@ -51,14 +78,62 @@ namespace Companions
         private void Update()
         {
             if (!_initialized) { TryInit(); return; }
-            if (_nview == null || !_nview.IsOwner()) return;
+            if (_nview == null || _nview.GetZDO() == null) return;
+            if (!_nview.IsOwner())
+            {
+                _remoteSyncTimer -= Time.deltaTime;
+                if (_remoteSyncTimer <= 0f)
+                {
+                    _remoteSyncTimer = 0.5f;
+                    float saved = _nview.GetZDO().GetFloat(CompanionSetup.StaminaHash, MaxStamina);
+                    Stamina = Mathf.Clamp(float.IsNaN(saved) ? 0f : saved, 0f, MaxStamina);
+                }
+                return;
+            }
 
-            float dt = Time.deltaTime;
+            if (_food == null) _food = GetComponent<CompanionFood>();
+            if (_character == null) _character = GetComponent<Character>();
 
-            // Regen after delay expires
-            _regenDelayTimer -= dt;
-            if (_regenDelayTimer <= 0f && Stamina < MaxStamina)
-                Stamina = Mathf.Min(MaxStamina, Stamina + RegenRate * dt);
+            float dt  = Time.deltaTime;
+            float max = MaxStamina;
+            if (float.IsNaN(max) || max <= 0f) max = CompanionFood.BaseStamina;
+            if (float.IsNaN(Stamina)) Stamina = 0f;
+
+            // Clamp if food expired and max dropped below current
+            if (Stamina > max)
+                Stamina = max;
+
+            bool isMoving = _character != null && _character.GetMoveDir().sqrMagnitude > 0.04f;
+            float speed = _character != null ? _character.GetVelocity().magnitude : 0f;
+            bool hasMoveSpeed = speed > 0.25f;
+            bool isSwimming = _character != null && _character.IsSwimming() && hasMoveSpeed;
+            bool isRunning = IsRunning &&
+                             _character != null &&
+                             _character.IsRunning() &&
+                             isMoving &&
+                             hasMoveSpeed &&
+                             speed > (_character.m_walkSpeed * 1.05f) &&
+                             !isSwimming;
+
+            if (!isRunning) IsRunning = false;
+
+            // Drain only for active movement states that should consume stamina.
+            if ((isRunning || isSwimming) && Stamina > 0f)
+            {
+                float drainRate = isSwimming ? SwimDrainRate : RunDrainRate;
+                Stamina = Mathf.Max(0f, Stamina - drainRate * dt);
+                _regenDelayTimer = RegenDelay;
+            }
+            else
+            {
+                // Regen after delay expires
+                _regenDelayTimer = Mathf.Max(0f, _regenDelayTimer - dt);
+                if (_regenDelayTimer <= 0f && Stamina < max)
+                {
+                    float rate = IsResting ? RegenRate * 2f : RegenRate;
+                    Stamina = Mathf.Min(max, Stamina + rate * dt);
+                }
+            }
 
             // Periodic ZDO save
             _saveTimer += dt;
@@ -80,6 +155,7 @@ namespace Companions
         /// </summary>
         public void Drain(float amount)
         {
+            if (float.IsNaN(amount) || amount <= 0f) return;
             Stamina = Mathf.Max(0f, Stamina - amount);
             _regenDelayTimer = RegenDelay;
         }
@@ -90,6 +166,7 @@ namespace Companions
         /// </summary>
         public bool UseStamina(float amount)
         {
+            if (float.IsNaN(amount) || amount <= 0f) return true;
             if (Stamina < amount) return false;
             Stamina -= amount;
             _regenDelayTimer = RegenDelay;
@@ -98,13 +175,15 @@ namespace Companions
 
         public float GetStaminaPercentage()
         {
-            return MaxStamina > 0f ? Stamina / MaxStamina : 0f;
+            float max = MaxStamina;
+            return max > 0f ? Stamina / max : 0f;
         }
 
         private void SaveToZDO()
         {
             if (_nview == null || _nview.GetZDO() == null || !_nview.IsOwner()) return;
-            _nview.GetZDO().Set(CompanionSetup.StaminaHash, Stamina);
+            float safe = float.IsNaN(Stamina) ? 0f : Stamina;
+            _nview.GetZDO().Set(CompanionSetup.StaminaHash, safe);
         }
     }
 }

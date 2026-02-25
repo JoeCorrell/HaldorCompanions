@@ -11,13 +11,14 @@ namespace Companions
 
     public static class CompanionTierData
     {
-        public const int Price = 2000;
+        public const int   Price          = 2000;
+        public const float MaxCarryWeight = 300f;
 
         public static readonly CompanionTierDef Companion = new CompanionTierDef
         {
             PrefabName  = "HC_Companion",
             DisplayName = "Companion",
-            Health      = 500f,
+            Health      = 25f,
             WalkSpeed   = 1.5f,
             RunSpeed    = 4.5f,
         };

@@ -44,9 +44,12 @@ namespace Companions
             var humanoidInv = humanoid.GetInventory();
             if (_inventoryField == null || humanoidInv == null) return;
 
-            // Resize the Humanoid's inventory to 5x5 (25 slots) to match Container
-            if (_invWidthField != null)  _invWidthField.SetValue(humanoidInv, 5);
-            if (_invHeightField != null) _invHeightField.SetValue(humanoidInv, 5);
+            // Match Humanoid inventory dimensions to the Container definition.
+            // Companion UI expects the same grid shape for deterministic slot mapping.
+            int width  = __instance.m_width > 0 ? __instance.m_width : 4;
+            int height = __instance.m_height > 0 ? __instance.m_height : 8;
+            if (_invWidthField != null)  _invWidthField.SetValue(humanoidInv, width);
+            if (_invHeightField != null) _invHeightField.SetValue(humanoidInv, height);
 
             // Replace Container's inventory with Humanoid's inventory
             _inventoryField.SetValue(__instance, humanoidInv);

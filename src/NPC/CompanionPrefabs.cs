@@ -84,8 +84,8 @@ namespace Companions
             // Container — for vanilla chest-style inventory interaction
             var container           = go.AddComponent<Container>();
             container.m_name        = "Companion";
-            container.m_width       = 5;
-            container.m_height      = 5;
+            container.m_width       = 4;
+            container.m_height      = 8;
             container.m_privacy     = Container.PrivacySetting.Public;
             container.m_checkGuardStone = false;
             container.m_openEffects  = new EffectList();
@@ -94,14 +94,23 @@ namespace Companions
             // Interaction handler (hover text)
             go.AddComponent<CompanionInteract>();
 
-            // Custom stamina system
+            // Food system (must be before CompanionStamina — stamina reads food bonuses)
+            go.AddComponent<CompanionFood>();
+
+            // Custom stamina system (base 25 + food bonuses)
             go.AddComponent<CompanionStamina>();
 
-            // Resource harvesting AI (active in Collect mode)
+            // Resource harvesting AI (active in Gather modes 1-3)
             go.AddComponent<CompanionHarvest>();
 
             // Combat AI (blocking, parrying, tight follow)
             go.AddComponent<CompanionAI>();
+
+            // Overhead speech text (context-aware lines like Haldor)
+            go.AddComponent<CompanionTalk>();
+
+            // Campfire sitting + rested regen
+            go.AddComponent<CompanionRest>();
 
             // Register with ZNetScene
             int hash = StringExtensionMethods.GetStableHashCode(go.name);
@@ -179,8 +188,8 @@ namespace Companions
             b.m_serpentMovement      = false;
             b.m_jumpInterval         = 0f;
             b.m_randomCircleInterval = 2f;
-            b.m_randomMoveInterval   = 30f;
-            b.m_randomMoveRange      = 3f;
+            b.m_randomMoveInterval   = 9999f;
+            b.m_randomMoveRange      = 0f;
             b.m_avoidFire            = false;
             b.m_afraidOfFire         = false;
             b.m_avoidWater           = false;

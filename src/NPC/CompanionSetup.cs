@@ -18,7 +18,16 @@ namespace Companions
         internal static readonly int OwnerHash      = StringExtensionMethods.GetStableHashCode("HC_Owner");
         internal static readonly int NameHash       = StringExtensionMethods.GetStableHashCode("HC_Name");
         internal static readonly int ActionModeHash = StringExtensionMethods.GetStableHashCode("HC_ActionMode");
+        internal static readonly int ActionModeSchemaHash = StringExtensionMethods.GetStableHashCode("HC_ActionModeSchema");
         internal static readonly int StaminaHash    = StringExtensionMethods.GetStableHashCode("HC_Stamina");
+        internal static readonly int AutoPickupHash = StringExtensionMethods.GetStableHashCode("HC_AutoPickup");
+        internal const int ModeFollow      = 0;
+        internal const int ModeGatherWood  = 1;
+        internal const int ModeGatherStone = 2;
+        internal const int ModeGatherOre   = 3;
+        internal const int ModeStay        = 4;
+        internal const float MaxLeashDistance = 50f;
+        private const int ActionModeSchemaVersion = 2;
 
         // ── Reflection ───────────────────────────────────────────────────────
         private static readonly MethodInfo _updateVisuals =
@@ -57,7 +66,7 @@ namespace Companions
         {
             if (!_initialized) { TryInit(); return; }
 
-            // Ensure follow target stays set for follow/collect modes.
+            // Ensure follow target stays set for follow/gather modes.
             // It can be lost on zone reload or player respawn.
             if (_ai != null && _ai.GetFollowTarget() == null && Player.m_localPlayer != null)
             {
@@ -68,8 +77,8 @@ namespace Companions
                 string localId = Player.m_localPlayer.GetPlayerID().ToString();
                 if (owner != localId) return;
 
-                int mode = zdo.GetInt(ActionModeHash, 0);
-                if (mode == 0 || mode == 1)
+                int mode = zdo.GetInt(ActionModeHash, ModeFollow);
+                if (mode == ModeFollow)
                     _ai.SetFollowTarget(Player.m_localPlayer.gameObject);
             }
         }
@@ -85,6 +94,7 @@ namespace Companions
                 ? CompanionAppearance.Default()
                 : CompanionAppearance.Deserialize(serial);
 
+            EnsureActionModeMigration();
             ApplyAppearance(appearance);
             RestoreFollowTarget();
             RestoreActionMode();
@@ -92,6 +102,25 @@ namespace Companions
             RegisterInventoryCallback();
 
             _initialized = true;
+        }
+
+        private void EnsureActionModeMigration()
+        {
+            if (_nview == null || !_nview.IsOwner()) return;
+            var zdo = _nview.GetZDO();
+            if (zdo == null) return;
+
+            int schema = zdo.GetInt(ActionModeSchemaHash, 0);
+            if (schema >= ActionModeSchemaVersion) return;
+
+            int mode = zdo.GetInt(ActionModeHash, ModeFollow);
+
+            // Legacy mapping: 2 used to be Stay before gather modes were fully wired.
+            if (mode == 2) mode = ModeStay;
+            if (mode < ModeFollow || mode > ModeStay) mode = ModeFollow;
+
+            zdo.Set(ActionModeHash, mode);
+            zdo.Set(ActionModeSchemaHash, ActionModeSchemaVersion);
         }
 
         // ──────────────────────────────────────────────────────────────────────
@@ -139,18 +168,21 @@ namespace Companions
             string localId = Player.m_localPlayer.GetPlayerID().ToString();
             if (owner != localId) return;
 
-            int mode = zdo.GetInt(ActionModeHash, 0);
+            int mode = zdo.GetInt(ActionModeHash, ModeFollow);
             switch (mode)
             {
-                case 0: // Follow
+                case ModeFollow:
+                case ModeGatherWood:
+                case ModeGatherStone:
+                case ModeGatherOre:
                     _ai.SetFollowTarget(Player.m_localPlayer.gameObject);
                     break;
-                case 1: // Collect — CompanionHarvest handles movement
-                    _ai.SetFollowTarget(Player.m_localPlayer.gameObject);
-                    break;
-                case 2: // Stay
+                case ModeStay:
                     _ai.SetFollowTarget(null);
                     _ai.SetPatrolPoint();
+                    break;
+                default:
+                    _ai.SetFollowTarget(Player.m_localPlayer.gameObject);
                     break;
             }
         }
@@ -183,11 +215,23 @@ namespace Companions
 
         private void OnInventoryChanged()
         {
-            if (_equipping || SuppressAutoEquip) return;
-            if (_humanoid == null || _nview == null || !_nview.IsOwner()) return;
+            if (_equipping) return;
+            if (_humanoid == null) return;
+            bool owner = _nview != null && _nview.IsOwner();
             _equipping = true;
-            try { AutoEquipBest(); }
+            try
+            {
+                UnequipMissingEquippedItems();
+                if (owner && !SuppressAutoEquip) AutoEquipBest();
+            }
             finally { _equipping = false; }
+        }
+
+        internal void SyncEquipmentToInventory()
+        {
+            if (_humanoid == null || _nview == null || !_nview.IsOwner()) return;
+            UnequipMissingEquippedItems();
+            if (!SuppressAutoEquip) AutoEquipBest();
         }
 
         private void AutoEquipBest()
@@ -196,15 +240,6 @@ namespace Companions
             if (inv == null) return;
 
             var items = inv.GetAllItems();
-
-            // Unequip items no longer in inventory
-            UnequipIfMissing(items, GetEquipSlot(_rightItemField));
-            UnequipIfMissing(items, GetEquipSlot(_leftItemField));
-            UnequipIfMissing(items, GetEquipSlot(_chestItemField));
-            UnequipIfMissing(items, GetEquipSlot(_legItemField));
-            UnequipIfMissing(items, GetEquipSlot(_helmetItemField));
-            UnequipIfMissing(items, GetEquipSlot(_shoulderItemField));
-            UnequipIfMissing(items, GetEquipSlot(_utilityItemField));
 
             // Find best item per slot by damage/armor value
             ItemDrop.ItemData bestRight    = null;  float bestRightDmg    = 0f;
@@ -277,13 +312,13 @@ namespace Companions
             if (curRight == null && curLeft == null)
             {
                 if (best2H != null && (bestRight == null || best2HDmg >= bestRightDmg))
-                    _humanoid.EquipItem(best2H, false);
+                    _humanoid.EquipItem(best2H, true);
                 else if (bestRight != null)
-                    _humanoid.EquipItem(bestRight, false);
+                    _humanoid.EquipItem(bestRight, true);
             }
             else if (curRight == null && bestRight != null)
             {
-                _humanoid.EquipItem(bestRight, false);
+                _humanoid.EquipItem(bestRight, true);
             }
 
             // Shield: only if left hand is free and no 2H in right
@@ -295,15 +330,15 @@ namespace Companions
                     right.m_shared.m_itemType == ItemDrop.ItemData.ItemType.TwoHandedWeaponLeft ||
                     right.m_shared.m_itemType == ItemDrop.ItemData.ItemType.Bow);
                 if (!rightIs2H)
-                    _humanoid.EquipItem(bestShield, false);
+                    _humanoid.EquipItem(bestShield, true);
             }
 
             // Armor slots
-            if (bestChest    != null && GetEquipSlot(_chestItemField)    == null) _humanoid.EquipItem(bestChest,    false);
-            if (bestLegs     != null && GetEquipSlot(_legItemField)      == null) _humanoid.EquipItem(bestLegs,     false);
-            if (bestHelmet   != null && GetEquipSlot(_helmetItemField)   == null) _humanoid.EquipItem(bestHelmet,   false);
-            if (bestShoulder != null && GetEquipSlot(_shoulderItemField) == null) _humanoid.EquipItem(bestShoulder, false);
-            if (bestUtility  != null && GetEquipSlot(_utilityItemField)  == null) _humanoid.EquipItem(bestUtility,  false);
+            if (bestChest    != null && GetEquipSlot(_chestItemField)    == null) _humanoid.EquipItem(bestChest,    true);
+            if (bestLegs     != null && GetEquipSlot(_legItemField)      == null) _humanoid.EquipItem(bestLegs,     true);
+            if (bestHelmet   != null && GetEquipSlot(_helmetItemField)   == null) _humanoid.EquipItem(bestHelmet,   true);
+            if (bestShoulder != null && GetEquipSlot(_shoulderItemField) == null) _humanoid.EquipItem(bestShoulder, true);
+            if (bestUtility  != null && GetEquipSlot(_utilityItemField)  == null) _humanoid.EquipItem(bestUtility,  true);
         }
 
         internal ItemDrop.ItemData GetEquipSlot(FieldInfo field)
@@ -311,11 +346,41 @@ namespace Companions
             return field?.GetValue(_humanoid) as ItemDrop.ItemData;
         }
 
+        /// <summary>Sum of armor from all equipped armor pieces.</summary>
+        internal float GetTotalArmor()
+        {
+            float armor = 0f;
+            var chest    = GetEquipSlot(_chestItemField);
+            var legs     = GetEquipSlot(_legItemField);
+            var helmet   = GetEquipSlot(_helmetItemField);
+            var shoulder = GetEquipSlot(_shoulderItemField);
+            if (chest    != null) armor += chest.GetArmor();
+            if (legs     != null) armor += legs.GetArmor();
+            if (helmet   != null) armor += helmet.GetArmor();
+            if (shoulder != null) armor += shoulder.GetArmor();
+            return armor;
+        }
+
         private void UnequipIfMissing(List<ItemDrop.ItemData> items, ItemDrop.ItemData equipped)
         {
             if (equipped == null) return;
             if (!items.Contains(equipped))
                 _humanoid.UnequipItem(equipped, false);
+        }
+
+        private void UnequipMissingEquippedItems()
+        {
+            var inv = _humanoid.GetInventory();
+            if (inv == null) return;
+
+            var items = inv.GetAllItems();
+            UnequipIfMissing(items, GetEquipSlot(_rightItemField));
+            UnequipIfMissing(items, GetEquipSlot(_leftItemField));
+            UnequipIfMissing(items, GetEquipSlot(_chestItemField));
+            UnequipIfMissing(items, GetEquipSlot(_legItemField));
+            UnequipIfMissing(items, GetEquipSlot(_helmetItemField));
+            UnequipIfMissing(items, GetEquipSlot(_shoulderItemField));
+            UnequipIfMissing(items, GetEquipSlot(_utilityItemField));
         }
     }
 }

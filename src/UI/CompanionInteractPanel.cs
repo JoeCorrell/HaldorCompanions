@@ -1,4 +1,5 @@
 using System;
+using System.Globalization;
 using System.Reflection;
 using HarmonyLib;
 using TMPro;
@@ -11,7 +12,7 @@ namespace Companions
     /// <summary>
     /// Companion interaction overlay — appears alongside InventoryGui when
     /// a companion's Container is opened.  Two-panel layout:
-    /// Left = tabbed (Inventory / Actions), Right = camera preview.
+    /// Left = companion inventory, Right = stats + controls + food row.
     /// Vanilla container panel is hidden; our grid handles item transfer.
     /// </summary>
     public class CompanionInteractPanel : MonoBehaviour
@@ -22,22 +23,19 @@ namespace Companions
         public bool IsVisible => _visible;
 
         // ── Layout constants ─────────────────────────────────────────────────
-        private const float PanelW       = 620f;
+        private const float PanelW       = 570f;
         private const float PanelH       = 480f;
         private const float UiScale      = 1.25f;
         private const float OuterPad     = 6f;
         private const float ColGap       = 4f;
-        private const float LeftColW     = 300f;
-        private const float RightColW    = 300f;
-        private const float TabH         = 34f;
-        private const float TabTopGap    = 6f;
+        private const float LeftColW     = 261f;
+        private const float RightColW    = 293f;
 
         // ── Grid constants ───────────────────────────────────────────────────
-        private const int GridCols          = 5;
-        private const int GridSlots         = 25;
+        private const int GridCols          = 4;
+        private const int GridSlots         = 32;
         private const int FoodSlotCount     = 3;
-        private const int MainGridSlots     = 20;
-        private const float SlotSize        = 52f;
+        private const int MainGridSlots     = 32;
         private const float InventorySlotGap = 3f;
 
         // ── Style constants ──────────────────────────────────────────────────
@@ -46,19 +44,27 @@ namespace Companions
         private static readonly Color GoldColor      = new Color(0.83f, 0.64f, 0.31f, 1f);
         private static readonly Color GoldTextColor  = new Color(0.83f, 0.52f, 0.18f, 1f);
         private static readonly Color LabelText      = new Color(1f, 0.9f, 0.5f, 1f);
+        private static readonly Color EquipBlue      = new Color(0.29f, 0.55f, 0.94f, 1f);
         private static readonly Color HealthRed      = new Color(0.48f, 0.08f, 0.08f, 1f);
         private static readonly Color StaminaYellow  = new Color(0.48f, 0.40f, 0.08f, 1f);
+        private static readonly Color EitrBlue       = new Color(0.08f, 0.20f, 0.48f, 1f);
+        private static readonly Color WeightOrange   = new Color(0.48f, 0.30f, 0.08f, 1f);
         private static readonly Color BarBg          = new Color(0.15f, 0.15f, 0.15f, 0.85f);
         private static readonly Color BtnTint        = new Color(0f, 0f, 0f, 0.75f);
         private static readonly Color SlotTint       = new Color(0f, 0f, 0f, 0.5625f);
+        private static readonly Color EquippedSlotTint = new Color(0.10f, 0.20f, 0.38f, 0.80f);
 
         // ── Custom sprite caches ─────────────────────────────────────────────
         private static Sprite _panelBgSprite;
         private static Sprite _sliderBgSprite;
         private static Sprite _healthBarGradientSprite;
         private static Sprite _staminaBarGradientSprite;
+        private static Sprite _eitrBarGradientSprite;
+        private static Sprite _weightBarGradientSprite;
         private static Texture2D _healthBarGradientTex;
         private static Texture2D _staminaBarGradientTex;
+        private static Texture2D _eitrBarGradientTex;
+        private static Texture2D _weightBarGradientTex;
 
         // ── Button template ──────────────────────────────────────────────────
         private static GameObject _buttonTemplate;
@@ -71,13 +77,8 @@ namespace Companions
         private GameObject     _camGO;
         private GameObject     _clone;
         private GameObject     _lightRig;
-        private RawImage       _previewImg;
-
-        private float _rotation;
-        private bool  _dragging;
-        private float _lastMouseX;
-        private const float AutoRotSpeed    = 15f;
-        private const float DragSensitivity = 0.4f;
+        private static readonly Vector3 PreviewCameraOffsetDir =
+            new Vector3(0f, 0.18f, 1f).normalized;
 
         private Color                             _savedAmbient;
         private float                             _savedAmbientIntensity;
@@ -105,9 +106,12 @@ namespace Companions
         private CompanionSetup   _companion;
         private Character        _companionChar;
         private CompanionStamina _companionStamina;
+        private CompanionFood    _companionFood;
         private Humanoid         _companionHumanoid;
         private ZNetView         _companionNview;
         private MonsterAI        _companionAI;
+        private CompanionAI      _companionCAI;
+        private CompanionHarvest _companionHarvest;
 
         // ── UI elements ──────────────────────────────────────────────────────
         private GameObject      _root;
@@ -116,10 +120,18 @@ namespace Companions
         private TextMeshProUGUI _healthText;
         private Image           _staminaFill;
         private TextMeshProUGUI _staminaText;
+        private Image           _eitrFill;
+        private TextMeshProUGUI _eitrText;
+        private Image           _weightFill;
+        private TextMeshProUGUI _weightText;
+        private TextMeshProUGUI _armorText;
         private TextMeshProUGUI _modeText;
         private Button          _followBtn;
-        private Button          _collectBtn;
+        private Button          _gatherWoodBtn;
+        private Button          _gatherStoneBtn;
+        private Button          _gatherOreBtn;
         private Button          _stayBtn;
+        private Button          _autoPickupBtn;
         private int             _activeMode;
 
         private bool _built;
@@ -135,13 +147,6 @@ namespace Companions
         private float             _invRefreshTimer;
 
         // ── Tab system ───────────────────────────────────────────────────────
-        private GameObject _invContent;
-        private GameObject _actionContent;
-        private Image      _invTabTint;
-        private Image      _actionTabTint;
-        private TextMeshProUGUI _invTabText;
-        private TextMeshProUGUI _actionTabText;
-        private int        _activeTab;
 
         // ══════════════════════════════════════════════════════════════════════
         //  Lifecycle
@@ -176,10 +181,6 @@ namespace Companions
 
             UpdateBars();
             RefreshInventoryGrid();
-            UpdatePreviewRotation();
-            UpdatePreviewCamera();
-            RenderPreview();
-            SyncPreviewEquipment();
         }
 
         // ══════════════════════════════════════════════════════════════════════
@@ -191,9 +192,13 @@ namespace Companions
             _companion         = companion;
             _companionChar     = companion.GetComponent<Character>();
             _companionStamina  = companion.GetComponent<CompanionStamina>();
+            _companionFood     = companion.GetComponent<CompanionFood>();
             _companionHumanoid = companion.GetComponent<Humanoid>();
             _companionNview    = companion.GetComponent<ZNetView>();
             _companionAI       = companion.GetComponent<MonsterAI>();
+            _companionCAI      = companion.GetComponent<CompanionAI>();
+            _companionHarvest  = companion.GetComponent<CompanionHarvest>();
+            EnsureCompanionOwnership();
 
             // Rebuild if destroyed (scene change) or never built
             if (_root == null) _built = false;
@@ -209,15 +214,17 @@ namespace Companions
                 _nameInput.onValueChanged.AddListener(OnNameChanged);
             }
 
-            _activeMode = 0;
+            _activeMode = CompanionSetup.ModeFollow;
             if (_companionNview != null && _companionNview.GetZDO() != null)
-                _activeMode = _companionNview.GetZDO().GetInt(CompanionSetup.ActionModeHash, 0);
+                _activeMode = _companionNview.GetZDO().GetInt(
+                    CompanionSetup.ActionModeHash, CompanionSetup.ModeFollow);
+            if (_activeMode < CompanionSetup.ModeFollow || _activeMode > CompanionSetup.ModeStay)
+                _activeMode = CompanionSetup.ModeFollow;
 
-            SetupPreviewClone();
             RefreshActionButtons();
             RefreshModeText();
+            RefreshAutoPickupButton();
             _invRefreshTimer = 0f;
-            SwitchTab(0);
 
             _root.SetActive(true);
             _root.transform.SetAsLastSibling();
@@ -240,9 +247,12 @@ namespace Companions
             _companion         = null;
             _companionChar     = null;
             _companionStamina  = null;
+            _companionFood     = null;
             _companionHumanoid = null;
             _companionNview    = null;
             _companionAI       = null;
+            _companionCAI      = null;
+            _companionHarvest  = null;
         }
 
         // ══════════════════════════════════════════════════════════════════════
@@ -326,6 +336,24 @@ namespace Companions
                 "CIP_StaminaBarGradient");
         }
 
+        private static Sprite GetEitrBarFillSprite()
+        {
+            return BuildBarGradientSprite(
+                ref _eitrBarGradientSprite, ref _eitrBarGradientTex,
+                new Color(0.12f, 0.25f, 0.55f, 1f),
+                new Color(0.06f, 0.14f, 0.35f, 1f),
+                "CIP_EitrBarGradient");
+        }
+
+        private static Sprite GetWeightBarFillSprite()
+        {
+            return BuildBarGradientSprite(
+                ref _weightBarGradientSprite, ref _weightBarGradientTex,
+                new Color(0.55f, 0.35f, 0.12f, 1f),
+                new Color(0.35f, 0.20f, 0.06f, 1f),
+                "CIP_WeightBarGradient");
+        }
+
         // ══════════════════════════════════════════════════════════════════════
         //  Button template
         // ══════════════════════════════════════════════════════════════════════
@@ -355,6 +383,9 @@ namespace Companions
             go.SetActive(true);
 
             var btn = go.GetComponent<Button>();
+            var img = go.GetComponent<Image>();
+            if (img == null) img = go.AddComponent<Image>();
+            img.raycastTarget = true;
             var txt = go.GetComponentInChildren<TMP_Text>(true);
             if (txt != null)
             {
@@ -371,7 +402,7 @@ namespace Companions
                 btn.navigation = new Navigation { mode = Navigation.Mode.None };
                 btn.interactable = true;
                 btn.transition = Selectable.Transition.None;
-                btn.targetGraphic = go.GetComponent<Image>();
+                btn.targetGraphic = img;
             }
 
             // Tint overlay
@@ -432,29 +463,32 @@ namespace Companions
             rootRT.anchorMax        = new Vector2(0.5f, 0.5f);
             rootRT.pivot            = new Vector2(0.5f, 0.5f);
             rootRT.sizeDelta        = new Vector2(PanelW, PanelH);
-            rootRT.anchoredPosition = new Vector2(-30f, 0f);
+            rootRT.anchoredPosition = Vector2.zero;
             rootRT.localScale       = Vector3.one * UiScale;
 
             var rootImg = _root.AddComponent<Image>();
             ApplyPanelBg(rootImg, PanelBg);
             rootImg.raycastTarget = true;
 
-            // Tab bar — full panel width, above both columns
-            BuildTabBar(rootRT, font);
-
-            // Both columns pushed down for tab bar
-            float tabInset = TabTopGap + TabH + 4f;
             float rightX   = OuterPad + LeftColW + ColGap;
             var leftCol  = CreateColumn(_root.transform, "LeftCol", OuterPad, OuterPad + LeftColW);
-            leftCol.offsetMax = new Vector2(leftCol.offsetMax.x, -tabInset);
             var rightCol = CreateColumn(_root.transform, "RightCol", rightX, rightX + RightColW);
-            rightCol.offsetMax = new Vector2(rightCol.offsetMax.x, -tabInset);
 
-            // Left column: tabbed content (tabs are at root level above)
+            // Left column: inventory
             BuildLeftPanel(leftCol, font);
 
-            // Right column: camera preview
-            BuildPreview(rightCol);
+            // Right column: stat bars + action controls + food slots
+            BuildPreview(rightCol, font);
+
+            // Mode text — anchored to bottom of root panel
+            _modeText = MakeText(_root.transform, "ModeText", "Follow into Battle",
+                font, 11f, GoldColor, TextAlignmentOptions.Center);
+            var modeRT = _modeText.GetComponent<RectTransform>();
+            modeRT.anchorMin        = new Vector2(0f, 0f);
+            modeRT.anchorMax        = new Vector2(1f, 0f);
+            modeRT.pivot            = new Vector2(0.5f, 0f);
+            modeRT.sizeDelta        = new Vector2(0f, 16f);
+            modeRT.anchoredPosition = new Vector2(0f, -14f);
 
             _root.SetActive(false);
             _built = true;
@@ -498,268 +532,33 @@ namespace Companions
         private void BuildLeftPanel(RectTransform col, TMP_FontAsset font)
         {
             var pad = MakePadded(col, 10f);
-
-            // Inventory content — fills entire column
-            _invContent = new GameObject("InvContent", typeof(RectTransform));
-            _invContent.transform.SetParent(pad, false);
-            StretchFill(_invContent.GetComponent<RectTransform>());
-            BuildInventoryContent(_invContent.GetComponent<RectTransform>(), font);
-
-            // Actions content — same position, toggled by tabs
-            _actionContent = new GameObject("ActionContent", typeof(RectTransform));
-            _actionContent.transform.SetParent(pad, false);
-            StretchFill(_actionContent.GetComponent<RectTransform>());
-            BuildActionsContent(_actionContent.GetComponent<RectTransform>(), font);
-
-            _actionContent.SetActive(false);
+            BuildInventoryContent(pad, font);
         }
-
-        // ── Tab bar: positioned above left column, children of root ─────
-
-        private void BuildTabBar(RectTransform root, TMP_FontAsset font)
-        {
-            const float tabWidthTrim = 8f;
-            float leftTabW    = Mathf.Max(100f, LeftColW - tabWidthTrim);
-            float rightTabW   = Mathf.Max(100f, RightColW - tabWidthTrim);
-            float leftCenterX = OuterPad + LeftColW * 0.5f;
-            float rightX      = OuterPad + LeftColW + ColGap;
-            float rightCenterX = rightX + RightColW * 0.5f;
-
-            // Inventory tab — tinted craft-button style, above left column
-            var invTabGO = CreateTintedButton(root, "TabInventory", "Inventory");
-            if (invTabGO != null)
-            {
-                var rt = invTabGO.GetComponent<RectTransform>();
-                rt.anchorMin        = new Vector2(0f, 1f);
-                rt.anchorMax        = new Vector2(0f, 1f);
-                rt.pivot            = new Vector2(0.5f, 1f);
-                rt.sizeDelta        = new Vector2(leftTabW, TabH);
-                rt.anchoredPosition = new Vector2(leftCenterX, -TabTopGap);
-
-                var btn = invTabGO.GetComponent<Button>();
-                if (btn != null) btn.onClick.AddListener(() => SwitchTab(0));
-
-                var tint = invTabGO.transform.Find("Tint");
-                _invTabTint = tint != null ? tint.GetComponent<Image>() : null;
-
-                _invTabText = invTabGO.GetComponentInChildren<TMP_Text>(true) as TextMeshProUGUI;
-                if (_invTabText != null)
-                {
-                    _invTabText.fontSize  = 14f;
-                    _invTabText.fontStyle = FontStyles.Bold;
-                    _invTabText.alignment = TextAlignmentOptions.Center;
-                    _invTabText.color     = LabelText;
-                }
-            }
-
-            // Actions tab
-            var actTabGO = CreateTintedButton(root, "TabActions", "Actions");
-            if (actTabGO != null)
-            {
-                var rt = actTabGO.GetComponent<RectTransform>();
-                rt.anchorMin        = new Vector2(0f, 1f);
-                rt.anchorMax        = new Vector2(0f, 1f);
-                rt.pivot            = new Vector2(0.5f, 1f);
-                rt.sizeDelta        = new Vector2(rightTabW, TabH);
-                rt.anchoredPosition = new Vector2(rightCenterX, -TabTopGap);
-
-                var btn = actTabGO.GetComponent<Button>();
-                if (btn != null) btn.onClick.AddListener(() => SwitchTab(1));
-
-                var tint = actTabGO.transform.Find("Tint");
-                _actionTabTint = tint != null ? tint.GetComponent<Image>() : null;
-
-                _actionTabText = actTabGO.GetComponentInChildren<TMP_Text>(true) as TextMeshProUGUI;
-                if (_actionTabText != null)
-                {
-                    _actionTabText.fontSize  = 14f;
-                    _actionTabText.fontStyle = FontStyles.Bold;
-                    _actionTabText.alignment = TextAlignmentOptions.Center;
-                    _actionTabText.color     = new Color(0.7f, 0.7f, 0.7f, 1f);
-                }
-            }
-        }
-
-        private void SwitchTab(int tab)
-        {
-            _activeTab = tab;
-            if (_invContent != null)     _invContent.SetActive(tab == 0);
-            if (_actionContent != null)  _actionContent.SetActive(tab == 1);
-
-            // Active tab = lighter tint overlay, inactive = heavier tint
-            if (_invTabTint != null)
-                _invTabTint.color = tab == 0 ? new Color(0f, 0f, 0f, 0.4f) : BtnTint;
-            if (_actionTabTint != null)
-                _actionTabTint.color = tab == 1 ? new Color(0f, 0f, 0f, 0.4f) : BtnTint;
-            if (_invTabText != null)
-                _invTabText.color = tab == 0 ? LabelText : new Color(0.7f, 0.7f, 0.7f, 1f);
-            if (_actionTabText != null)
-                _actionTabText.color = tab == 1 ? LabelText : new Color(0.7f, 0.7f, 0.7f, 1f);
-        }
-
-        // ── Inventory tab content ──────────────────────────────────────────
 
         private void BuildInventoryContent(RectTransform parent, TMP_FontAsset font)
         {
             float y = 0f;
-
-            // Health
-            var hpLabel = MakeText(parent, "HealthLabel", "Health",
-                font, 12f, LabelText, TextAlignmentOptions.MidlineLeft);
-            hpLabel.fontStyle = FontStyles.Bold;
-            PlaceTopStretch(hpLabel.GetComponent<RectTransform>(), ref y, 14f);
-            y -= 2f;
-            BuildStatBar(parent, font, ref y, GetHealthBarFillSprite(), HealthRed, out _healthFill, out _healthText);
-            y -= 6f;
-
-            // Stamina
-            var stLabel = MakeText(parent, "StaminaLabel", "Stamina",
-                font, 12f, LabelText, TextAlignmentOptions.MidlineLeft);
-            stLabel.fontStyle = FontStyles.Bold;
-            PlaceTopStretch(stLabel.GetComponent<RectTransform>(), ref y, 14f);
-            y -= 2f;
-            BuildStatBar(parent, font, ref y, GetStaminaBarFillSprite(), StaminaYellow, out _staminaFill, out _staminaText);
-            y -= 6f;
-
-            // Food quick slots
-            BuildFoodSlots(parent, font, ref y);
-            y -= 8f;
-
-            // Separator
-            MakeSeparator(parent, ref y);
-            y -= 6f;
-
-            // Inventory grid
             BuildInventoryGrid(parent, font, ref y);
         }
 
-        private void BuildFoodSlots(RectTransform parent, TMP_FontAsset font, ref float y)
+        private void BuildActionControls(RectTransform parent, TMP_FontAsset font, ref float y)
         {
-            var foodLabel = MakeText(parent, "FoodLabel", "Food",
-                font, 12f, LabelText, TextAlignmentOptions.MidlineLeft);
-            foodLabel.fontStyle = FontStyles.Bold;
-            PlaceTopStretch(foodLabel.GetComponent<RectTransform>(), ref y, 14f);
-            y -= 2f;
-
-            _foodSlotIcons  = new Image[FoodSlotCount];
-            _foodSlotCounts = new TextMeshProUGUI[FoodSlotCount];
-
-            float rowW = FoodSlotCount * SlotSize + (FoodSlotCount - 1) * InventorySlotGap;
-
-            var rowContainer = new GameObject("FoodSlots", typeof(RectTransform));
-            rowContainer.transform.SetParent(parent, false);
-            var rowRT = rowContainer.GetComponent<RectTransform>();
-            rowRT.anchorMin        = new Vector2(0.5f, 1f);
-            rowRT.anchorMax        = new Vector2(0.5f, 1f);
-            rowRT.pivot            = new Vector2(0.5f, 1f);
-            rowRT.sizeDelta        = new Vector2(rowW, SlotSize);
-            rowRT.anchoredPosition = new Vector2(0f, y);
-
-            for (int i = 0; i < FoodSlotCount; i++)
+            float btnH = 30f;
+            float btnGap = 3f;
+            _followBtn = BuildActionButton(parent, ref y, btnH, btnGap, "Follow into Battle", CompanionSetup.ModeFollow);
+            _gatherWoodBtn = BuildActionButton(parent, ref y, btnH, btnGap, "Gather Wood", CompanionSetup.ModeGatherWood);
+            _gatherStoneBtn = BuildActionButton(parent, ref y, btnH, btnGap, "Gather Stone", CompanionSetup.ModeGatherStone);
+            _gatherOreBtn = BuildActionButton(parent, ref y, btnH, btnGap, "Gather Ore", CompanionSetup.ModeGatherOre);
+            _stayBtn = BuildActionButton(parent, ref y, btnH, btnGap, "Stay Home", CompanionSetup.ModeStay);
+            DisableButtonTintOverlay(_stayBtn);
+            _autoPickupBtn = BuildActionButton(parent, ref y, btnH, btnGap, "Auto Pickup: OFF", -1);
+            DisableButtonTintOverlay(_autoPickupBtn);
+            if (_autoPickupBtn != null)
             {
-                float x = i * (SlotSize + InventorySlotGap);
-
-                var slotGO = new GameObject($"FoodSlot{i}", typeof(RectTransform), typeof(Image));
-                slotGO.transform.SetParent(rowContainer.transform, false);
-                var slotRT = slotGO.GetComponent<RectTransform>();
-                slotRT.anchorMin        = new Vector2(0f, 1f);
-                slotRT.anchorMax        = new Vector2(0f, 1f);
-                slotRT.pivot            = new Vector2(0f, 1f);
-                slotRT.sizeDelta        = new Vector2(SlotSize, SlotSize);
-                slotRT.anchoredPosition = new Vector2(x, 0f);
-
-                var bgImg = slotGO.GetComponent<Image>();
-                bgImg.sprite = null;
-                bgImg.color  = SlotTint;
-
-                var btn = slotGO.AddComponent<Button>();
-                btn.transition = Selectable.Transition.None;
-                btn.navigation = new Navigation { mode = Navigation.Mode.None };
-                int slotIndex = i;
-                btn.onClick.AddListener(() => OnFoodSlotLeftClick(slotIndex));
-
-                var trigger = slotGO.AddComponent<EventTrigger>();
-                var rightEntry = new EventTrigger.Entry { eventID = EventTriggerType.PointerClick };
-                rightEntry.callback.AddListener((data) =>
-                {
-                    var pData = (PointerEventData)data;
-                    if (pData.button == PointerEventData.InputButton.Right)
-                        OnFoodSlotRightClick(slotIndex);
-                });
-                trigger.triggers.Add(rightEntry);
-
-                var iconGO = new GameObject("Icon", typeof(RectTransform), typeof(Image));
-                iconGO.transform.SetParent(slotGO.transform, false);
-                var iconRT = iconGO.GetComponent<RectTransform>();
-                iconRT.anchorMin = Vector2.zero;
-                iconRT.anchorMax = Vector2.one;
-                iconRT.offsetMin = new Vector2(4f, 4f);
-                iconRT.offsetMax = new Vector2(-4f, -4f);
-                _foodSlotIcons[i] = iconGO.GetComponent<Image>();
-                _foodSlotIcons[i].preserveAspect = true;
-                _foodSlotIcons[i].raycastTarget  = false;
-                _foodSlotIcons[i].enabled = false;
-
-                var countGO = new GameObject("Count", typeof(RectTransform));
-                countGO.transform.SetParent(slotGO.transform, false);
-                var countTmp = countGO.AddComponent<TextMeshProUGUI>();
-                if (font != null) countTmp.font = font;
-                countTmp.fontSize      = 11f;
-                countTmp.color         = Color.white;
-                countTmp.alignment     = TextAlignmentOptions.BottomRight;
-                countTmp.raycastTarget = false;
-                var countRT = countGO.GetComponent<RectTransform>();
-                countRT.anchorMin = Vector2.zero;
-                countRT.anchorMax = Vector2.one;
-                countRT.offsetMin = new Vector2(2f, 1f);
-                countRT.offsetMax = new Vector2(-2f, -1f);
-                _foodSlotCounts[i] = countTmp;
-                _foodSlotCounts[i].enabled = false;
+                _autoPickupBtn.onClick.RemoveAllListeners();
+                _autoPickupBtn.onClick.AddListener(ToggleAutoPickup);
             }
-
-            y -= SlotSize;
         }
-
-        // ── Actions tab content ────────────────────────────────────────────
-
-        private void BuildActionsContent(RectTransform parent, TMP_FontAsset font)
-        {
-            float y = 0f;
-
-            // Name input
-            var nameLabel = MakeText(parent, "NameLabel", "Name",
-                font, 13f, LabelText, TextAlignmentOptions.MidlineLeft);
-            nameLabel.fontStyle = FontStyles.Bold;
-            PlaceTopStretch(nameLabel.GetComponent<RectTransform>(), ref y, 18f);
-            y -= 4f;
-            y = BuildNameInput(parent, font, y);
-            y -= 12f;
-
-            // Separator
-            MakeSeparator(parent, ref y);
-            y -= 8f;
-
-            // Action buttons
-            float btnH = 32f;
-            float btnGap = 4f;
-            _followBtn  = BuildActionButton(parent, ref y, btnH, btnGap, "Follow into Battle", 0);
-            _collectBtn = BuildActionButton(parent, ref y, btnH, btnGap, "Collect Resources", 1);
-            _stayBtn    = BuildActionButton(parent, ref y, btnH, btnGap, "Stay Home", 2);
-
-            // Mode text
-            y -= 4f;
-            _modeText = MakeText(parent, "ModeText", "Follow into Battle",
-                font, 12f, GoldColor, TextAlignmentOptions.Center);
-            PlaceTopStretch(_modeText.GetComponent<RectTransform>(), ref y, 16f);
-
-            // Resource gather buttons (visual only for now)
-            y -= 8f;
-            BuildUnwiredActionButton(parent, ref y, btnH, btnGap, "Gather Wood");
-            BuildUnwiredActionButton(parent, ref y, btnH, btnGap, "Gather Stone");
-            BuildUnwiredActionButton(parent, ref y, btnH, btnGap, "Gather Ore");
-        }
-
-        // ── Name input ──────────────────────────────────────────────────────
 
         private float BuildNameInput(RectTransform parent, TMP_FontAsset font, float y)
         {
@@ -768,10 +567,10 @@ namespace Companions
             var inputGO = new GameObject("NameInput", typeof(RectTransform), typeof(Image));
             inputGO.transform.SetParent(parent, false);
             var inputRT = inputGO.GetComponent<RectTransform>();
-            inputRT.anchorMin        = new Vector2(0f, 1f);
-            inputRT.anchorMax        = new Vector2(1f, 1f);
-            inputRT.pivot            = new Vector2(0f, 1f);
-            inputRT.sizeDelta        = new Vector2(0f, h);
+            inputRT.anchorMin = new Vector2(0f, 1f);
+            inputRT.anchorMax = new Vector2(1f, 1f);
+            inputRT.pivot = new Vector2(0f, 1f);
+            inputRT.sizeDelta = new Vector2(0f, h);
             inputRT.anchoredPosition = new Vector2(0f, y);
 
             var bgSprite = GetSliderBgSprite();
@@ -779,8 +578,8 @@ namespace Companions
             if (bgSprite != null)
             {
                 bgImg.sprite = bgSprite;
-                bgImg.type   = Image.Type.Simple;
-                bgImg.color  = Color.white;
+                bgImg.type = Image.Type.Simple;
+                bgImg.color = Color.white;
             }
             else
             {
@@ -800,28 +599,28 @@ namespace Companions
             childTextGO.transform.SetParent(textAreaGO.transform, false);
             var childTmp = childTextGO.AddComponent<TextMeshProUGUI>();
             if (font != null) childTmp.font = font;
-            childTmp.fontSize      = 16f;
-            childTmp.color         = Color.white;
-            childTmp.alignment     = TextAlignmentOptions.MidlineLeft;
+            childTmp.fontSize = 16f;
+            childTmp.color = Color.white;
+            childTmp.alignment = TextAlignmentOptions.MidlineLeft;
             childTmp.raycastTarget = false;
             StretchFill(childTextGO.GetComponent<RectTransform>());
 
             _nameInput = inputGO.AddComponent<TMP_InputField>();
-            _nameInput.textComponent  = childTmp;
-            _nameInput.textViewport   = textAreaRT;
+            _nameInput.textComponent = childTmp;
+            _nameInput.textViewport = textAreaRT;
             _nameInput.characterLimit = 24;
-            _nameInput.contentType    = TMP_InputField.ContentType.Standard;
+            _nameInput.contentType = TMP_InputField.ContentType.Standard;
             _nameInput.onFocusSelectAll = false;
 
             var phGO = new GameObject("Placeholder", typeof(RectTransform));
             phGO.transform.SetParent(textAreaGO.transform, false);
             var phTmp = phGO.AddComponent<TextMeshProUGUI>();
             if (font != null) phTmp.font = font;
-            phTmp.fontSize      = 16f;
-            phTmp.color         = new Color(0.6f, 0.6f, 0.6f, 0.6f);
-            phTmp.alignment     = TextAlignmentOptions.MidlineLeft;
-            phTmp.text          = "Enter name...";
-            phTmp.fontStyle     = FontStyles.Italic;
+            phTmp.fontSize = 16f;
+            phTmp.color = new Color(0.6f, 0.6f, 0.6f, 0.6f);
+            phTmp.alignment = TextAlignmentOptions.MidlineLeft;
+            phTmp.text = "Enter name...";
+            phTmp.fontStyle = FontStyles.Italic;
             phTmp.raycastTarget = false;
             StretchFill(phGO.GetComponent<RectTransform>());
             _nameInput.placeholder = phTmp;
@@ -829,20 +628,18 @@ namespace Companions
             return y - h;
         }
 
-        // ── Stat bars ───────────────────────────────────────────────────────
-
         private void BuildStatBar(RectTransform parent, TMP_FontAsset font, ref float y,
             Sprite fillSprite, Color fillColor, out Image fill, out TextMeshProUGUI text)
         {
-            float barH = 20f;
+            float barH = 17f;
 
             var barGO = new GameObject("Bar", typeof(RectTransform), typeof(Image));
             barGO.transform.SetParent(parent, false);
             var barRT = barGO.GetComponent<RectTransform>();
-            barRT.anchorMin        = new Vector2(0.03f, 1f);
-            barRT.anchorMax        = new Vector2(0.97f, 1f);
-            barRT.pivot            = new Vector2(0.5f, 1f);
-            barRT.sizeDelta        = new Vector2(0f, barH);
+            barRT.anchorMin = new Vector2(0.03f, 1f);
+            barRT.anchorMax = new Vector2(0.97f, 1f);
+            barRT.pivot = new Vector2(0.5f, 1f);
+            barRT.sizeDelta = new Vector2(0f, barH);
             barRT.anchoredPosition = new Vector2(0f, y);
 
             var bgSprite = GetSliderBgSprite();
@@ -850,8 +647,8 @@ namespace Companions
             if (bgSprite != null)
             {
                 bgImg.sprite = bgSprite;
-                bgImg.type   = Image.Type.Simple;
-                bgImg.color  = Color.white;
+                bgImg.type = Image.Type.Simple;
+                bgImg.color = Color.white;
             }
             else
             {
@@ -885,58 +682,59 @@ namespace Companions
             y -= barH;
         }
 
-        // ── Inventory grid ──────────────────────────────────────────────────
-
         private void BuildInventoryGrid(RectTransform parent, TMP_FontAsset font, ref float y)
         {
-            _slotBgs     = new Image[MainGridSlots];
-            _slotIcons   = new Image[MainGridSlots];
-            _slotCounts  = new TextMeshProUGUI[MainGridSlots];
+            _slotBgs = new Image[MainGridSlots];
+            _slotIcons = new Image[MainGridSlots];
+            _slotCounts = new TextMeshProUGUI[MainGridSlots];
             _slotBorders = new Image[MainGridSlots];
 
-            int   gridRows = Mathf.CeilToInt(MainGridSlots / (float)GridCols);
-            float gridW = GridCols * SlotSize + (GridCols - 1) * InventorySlotGap;
-            float gridH = gridRows * SlotSize + (gridRows - 1) * InventorySlotGap;
+            int gridRows = Mathf.CeilToInt(MainGridSlots / (float)GridCols);
 
-            // Center the grid horizontally
+            float availW = LeftColW - 20f;
+            float availH = PanelH - OuterPad * 2f - 20f;
+            float slotW = (availW - (GridCols - 1) * InventorySlotGap) / GridCols;
+            float slotH = (availH - (gridRows - 1) * InventorySlotGap) / gridRows;
+            float slotSize = Mathf.Floor(Mathf.Min(slotW, slotH));
+            float gridW = GridCols * slotSize + (GridCols - 1) * InventorySlotGap;
+            float gridH = gridRows * slotSize + (gridRows - 1) * InventorySlotGap;
+
             var gridContainer = new GameObject("Grid", typeof(RectTransform));
             gridContainer.transform.SetParent(parent, false);
             var gridRT = gridContainer.GetComponent<RectTransform>();
-            gridRT.anchorMin        = new Vector2(0.5f, 1f);
-            gridRT.anchorMax        = new Vector2(0.5f, 1f);
-            gridRT.pivot            = new Vector2(0.5f, 1f);
-            gridRT.sizeDelta        = new Vector2(gridW, gridH);
+            gridRT.anchorMin = new Vector2(0.5f, 1f);
+            gridRT.anchorMax = new Vector2(0.5f, 1f);
+            gridRT.pivot = new Vector2(0.5f, 1f);
+            gridRT.sizeDelta = new Vector2(gridW, gridH);
             gridRT.anchoredPosition = new Vector2(0f, y);
 
             for (int i = 0; i < MainGridSlots; i++)
             {
                 int visualCol = i % GridCols;
                 int visualRow = i / GridCols;
-                float x = visualCol * (SlotSize + InventorySlotGap);
-                float sy = -(visualRow * (SlotSize + InventorySlotGap));
+                float x = visualCol * (slotSize + InventorySlotGap);
+                float sy = -(visualRow * (slotSize + InventorySlotGap));
 
                 var slotGO = new GameObject($"Slot{i}", typeof(RectTransform), typeof(Image));
                 slotGO.transform.SetParent(gridContainer.transform, false);
                 var slotRT = slotGO.GetComponent<RectTransform>();
-                slotRT.anchorMin        = new Vector2(0f, 1f);
-                slotRT.anchorMax        = new Vector2(0f, 1f);
-                slotRT.pivot            = new Vector2(0f, 1f);
-                slotRT.sizeDelta        = new Vector2(SlotSize, SlotSize);
+                slotRT.anchorMin = new Vector2(0f, 1f);
+                slotRT.anchorMax = new Vector2(0f, 1f);
+                slotRT.pivot = new Vector2(0f, 1f);
+                slotRT.sizeDelta = new Vector2(slotSize, slotSize);
                 slotRT.anchoredPosition = new Vector2(x, sy);
 
                 var bgImg = slotGO.GetComponent<Image>();
                 bgImg.sprite = null;
-                bgImg.color  = SlotTint;
-                _slotBgs[i]  = bgImg;
+                bgImg.color = SlotTint;
+                _slotBgs[i] = bgImg;
 
-                // Click handler via Button component
                 var btn = slotGO.AddComponent<Button>();
                 btn.transition = Selectable.Transition.None;
                 btn.navigation = new Navigation { mode = Navigation.Mode.None };
                 int slotIndex = i;
                 btn.onClick.AddListener(() => OnSlotLeftClick(slotIndex));
 
-                // Right-click via EventTrigger
                 var trigger = slotGO.AddComponent<EventTrigger>();
                 var rightEntry = new EventTrigger.Entry { eventID = EventTriggerType.PointerClick };
                 rightEntry.callback.AddListener((data) =>
@@ -947,7 +745,6 @@ namespace Companions
                 });
                 trigger.triggers.Add(rightEntry);
 
-                // Equipped border (gold)
                 var borderGO = new GameObject("Border", typeof(RectTransform), typeof(Image));
                 borderGO.transform.SetParent(slotGO.transform, false);
                 var borderRT = borderGO.GetComponent<RectTransform>();
@@ -956,31 +753,29 @@ namespace Companions
                 borderRT.offsetMin = new Vector2(1f, 1f);
                 borderRT.offsetMax = new Vector2(-1f, -1f);
                 _slotBorders[i] = borderGO.GetComponent<Image>();
-                _slotBorders[i].color = GoldColor;
+                _slotBorders[i].color = EquipBlue;
                 _slotBorders[i].raycastTarget = false;
                 _slotBorders[i].enabled = false;
 
-                // Item icon
                 var iconGO = new GameObject("Icon", typeof(RectTransform), typeof(Image));
                 iconGO.transform.SetParent(slotGO.transform, false);
                 var iconRT = iconGO.GetComponent<RectTransform>();
                 iconRT.anchorMin = Vector2.zero;
                 iconRT.anchorMax = Vector2.one;
-                iconRT.offsetMin = new Vector2(4f, 4f);
-                iconRT.offsetMax = new Vector2(-4f, -4f);
+                iconRT.offsetMin = new Vector2(3f, 3f);
+                iconRT.offsetMax = new Vector2(-3f, -3f);
                 _slotIcons[i] = iconGO.GetComponent<Image>();
                 _slotIcons[i].preserveAspect = true;
-                _slotIcons[i].raycastTarget  = false;
+                _slotIcons[i].raycastTarget = false;
                 _slotIcons[i].enabled = false;
 
-                // Stack count
                 var countGO = new GameObject("Count", typeof(RectTransform));
                 countGO.transform.SetParent(slotGO.transform, false);
                 var countTmp = countGO.AddComponent<TextMeshProUGUI>();
                 if (font != null) countTmp.font = font;
-                countTmp.fontSize      = 11f;
-                countTmp.color         = Color.white;
-                countTmp.alignment     = TextAlignmentOptions.BottomRight;
+                countTmp.fontSize = 10f;
+                countTmp.color = Color.white;
+                countTmp.alignment = TextAlignmentOptions.BottomRight;
                 countTmp.raycastTarget = false;
                 var countRT = countGO.GetComponent<RectTransform>();
                 countRT.anchorMin = Vector2.zero;
@@ -994,8 +789,6 @@ namespace Companions
             y -= gridH;
         }
 
-        // ── Action buttons ──────────────────────────────────────────────────
-
         private Button BuildActionButton(RectTransform parent,
             ref float y, float h, float gap, string label, int mode)
         {
@@ -1003,10 +796,10 @@ namespace Companions
             if (go == null) return null;
 
             var rt = go.GetComponent<RectTransform>();
-            rt.anchorMin        = new Vector2(0f, 1f);
-            rt.anchorMax        = new Vector2(1f, 1f);
-            rt.pivot            = new Vector2(0.5f, 1f);
-            rt.sizeDelta        = new Vector2(0f, h);
+            rt.anchorMin = new Vector2(0f, 1f);
+            rt.anchorMax = new Vector2(1f, 1f);
+            rt.pivot = new Vector2(0.5f, 1f);
+            rt.sizeDelta = new Vector2(0f, h);
             rt.anchoredPosition = new Vector2(0f, y);
             y -= h + gap;
 
@@ -1024,57 +817,150 @@ namespace Companions
             if (go == null) return null;
 
             var rt = go.GetComponent<RectTransform>();
-            rt.anchorMin        = new Vector2(0f, 1f);
-            rt.anchorMax        = new Vector2(1f, 1f);
-            rt.pivot            = new Vector2(0.5f, 1f);
-            rt.sizeDelta        = new Vector2(0f, h);
+            rt.anchorMin = new Vector2(0f, 1f);
+            rt.anchorMax = new Vector2(1f, 1f);
+            rt.pivot = new Vector2(0.5f, 1f);
+            rt.sizeDelta = new Vector2(0f, h);
             rt.anchoredPosition = new Vector2(0f, y);
             y -= h + gap;
 
             return go.GetComponent<Button>();
         }
 
-        // ── Preview ─────────────────────────────────────────────────────────
-
-        private void BuildPreview(RectTransform col)
+        private static void DisableButtonTintOverlay(Button btn)
         {
-            var imgGO = new GameObject("PreviewImg", typeof(RectTransform));
-            imgGO.transform.SetParent(col, false);
-            StretchFill(imgGO.GetComponent<RectTransform>());
-
-            _previewImg               = imgGO.AddComponent<RawImage>();
-            _previewImg.color         = Color.white;
-            _previewImg.raycastTarget = true;
-
-            float colW = RightColW;
-            float colH = PanelH - OuterPad * 2f;
-            int rtScale = 4;
-            int rtW = Mathf.Max(64, Mathf.RoundToInt(colW) * rtScale);
-            int rtH = Mathf.Max(64, Mathf.RoundToInt(colH) * rtScale);
-            _rt              = new RenderTexture(rtW, rtH, 24, RenderTextureFormat.ARGB32);
-            _rt.antiAliasing = 4;
-            _rt.filterMode   = FilterMode.Trilinear;
-            _previewImg.texture = _rt;
-
-            _camGO = new GameObject("HC_InteractPreviewCam");
-            UnityEngine.Object.DontDestroyOnLoad(_camGO);
-            _cam               = _camGO.AddComponent<Camera>();
-            _cam.targetTexture = _rt;
-            _cam.clearFlags    = CameraClearFlags.SolidColor;
-            _cam.backgroundColor = new Color(0f, 0f, 0f, 0f);
-            _cam.fieldOfView   = 30f;
-            _cam.nearClipPlane = 0.1f;
-            _cam.farClipPlane  = 10f;
-            _cam.depth         = -2;
-            _cam.enabled       = false;
-
-            int charLayer = LayerMask.NameToLayer("character");
-            if (charLayer < 0) charLayer = 9;
-            int charNet = LayerMask.NameToLayer("character_net");
-            int mask    = 1 << charLayer;
-            if (charNet >= 0) mask |= 1 << charNet;
-            _cam.cullingMask = mask;
+            if (btn == null) return;
+            var tint = btn.transform.Find("Tint");
+            if (tint != null)
+                tint.gameObject.SetActive(false);
         }
+
+        private void BuildPreview(RectTransform col, TMP_FontAsset font)
+        {
+            float topY = -2f;
+
+            var nameLabel = MakeText(col, "NameLabel", "Name",
+                font, 13f, LabelText, TextAlignmentOptions.MidlineLeft);
+            nameLabel.fontStyle = FontStyles.Bold;
+            PlaceTopStretch(nameLabel.GetComponent<RectTransform>(), ref topY, 18f);
+            topY -= 3f;
+            topY = BuildNameInput(col, font, topY);
+            topY -= 14f;
+
+            BuildLabeledBar(col, font, ref topY, "Health", GetHealthBarFillSprite(), HealthRed,
+                out _healthFill, out _healthText);
+            BuildLabeledBar(col, font, ref topY, "Stamina", GetStaminaBarFillSprite(), StaminaYellow,
+                out _staminaFill, out _staminaText);
+            BuildLabeledBar(col, font, ref topY, "Eitr", GetEitrBarFillSprite(), EitrBlue,
+                out _eitrFill, out _eitrText);
+            BuildLabeledBar(col, font, ref topY, "Weight", GetWeightBarFillSprite(), WeightOrange,
+                out _weightFill, out _weightText);
+            topY -= 4f;
+
+            _armorText = MakeText(col.transform, "ArmorText", "Armor: 0",
+                font, 11f, GoldColor, TextAlignmentOptions.Center);
+            PlaceTopStretch(_armorText.GetComponent<RectTransform>(), ref topY, 14f);
+
+            topY -= 8f;
+            BuildActionControls(col, font, ref topY);
+
+            float bottomY = 6f;
+            _foodSlotIcons = new Image[FoodSlotCount];
+            _foodSlotCounts = new TextMeshProUGUI[FoodSlotCount];
+            float foodSlotSz = 42f;
+            float foodGap = 3f;
+            float foodRowW = FoodSlotCount * foodSlotSz + (FoodSlotCount - 1) * foodGap;
+
+            var foodLabel = MakeText(col.transform, "FoodLabel", "Food",
+                font, 11f, LabelText, TextAlignmentOptions.Center);
+            var foodLabelRT = foodLabel.GetComponent<RectTransform>();
+            foodLabelRT.anchorMin = new Vector2(0f, 0f);
+            foodLabelRT.anchorMax = new Vector2(1f, 0f);
+            foodLabelRT.pivot = new Vector2(0.5f, 0f);
+            foodLabelRT.sizeDelta = new Vector2(0f, 14f);
+            foodLabelRT.anchoredPosition = new Vector2(0f, bottomY + foodSlotSz + 2f);
+            foodLabel.fontStyle = FontStyles.Bold;
+
+            var foodRow = new GameObject("FoodSlots", typeof(RectTransform));
+            foodRow.transform.SetParent(col, false);
+            var foodRowRT = foodRow.GetComponent<RectTransform>();
+            foodRowRT.anchorMin = new Vector2(0.5f, 0f);
+            foodRowRT.anchorMax = new Vector2(0.5f, 0f);
+            foodRowRT.pivot = new Vector2(0.5f, 0f);
+            foodRowRT.sizeDelta = new Vector2(foodRowW, foodSlotSz);
+            foodRowRT.anchoredPosition = new Vector2(0f, bottomY);
+
+            for (int i = 0; i < FoodSlotCount; i++)
+            {
+                float x = i * (foodSlotSz + foodGap);
+                var slotGO = new GameObject($"FoodSlot{i}", typeof(RectTransform), typeof(Image));
+                slotGO.transform.SetParent(foodRow.transform, false);
+                var slotRT = slotGO.GetComponent<RectTransform>();
+                slotRT.anchorMin = new Vector2(0f, 0f);
+                slotRT.anchorMax = new Vector2(0f, 0f);
+                slotRT.pivot = new Vector2(0f, 0f);
+                slotRT.sizeDelta = new Vector2(foodSlotSz, foodSlotSz);
+                slotRT.anchoredPosition = new Vector2(x, 0f);
+                slotGO.GetComponent<Image>().color = SlotTint;
+
+                var btn = slotGO.AddComponent<Button>();
+                btn.transition = Selectable.Transition.None;
+                btn.navigation = new Navigation { mode = Navigation.Mode.None };
+                int slotIndex = i;
+                btn.onClick.AddListener(() => OnFoodSlotLeftClick(slotIndex));
+
+                var trigger = slotGO.AddComponent<EventTrigger>();
+                var rightEntry = new EventTrigger.Entry { eventID = EventTriggerType.PointerClick };
+                rightEntry.callback.AddListener((data) =>
+                {
+                    var pData = (PointerEventData)data;
+                    if (pData.button == PointerEventData.InputButton.Right)
+                        OnFoodSlotRightClick(slotIndex);
+                });
+                trigger.triggers.Add(rightEntry);
+
+                var iconGO = new GameObject("Icon", typeof(RectTransform), typeof(Image));
+                iconGO.transform.SetParent(slotGO.transform, false);
+                var iconRT = iconGO.GetComponent<RectTransform>();
+                iconRT.anchorMin = Vector2.zero;
+                iconRT.anchorMax = Vector2.one;
+                iconRT.offsetMin = new Vector2(4f, 4f);
+                iconRT.offsetMax = new Vector2(-4f, -4f);
+                _foodSlotIcons[i] = iconGO.GetComponent<Image>();
+                _foodSlotIcons[i].preserveAspect = true;
+                _foodSlotIcons[i].raycastTarget = false;
+                _foodSlotIcons[i].enabled = false;
+
+                var countGO = new GameObject("Count", typeof(RectTransform));
+                countGO.transform.SetParent(slotGO.transform, false);
+                var countTmp = countGO.AddComponent<TextMeshProUGUI>();
+                if (font != null) countTmp.font = font;
+                countTmp.fontSize = 10f;
+                countTmp.color = Color.white;
+                countTmp.alignment = TextAlignmentOptions.BottomRight;
+                countTmp.raycastTarget = false;
+                var countRT = countGO.GetComponent<RectTransform>();
+                countRT.anchorMin = Vector2.zero;
+                countRT.anchorMax = Vector2.one;
+                countRT.offsetMin = new Vector2(2f, 1f);
+                countRT.offsetMax = new Vector2(-2f, -1f);
+                _foodSlotCounts[i] = countTmp;
+                _foodSlotCounts[i].enabled = false;
+            }
+        }
+
+        private void BuildLabeledBar(RectTransform parent, TMP_FontAsset font, ref float y,
+            string label, Sprite fillSprite, Color fillColor,
+            out Image fill, out TextMeshProUGUI text)
+        {
+            var lbl = MakeText(parent.transform, label + "Label", label,
+                font, 11f, LabelText, TextAlignmentOptions.MidlineLeft);
+            lbl.fontStyle = FontStyles.Bold;
+            PlaceTopStretch(lbl.GetComponent<RectTransform>(), ref y, 8f);
+            BuildStatBar(parent, font, ref y, fillSprite, fillColor, out fill, out text);
+        }
+
+        // ── Tab bar: positioned above left column, children of root ─────
 
         // ══════════════════════════════════════════════════════════════════════
         //  Inventory grid — click handlers
@@ -1110,7 +996,7 @@ namespace Companions
             gx = 0;
             gy = 0;
             if (slotIndex < 0 || slotIndex >= MainGridSlots) return false;
-            int flatIndex = slotIndex + FoodSlotCount;
+            int flatIndex = slotIndex;
             gx = flatIndex % GridCols;
             gy = flatIndex / GridCols;
             return true;
@@ -1120,9 +1006,12 @@ namespace Companions
             if (_companionHumanoid == null || InventoryGui.instance == null) return;
             var inv = _companionHumanoid.GetInventory();
             if (inv == null) return;
+
             var dragItem = _dragItemField?.GetValue(InventoryGui.instance) as ItemDrop.ItemData;
             var dragInv  = _dragInventoryField?.GetValue(InventoryGui.instance) as Inventory;
             int dragAmt  = (_dragAmountField != null) ? (int)_dragAmountField.GetValue(InventoryGui.instance) : 1;
+            bool changed = false;
+
             if (dragItem != null && dragInv != null)
             {
                 if (consumableOnly && !IsConsumableItem(dragItem))
@@ -1132,6 +1021,7 @@ namespace Companions
                         "Food slots only accept consumables.");
                     return;
                 }
+
                 // Place dragged item into companion inventory
                 try
                 {
@@ -1146,8 +1036,33 @@ namespace Companions
                     ClearDrag();
                     return;
                 }
-                bool moved = inv.MoveItemToThis(dragInv, dragItem, dragAmt, gx, gy);
-                if (moved) ClearDrag();
+
+                var targetItem = inv.GetItemAt(gx, gy);
+                if (consumableOnly && targetItem != null && !IsConsumableItem(targetItem))
+                {
+                    MessageHud.instance?.ShowMessage(
+                        MessageHud.MessageType.Center,
+                        "Food slots only accept consumables.");
+                    return;
+                }
+
+                if (targetItem != null && _companionHumanoid.IsItemEquiped(targetItem))
+                    _companionHumanoid.UnequipItem(targetItem, false);
+
+                // Keep player gear state in sync when dragging equipped gear.
+                var player = Player.m_localPlayer;
+                if (player != null && dragInv == player.GetInventory() && player.IsItemEquiped(dragItem))
+                {
+                    player.RemoveEquipAction(dragItem);
+                    player.UnequipItem(dragItem, false);
+                }
+
+                bool moved = DropItemToCompanion(inv, dragInv, dragItem, dragAmt, gx, gy);
+                if (moved)
+                {
+                    ClearDrag();
+                    changed = true;
+                }
             }
             else
             {
@@ -1158,20 +1073,98 @@ namespace Companions
                 {
                     var playerInv = Player.m_localPlayer.GetInventory();
                     if (playerInv != null)
+                    {
+                        bool wasEquipped = _companionHumanoid.IsItemEquiped(item);
+                        if (wasEquipped)
+                            _companionHumanoid.UnequipItem(item, false);
+                        int beforeCount = inv.GetAllItems().Count;
+                        int beforeStack = item.m_stack;
+                        Vector2i beforePos = item.m_gridPos;
                         playerInv.MoveItemToThis(inv, item);
+                        changed = !inv.ContainsItem(item) ||
+                                  item.m_stack != beforeStack ||
+                                  item.m_gridPos.x != beforePos.x ||
+                                  item.m_gridPos.y != beforePos.y ||
+                                  inv.GetAllItems().Count != beforeCount;
+                    }
                 }
             }
+
+            if (changed)
+                OnCompanionInventoryMutated();
+
             _invRefreshTimer = 0f;
         }
+
+        private static bool ShouldSwapForDrop(ItemDrop.ItemData dragItem, ItemDrop.ItemData targetItem, int amount)
+        {
+            if (dragItem == null || targetItem == null) return false;
+            if (targetItem == dragItem) return false;
+            if (dragItem.m_stack != amount) return false;
+
+            return targetItem.m_shared.m_name != dragItem.m_shared.m_name ||
+                   (dragItem.m_shared.m_maxQuality > 1 && targetItem.m_quality != dragItem.m_quality) ||
+                   targetItem.m_shared.m_maxStackSize == 1;
+        }
+
+        private static bool DropItemToCompanion(Inventory targetInv, Inventory fromInv,
+            ItemDrop.ItemData dragItem, int amount, int x, int y)
+        {
+            if (targetInv == null || fromInv == null || dragItem == null) return false;
+            amount = Mathf.Clamp(amount, 1, dragItem.m_stack);
+
+            var targetItem = targetInv.GetItemAt(x, y);
+            // Mirror vanilla InventoryGrid.DropItem semantics so swap interactions
+            // behave like base inventory drag/drop.
+            if (ShouldSwapForDrop(dragItem, targetItem, amount))
+            {
+                Vector2i oldPos = dragItem.m_gridPos;
+                fromInv.RemoveItem(dragItem);
+                fromInv.MoveItemToThis(targetInv, targetItem, targetItem.m_stack, oldPos.x, oldPos.y);
+                targetInv.MoveItemToThis(fromInv, dragItem, amount, x, y);
+                return true;
+            }
+
+            return targetInv.MoveItemToThis(fromInv, dragItem, amount, x, y);
+        }
+
+        private void OnCompanionInventoryMutated()
+        {
+            _companion?.SyncEquipmentToInventory();
+            _invRefreshTimer = 0f;
+        }
+
         private void HandleSlotRightClick(int gx, int gy)
         {
-            if (_companionHumanoid == null || Player.m_localPlayer == null) return;
+            if (_companionHumanoid == null) return;
             var inv = _companionHumanoid.GetInventory();
             if (inv == null) return;
             var item = inv.GetItemAt(gx, gy);
             if (item == null) return;
-            Player.m_localPlayer.UseItem(inv, item, true);
-            _invRefreshTimer = 0f;
+
+            bool hadItem = inv.ContainsItem(item);
+            int stackBefore = hadItem ? item.m_stack : 0;
+            bool equippedBefore = _companionHumanoid.IsItemEquiped(item);
+            bool changed = false;
+
+            if (IsConsumableItem(item) && _companionFood != null)
+                changed = _companionFood.TryConsumeItem(item);
+
+            if (!changed)
+            {
+                _companionHumanoid.UseItem(inv, item, true);
+                bool hasItemAfter = inv.ContainsItem(item);
+                int stackAfter = hasItemAfter ? item.m_stack : 0;
+                bool equippedAfter = hasItemAfter && _companionHumanoid.IsItemEquiped(item);
+                changed = hadItem != hasItemAfter ||
+                          stackBefore != stackAfter ||
+                          equippedBefore != equippedAfter;
+            }
+
+            if (changed)
+                OnCompanionInventoryMutated();
+            else
+                _invRefreshTimer = 0f;
         }
         private void ClearDrag()
         {
@@ -1186,10 +1179,15 @@ namespace Companions
 
         private void SetActionMode(int mode)
         {
+            if (mode < CompanionSetup.ModeFollow || mode > CompanionSetup.ModeStay)
+                mode = CompanionSetup.ModeFollow;
+
+            EnsureCompanionOwnership();
             _activeMode = mode;
             if (_companionNview != null && _companionNview.GetZDO() != null)
                 _companionNview.GetZDO().Set(CompanionSetup.ActionModeHash, mode);
 
+            _companionHarvest?.NotifyActionModeChanged();
             ApplyActionMode();
             RefreshActionButtons();
             RefreshModeText();
@@ -1197,28 +1195,35 @@ namespace Companions
 
         private void ApplyActionMode()
         {
-            if (_companionAI == null || Player.m_localPlayer == null) return;
+            if (_companionAI == null) return;
 
             switch (_activeMode)
             {
-                case 0:
-                    _companionAI.SetFollowTarget(Player.m_localPlayer.gameObject);
+                case CompanionSetup.ModeFollow:
+                case CompanionSetup.ModeGatherWood:
+                case CompanionSetup.ModeGatherStone:
+                case CompanionSetup.ModeGatherOre:
+                    if (Player.m_localPlayer != null)
+                        _companionAI.SetFollowTarget(Player.m_localPlayer.gameObject);
                     break;
-                case 1:
-                    _companionAI.SetFollowTarget(Player.m_localPlayer.gameObject);
-                    break;
-                case 2:
+                case CompanionSetup.ModeStay:
                     _companionAI.SetFollowTarget(null);
                     _companionAI.SetPatrolPoint();
+                    break;
+                default:
+                    if (Player.m_localPlayer != null)
+                        _companionAI.SetFollowTarget(Player.m_localPlayer.gameObject);
                     break;
             }
         }
 
         private void RefreshActionButtons()
         {
-            SetBtnHighlight(_followBtn,  _activeMode == 0);
-            SetBtnHighlight(_collectBtn, _activeMode == 1);
-            SetBtnHighlight(_stayBtn,    _activeMode == 2);
+            SetBtnHighlight(_followBtn,      _activeMode == CompanionSetup.ModeFollow);
+            SetBtnHighlight(_gatherWoodBtn,  _activeMode == CompanionSetup.ModeGatherWood);
+            SetBtnHighlight(_gatherStoneBtn, _activeMode == CompanionSetup.ModeGatherStone);
+            SetBtnHighlight(_gatherOreBtn,   _activeMode == CompanionSetup.ModeGatherOre);
+            SetBtnHighlight(_stayBtn,        _activeMode == CompanionSetup.ModeStay);
         }
 
         private void SetBtnHighlight(Button btn, bool active)
@@ -1238,10 +1243,33 @@ namespace Companions
             if (_modeText == null) return;
             switch (_activeMode)
             {
-                case 0: _modeText.text = "Follow into Battle"; break;
-                case 1: _modeText.text = "Collect Resources";  break;
-                case 2: _modeText.text = "Stay Home";          break;
+                case CompanionSetup.ModeFollow:      _modeText.text = "Follow into Battle"; break;
+                case CompanionSetup.ModeGatherWood:  _modeText.text = "Gather Wood"; break;
+                case CompanionSetup.ModeGatherStone: _modeText.text = "Gather Stone"; break;
+                case CompanionSetup.ModeGatherOre:   _modeText.text = "Gather Ore"; break;
+                case CompanionSetup.ModeStay:        _modeText.text = "Stay Home"; break;
+                default:                             _modeText.text = "Follow into Battle"; break;
             }
+        }
+
+        // ── Auto pickup toggle ─────────────────────────────────────────────
+
+        private void ToggleAutoPickup()
+        {
+            if (_companionCAI == null) return;
+            EnsureCompanionOwnership();
+            bool newState = !_companionCAI.AutoPickupEnabled;
+            _companionCAI.AutoPickupEnabled = newState;
+            RefreshAutoPickupButton();
+        }
+
+        private void RefreshAutoPickupButton()
+        {
+            if (_autoPickupBtn == null) return;
+            bool on = _companionCAI != null && _companionCAI.AutoPickupEnabled;
+            var txt = _autoPickupBtn.GetComponentInChildren<TMP_Text>(true);
+            if (txt != null) txt.text = on ? "Auto Pickup: ON" : "Auto Pickup: OFF";
+            SetBtnHighlight(_autoPickupBtn, on);
         }
 
         // ══════════════════════════════════════════════════════════════════════
@@ -1250,10 +1278,18 @@ namespace Companions
 
         private void OnNameChanged(string newName)
         {
+            EnsureCompanionOwnership();
             if (_companionNview == null || _companionNview.GetZDO() == null) return;
             _companionNview.GetZDO().Set(CompanionSetup.NameHash, newName);
             if (_companionChar != null)
                 _companionChar.m_name = string.IsNullOrEmpty(newName) ? "Companion" : newName;
+        }
+
+        private void EnsureCompanionOwnership()
+        {
+            if (_companionNview == null || _companionNview.GetZDO() == null) return;
+            if (!_companionNview.IsOwner())
+                _companionNview.ClaimOwnership();
         }
 
         // ══════════════════════════════════════════════════════════════════════
@@ -1269,7 +1305,7 @@ namespace Companions
                 float pct   = maxHp > 0f ? hp / maxHp : 0f;
                 _healthFill.GetComponent<RectTransform>().anchorMax = new Vector2(pct, 1f);
                 if (_healthText != null)
-                    _healthText.text = $"{Mathf.CeilToInt(hp)} / {Mathf.CeilToInt(maxHp)}";
+                    _healthText.text = $"Health: {Mathf.CeilToInt(hp)} / {Mathf.CeilToInt(maxHp)}";
             }
 
             if (_companionStamina != null && _staminaFill != null)
@@ -1279,7 +1315,37 @@ namespace Companions
                 float max = _companionStamina.MaxStamina;
                 _staminaFill.GetComponent<RectTransform>().anchorMax = new Vector2(pct, 1f);
                 if (_staminaText != null)
-                    _staminaText.text = $"{Mathf.CeilToInt(cur)} / {Mathf.CeilToInt(max)}";
+                    _staminaText.text = $"Stamina: {Mathf.CeilToInt(cur)} / {Mathf.CeilToInt(max)}";
+            }
+
+            if (_companionFood != null && _eitrFill != null)
+            {
+                float eitr = _companionFood.TotalEitrBonus;
+                float maxEitr = eitr; // Eitr has no base — just food bonus
+                float pct = maxEitr > 0f ? 1f : 0f;
+                _eitrFill.GetComponent<RectTransform>().anchorMax = new Vector2(pct, 1f);
+                if (_eitrText != null)
+                    _eitrText.text = $"Eitr: {Mathf.RoundToInt(eitr)}";
+            }
+
+            if (_companionHumanoid != null && _weightFill != null)
+            {
+                var inv = _companionHumanoid.GetInventory();
+                if (inv != null)
+                {
+                    float weight = inv.GetTotalWeight();
+                    float maxWeight = CompanionTierData.MaxCarryWeight;
+                    float pct = maxWeight > 0f ? Mathf.Clamp01(weight / maxWeight) : 0f;
+                    _weightFill.GetComponent<RectTransform>().anchorMax = new Vector2(pct, 1f);
+                    if (_weightText != null)
+                        _weightText.text = $"Weight: {Mathf.RoundToInt(weight)} / {Mathf.RoundToInt(maxWeight)}";
+                }
+            }
+
+            if (_companion != null && _armorText != null)
+            {
+                float armor = _companion.GetTotalArmor();
+                _armorText.text = $"Armor: {Mathf.RoundToInt(armor)}";
             }
         }
 
@@ -1303,6 +1369,7 @@ namespace Companions
                 _slotIcons[i].enabled   = false;
                 _slotCounts[i].enabled  = false;
                 _slotBorders[i].enabled = false;
+                _slotBgs[i].color       = SlotTint;
             }
             if (_foodSlotIcons != null && _foodSlotCounts != null)
             {
@@ -1320,40 +1387,128 @@ namespace Companions
                 int flatIndex = gy * GridCols + gx;
                 if (flatIndex < 0 || flatIndex >= GridSlots) continue;
 
-                if (flatIndex < FoodSlotCount)
+                _slotIcons[flatIndex].sprite  = item.GetIcon();
+                _slotIcons[flatIndex].enabled = true;
+
+                if (item?.m_shared != null && item.m_shared.m_maxStackSize > 1)
                 {
-                    if (_foodSlotIcons == null || _foodSlotCounts == null) continue;
-
-                    _foodSlotIcons[flatIndex].sprite  = item.GetIcon();
-                    _foodSlotIcons[flatIndex].enabled = true;
-                    if (item.m_stack > 1)
-                    {
-                        _foodSlotCounts[flatIndex].text    = item.m_stack.ToString();
-                        _foodSlotCounts[flatIndex].enabled = true;
-                    }
-                    continue;
-                }
-
-                int idx = flatIndex - FoodSlotCount;
-                if (idx < 0 || idx >= MainGridSlots) continue;
-
-                _slotIcons[idx].sprite  = item.GetIcon();
-                _slotIcons[idx].enabled = true;
-
-                if (item.m_stack > 1)
-                {
-                    _slotCounts[idx].text    = item.m_stack.ToString();
-                    _slotCounts[idx].enabled = true;
+                    _slotCounts[flatIndex].text    = FormatStackSize(item);
+                    _slotCounts[flatIndex].enabled = true;
                 }
 
                 if (_companionHumanoid.IsItemEquiped(item))
-                    _slotBorders[idx].enabled = true;
+                {
+                    _slotBorders[flatIndex].enabled = true;
+                    _slotBgs[flatIndex].color = EquippedSlotTint;
+                }
             }
+
+            RefreshFoodSlots(inv);
+        }
+
+        private void RefreshFoodSlots(Inventory inv)
+        {
+            if (_foodSlotIcons == null || _foodSlotCounts == null) return;
+
+            for (int i = 0; i < FoodSlotCount; i++)
+            {
+                bool showedActiveFood = false;
+                if (_companionFood != null)
+                {
+                    var activeFood = _companionFood.GetFood(i);
+                    if (activeFood.IsActive)
+                    {
+                        Sprite icon = ResolveFoodIcon(activeFood, inv);
+                        if (icon != null)
+                        {
+                            _foodSlotIcons[i].sprite = icon;
+                            _foodSlotIcons[i].enabled = true;
+                        }
+
+                        _foodSlotCounts[i].text = FormatFoodDuration(activeFood.RemainingTime);
+                        _foodSlotCounts[i].color = activeFood.RemainingTime >= 60f
+                            ? Color.white
+                            : new Color(1f, 1f, 1f, Mathf.Clamp01(0.4f + Mathf.Sin(Time.time * 10f) * 0.6f));
+                        _foodSlotCounts[i].enabled = true;
+                        showedActiveFood = true;
+                    }
+                }
+
+                if (showedActiveFood) continue;
+
+                var slotted = inv.GetItemAt(i, 0);
+                if (slotted == null) continue;
+                _foodSlotIcons[i].sprite = slotted.GetIcon();
+                _foodSlotIcons[i].enabled = true;
+                if (slotted.m_shared != null && slotted.m_shared.m_maxStackSize > 1)
+                {
+                    _foodSlotCounts[i].text = FormatStackSize(slotted);
+                    _foodSlotCounts[i].color = Color.white;
+                    _foodSlotCounts[i].enabled = true;
+                }
+            }
+        }
+
+        private static string FormatStackSize(ItemDrop.ItemData item)
+        {
+            if (item == null || item.m_shared == null) return "";
+            int current = Mathf.Max(0, item.m_stack);
+            int max = Mathf.Max(1, item.m_shared.m_maxStackSize);
+            return current.ToString(CultureInfo.InvariantCulture) + "/" +
+                   max.ToString(CultureInfo.InvariantCulture);
+        }
+
+        private static Sprite ResolveFoodIcon(CompanionFood.FoodEffect food, Inventory inv)
+        {
+            if (inv != null)
+            {
+                foreach (var item in inv.GetAllItems())
+                {
+                    if (item?.m_shared == null) continue;
+                    if (item.m_shared.m_name == food.ItemName)
+                        return item.GetIcon();
+                }
+            }
+
+            if (!string.IsNullOrEmpty(food.ItemPrefabName))
+            {
+                var prefab = ObjectDB.instance?.GetItemPrefab(food.ItemPrefabName);
+                var drop = prefab != null ? prefab.GetComponent<ItemDrop>() : null;
+                if (drop != null) return drop.m_itemData.GetIcon();
+            }
+
+            var all = ObjectDB.instance?.m_items;
+            if (all == null) return null;
+            foreach (var prefab in all)
+            {
+                var drop = prefab != null ? prefab.GetComponent<ItemDrop>() : null;
+                if (drop?.m_itemData?.m_shared == null) continue;
+                if (drop.m_itemData.m_shared.m_name == food.ItemName)
+                    return drop.m_itemData.GetIcon();
+            }
+
+            return null;
+        }
+
+        private static string FormatFoodDuration(float remainingSeconds)
+        {
+            if (remainingSeconds >= 60f)
+                return Mathf.CeilToInt(remainingSeconds / 60f) + "m";
+            return Mathf.Max(0, Mathf.FloorToInt(remainingSeconds)) + "s";
         }
 
         // ══════════════════════════════════════════════════════════════════════
         //  Preview camera
         // ══════════════════════════════════════════════════════════════════════
+
+        private Animator _cloneAnimator;
+        private Animator _sourceAnimator;
+        private AnimatorCullingMode _savedSourceCullingMode;
+        private bool _sourceCullingOverridden;
+        private Vector3 _previewCenter = PreviewPos + Vector3.up * 0.95f;
+        private float _previewDistance = 2.8f;
+        private float _previewBoundsTimer;
+        private const float PreviewBoundsRefreshInterval = 0.5f;
 
         private void SetupPreviewClone()
         {
@@ -1365,16 +1520,32 @@ namespace Companions
             finally { ZNetView.m_forceDisableInit = false; }
 
             _clone.name = "HC_InteractPreviewClone";
+            _clone.transform.position = PreviewPos;
 
             var rb = _clone.GetComponent<Rigidbody>();
             if (rb != null) UnityEngine.Object.Destroy(rb);
+
+            // Disable all MonoBehaviours except VisEquipment
             foreach (var mb in _clone.GetComponentsInChildren<MonoBehaviour>(true))
             {
                 if (mb is VisEquipment) continue;
                 mb.enabled = false;
             }
-            foreach (var anim in _clone.GetComponentsInChildren<Animator>())
-                anim.updateMode = AnimatorUpdateMode.Normal;
+            foreach (var renderer in _clone.GetComponentsInChildren<Renderer>(true))
+                renderer.enabled = true;
+
+            // Re-enable and configure the Animator for live animation sync
+            _cloneAnimator  = _clone.GetComponentInChildren<Animator>();
+            _sourceAnimator = _companion.GetComponentInChildren<Animator>();
+            if (_cloneAnimator != null)
+            {
+                _cloneAnimator.enabled    = true;
+                _cloneAnimator.updateMode = AnimatorUpdateMode.Normal;
+                _cloneAnimator.cullingMode = AnimatorCullingMode.AlwaysAnimate;
+                _cloneAnimator.applyRootMotion = false;
+                _cloneAnimator.Rebind();
+            }
+            OverrideSourceAnimatorCulling();
 
             int charLayer = LayerMask.NameToLayer("character");
             if (charLayer < 0) charLayer = 9;
@@ -1383,15 +1554,99 @@ namespace Companions
 
             SetupLightRig();
 
-            Vector3 center = PreviewPos + Vector3.up * 0.9f;
-            _camGO.transform.position = center + new Vector3(0f, 0.3f, 5.0f);
-            _camGO.transform.LookAt(center);
+            SyncPreviewEquipment();
+            SyncPreviewAnimation();
+            _previewBoundsTimer = 0f;
+            RecalculatePreviewBounds();
+            UpdatePreviewCamera();
+            LockPreviewCloneFacing();
+        }
+
+        private void SyncPreviewAnimation()
+        {
+            EnsurePreviewAnimators();
+            if (_cloneAnimator == null || _sourceAnimator == null) return;
+            if (!_sourceAnimator.isInitialized) return;
+            if (!_cloneAnimator.isInitialized) _cloneAnimator.Rebind();
+
+            // Copy all animator parameters from live companion to clone
+            for (int i = 0; i < _sourceAnimator.parameterCount; i++)
+            {
+                var param = _sourceAnimator.GetParameter(i);
+                switch (param.type)
+                {
+                    case AnimatorControllerParameterType.Float:
+                        _cloneAnimator.SetFloat(param.nameHash, _sourceAnimator.GetFloat(param.nameHash));
+                        break;
+                    case AnimatorControllerParameterType.Int:
+                        _cloneAnimator.SetInteger(param.nameHash, _sourceAnimator.GetInteger(param.nameHash));
+                        break;
+                    case AnimatorControllerParameterType.Bool:
+                        _cloneAnimator.SetBool(param.nameHash, _sourceAnimator.GetBool(param.nameHash));
+                        break;
+                }
+            }
+
+            _cloneAnimator.speed = _sourceAnimator.speed;
+
+            // Sync all layers so upper-body actions (eat/equip/attack) stay live.
+            int layers = Mathf.Min(_sourceAnimator.layerCount, _cloneAnimator.layerCount);
+            for (int layer = 0; layer < layers; layer++)
+            {
+                _cloneAnimator.SetLayerWeight(layer, _sourceAnimator.GetLayerWeight(layer));
+                var state = _sourceAnimator.GetCurrentAnimatorStateInfo(layer);
+                _cloneAnimator.Play(state.fullPathHash, layer, state.normalizedTime);
+            }
+            _cloneAnimator.Update(0f);
+        }
+
+        private void EnsurePreviewAnimators()
+        {
+            if (_cloneAnimator == null && _clone != null)
+            {
+                _cloneAnimator = _clone.GetComponentInChildren<Animator>(true);
+                if (_cloneAnimator != null)
+                {
+                    _cloneAnimator.enabled = true;
+                    _cloneAnimator.updateMode = AnimatorUpdateMode.Normal;
+                    _cloneAnimator.cullingMode = AnimatorCullingMode.AlwaysAnimate;
+                    _cloneAnimator.applyRootMotion = false;
+                }
+            }
+
+            if (_sourceAnimator == null && _companion != null)
+            {
+                _sourceAnimator = _companion.GetComponentInChildren<Animator>(true);
+                OverrideSourceAnimatorCulling();
+            }
+        }
+
+        private void OverrideSourceAnimatorCulling()
+        {
+            if (_sourceCullingOverridden || _sourceAnimator == null) return;
+            _savedSourceCullingMode = _sourceAnimator.cullingMode;
+            _sourceAnimator.cullingMode = AnimatorCullingMode.AlwaysAnimate;
+            _sourceCullingOverridden = true;
+        }
+
+        private void RestoreSourceAnimatorCulling()
+        {
+            if (!_sourceCullingOverridden) return;
+            if (_sourceAnimator != null)
+                _sourceAnimator.cullingMode = _savedSourceCullingMode;
+            _sourceCullingOverridden = false;
         }
 
         private void ClearPreviewClone()
         {
+            RestoreSourceAnimatorCulling();
             if (_lightRig != null) { UnityEngine.Object.Destroy(_lightRig); _lightRig = null; }
             if (_clone    != null) { UnityEngine.Object.Destroy(_clone);    _clone    = null; }
+            _cloneAnimator  = null;
+            _sourceAnimator = null;
+            _previewCenter = PreviewPos + Vector3.up * 0.95f;
+            _previewDistance = 2.8f;
+            _previewBoundsTimer = 0f;
         }
 
         private void SetupLightRig()
@@ -1452,49 +1707,73 @@ namespace Companions
             if (fi != null) fi.SetValue(dst, fi.GetValue(src));
         }
 
-        private void UpdatePreviewRotation()
+        private void LockPreviewCloneFacing()
         {
-            if (_previewImg == null || !_previewImg.gameObject.activeInHierarchy) return;
+            if (_clone == null) return;
 
-            if (!_dragging && Input.GetMouseButtonDown(0))
-            {
-                if (RectTransformUtility.RectangleContainsScreenPoint(
-                        _previewImg.rectTransform, Input.mousePosition, null))
-                {
-                    _dragging   = true;
-                    _lastMouseX = Input.mousePosition.x;
-                }
-            }
-
-            if (_dragging)
-            {
-                if (Input.GetMouseButton(0))
-                {
-                    float delta = Input.mousePosition.x - _lastMouseX;
-                    _rotation   = (_rotation + delta * DragSensitivity) % 360f;
-                    _lastMouseX = Input.mousePosition.x;
-                }
-                else _dragging = false;
-            }
-            else
-            {
-                _rotation = (_rotation + AutoRotSpeed * Time.deltaTime) % 360f;
-            }
+            _clone.transform.position = PreviewPos;
+            _clone.transform.rotation = Quaternion.LookRotation(Vector3.forward, Vector3.up);
         }
 
         private void UpdatePreviewCamera()
         {
             if (_camGO == null) return;
-            Vector3 center = PreviewPos + Vector3.up * 0.9f;
-            float   rad    = _rotation * Mathf.Deg2Rad;
-            Vector3 offset = new Vector3(Mathf.Sin(rad), 0.3f, Mathf.Cos(rad)) * 5.0f;
-            _camGO.transform.position = center + offset;
-            _camGO.transform.LookAt(center);
+            Vector3 offset = PreviewCameraOffsetDir * _previewDistance;
+            _camGO.transform.position = _previewCenter + offset;
+            _camGO.transform.LookAt(_previewCenter);
+        }
+
+        private void UpdatePreviewBounds()
+        {
+            if (_clone == null || _cam == null) return;
+            _previewBoundsTimer -= Time.deltaTime;
+            if (_previewBoundsTimer > 0f) return;
+            _previewBoundsTimer = PreviewBoundsRefreshInterval;
+            RecalculatePreviewBounds();
+        }
+
+        private void RecalculatePreviewBounds()
+        {
+            if (_clone == null || _cam == null) return;
+
+            bool hasBounds = false;
+            Bounds bounds = default;
+            foreach (var renderer in _clone.GetComponentsInChildren<Renderer>(true))
+            {
+                if (renderer == null || !renderer.enabled) continue;
+                if (!hasBounds)
+                {
+                    bounds = renderer.bounds;
+                    hasBounds = true;
+                }
+                else
+                {
+                    bounds.Encapsulate(renderer.bounds);
+                }
+            }
+
+            if (!hasBounds)
+            {
+                _previewCenter = PreviewPos + Vector3.up * 0.95f;
+                _previewDistance = 2.8f;
+                return;
+            }
+
+            _previewCenter = bounds.center + Vector3.up * (bounds.extents.y * 0.05f);
+            float radius = Mathf.Max(0.5f, bounds.extents.magnitude * 0.95f);
+            float aspect = (_rt != null && _rt.height > 0) ? (float)_rt.width / _rt.height : 1f;
+            float halfFovV = _cam.fieldOfView * 0.5f * Mathf.Deg2Rad;
+            float halfFovH = Mathf.Atan(Mathf.Tan(halfFovV) * aspect);
+            float limitingHalfFov = Mathf.Min(halfFovV, halfFovH);
+            float safeHalfFov = Mathf.Max(0.2f, limitingHalfFov);
+
+            _previewDistance = Mathf.Clamp(radius / Mathf.Sin(safeHalfFov), 1.6f, 4.8f);
+            _cam.farClipPlane = Mathf.Max(10f, _previewDistance + 8f);
         }
 
         private void RenderPreview()
         {
-            if (_cam == null) return;
+            if (_cam == null || _clone == null) return;
             _savedAmbient          = RenderSettings.ambientLight;
             _savedAmbientIntensity = RenderSettings.ambientIntensity;
             _savedAmbientMode      = RenderSettings.ambientMode;
@@ -1530,8 +1809,12 @@ namespace Companions
             _sliderBgSprite = null;
             if (_healthBarGradientSprite != null) { UnityEngine.Object.Destroy(_healthBarGradientSprite); _healthBarGradientSprite = null; }
             if (_staminaBarGradientSprite != null) { UnityEngine.Object.Destroy(_staminaBarGradientSprite); _staminaBarGradientSprite = null; }
+            if (_eitrBarGradientSprite != null) { UnityEngine.Object.Destroy(_eitrBarGradientSprite); _eitrBarGradientSprite = null; }
+            if (_weightBarGradientSprite != null) { UnityEngine.Object.Destroy(_weightBarGradientSprite); _weightBarGradientSprite = null; }
             if (_healthBarGradientTex != null) { UnityEngine.Object.Destroy(_healthBarGradientTex); _healthBarGradientTex = null; }
             if (_staminaBarGradientTex != null) { UnityEngine.Object.Destroy(_staminaBarGradientTex); _staminaBarGradientTex = null; }
+            if (_eitrBarGradientTex != null) { UnityEngine.Object.Destroy(_eitrBarGradientTex); _eitrBarGradientTex = null; }
+            if (_weightBarGradientTex != null) { UnityEngine.Object.Destroy(_weightBarGradientTex); _weightBarGradientTex = null; }
         }
 
         // ══════════════════════════════════════════════════════════════════════
@@ -1619,4 +1902,7 @@ namespace Companions
         }
     }
 }
+
+
+
 

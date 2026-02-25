@@ -9,7 +9,7 @@ namespace Companions
 {
     public class CompanionPanel
     {
-        private const float UiScale = 1.25f;
+        private const float UiScale = 1.0f;
 
         public GameObject Root { get; private set; }
 
@@ -21,12 +21,12 @@ namespace Companions
         private GameObject     _clone;
         private GameObject     _lightRig;
         private RawImage       _previewImg;
-
-        private float _rotation;
-        private bool  _dragging;
-        private float _lastMouseX;
-        private const float AutoRotSpeed    = 15f;
-        private const float DragSensitivity = 0.4f;
+        private static readonly Vector3 PreviewCameraOffsetDir =
+            new Vector3(0f, 0.18f, 1f).normalized;
+        private Vector3 _previewCenter = PreviewPos + Vector3.up * 0.95f;
+        private float   _previewDistance = 3.6f;
+        private float   _previewBoundsTimer;
+        private const float PreviewBoundsRefreshInterval = 0.5f;
 
         // Ambient override state
         private Color                             _savedAmbient;
@@ -314,7 +314,7 @@ namespace Companions
 
             _previewImg               = imgGO.AddComponent<RawImage>();
             _previewImg.color         = Color.white;
-            _previewImg.raycastTarget = true; // needed for drag-to-rotate
+            _previewImg.raycastTarget = false;
 
             // RenderTexture — proportional to column dimensions, not square
             int rtScale = 4;
@@ -475,8 +475,9 @@ namespace Companions
 
         public void UpdatePerFrame()
         {
-            UpdatePreviewRotation();
+            UpdatePreviewBounds();
             UpdatePreviewCamera();
+            LockPreviewCloneFacing();
             RefreshBankDisplay();
 
             if (_cam == null) return;
@@ -545,17 +546,24 @@ namespace Companions
 
             SetupLightRig();
 
-            Vector3 center = PreviewPos + Vector3.up * 0.9f;
-            _camGO.transform.position = center + new Vector3(0f, 0.3f, 5.0f);
-            _camGO.transform.LookAt(center);
+            _previewBoundsTimer = 0f;
+            RecalculatePreviewBounds();
+            UpdatePreviewCamera();
+            LockPreviewCloneFacing();
 
             ApplyCurrentToClone();
+            RecalculatePreviewBounds();
+            UpdatePreviewCamera();
+            LockPreviewCloneFacing();
         }
 
         private void ClearPreviewClone()
         {
             if (_lightRig != null) { UnityEngine.Object.Destroy(_lightRig); _lightRig = null; }
             if (_clone    != null) { UnityEngine.Object.Destroy(_clone);    _clone    = null; }
+            _previewCenter = PreviewPos + Vector3.up * 0.95f;
+            _previewDistance = 3.6f;
+            _previewBoundsTimer = 0f;
         }
 
         private void SetupLightRig()
@@ -592,51 +600,68 @@ namespace Companions
             lt.cullingMask = mask;
         }
 
-        // ═════════════════════════════════════════════════════════════════════
-        //  Preview rotation
-        // ═════════════════════════════════════════════════════════════════════
-
-        private void UpdatePreviewRotation()
-        {
-            if (_previewImg == null || !_previewImg.gameObject.activeInHierarchy) return;
-
-            if (!_dragging && Input.GetMouseButtonDown(0))
-            {
-                if (RectTransformUtility.RectangleContainsScreenPoint(
-                        _previewImg.rectTransform, Input.mousePosition, null))
-                {
-                    _dragging   = true;
-                    _lastMouseX = Input.mousePosition.x;
-                }
-            }
-
-            if (_dragging)
-            {
-                if (Input.GetMouseButton(0))
-                {
-                    float delta = Input.mousePosition.x - _lastMouseX;
-                    _rotation   = (_rotation + delta * DragSensitivity) % 360f;
-                    _lastMouseX = Input.mousePosition.x;
-                }
-                else
-                {
-                    _dragging = false;
-                }
-            }
-            else
-            {
-                _rotation = (_rotation + AutoRotSpeed * Time.deltaTime) % 360f;
-            }
-        }
-
         private void UpdatePreviewCamera()
         {
             if (_camGO == null) return;
-            Vector3 center = PreviewPos + Vector3.up * 0.9f;
-            float   rad    = _rotation * Mathf.Deg2Rad;
-            Vector3 offset = new Vector3(Mathf.Sin(rad), 0.3f, Mathf.Cos(rad)) * 5.0f;
-            _camGO.transform.position = center + offset;
-            _camGO.transform.LookAt(center);
+            Vector3 offset = PreviewCameraOffsetDir * _previewDistance;
+            _camGO.transform.position = _previewCenter + offset;
+            _camGO.transform.LookAt(_previewCenter);
+        }
+
+        private void LockPreviewCloneFacing()
+        {
+            if (_clone == null) return;
+
+            _clone.transform.position = PreviewPos;
+            _clone.transform.rotation = Quaternion.LookRotation(Vector3.forward, Vector3.up);
+        }
+
+        private void UpdatePreviewBounds()
+        {
+            if (_clone == null || _cam == null) return;
+            _previewBoundsTimer -= Time.deltaTime;
+            if (_previewBoundsTimer > 0f) return;
+            _previewBoundsTimer = PreviewBoundsRefreshInterval;
+            RecalculatePreviewBounds();
+        }
+
+        private void RecalculatePreviewBounds()
+        {
+            if (_clone == null || _cam == null) return;
+
+            bool hasBounds = false;
+            Bounds bounds = default;
+            foreach (var renderer in _clone.GetComponentsInChildren<Renderer>(true))
+            {
+                if (renderer == null || !renderer.enabled) continue;
+                if (!hasBounds)
+                {
+                    bounds = renderer.bounds;
+                    hasBounds = true;
+                }
+                else
+                {
+                    bounds.Encapsulate(renderer.bounds);
+                }
+            }
+
+            if (!hasBounds)
+            {
+                _previewCenter = PreviewPos + Vector3.up * 0.95f;
+                _previewDistance = 3.6f;
+                return;
+            }
+
+            _previewCenter = bounds.center + Vector3.up * (bounds.extents.y * 0.05f);
+            float radius = Mathf.Max(0.6f, bounds.extents.magnitude * 1.05f);
+            float aspect = (_rt != null && _rt.height > 0) ? (float)_rt.width / _rt.height : 1f;
+            float halfFovV = _cam.fieldOfView * 0.5f * Mathf.Deg2Rad;
+            float halfFovH = Mathf.Atan(Mathf.Tan(halfFovV) * aspect);
+            float limitingHalfFov = Mathf.Min(halfFovV, halfFovH);
+            float safeHalfFov = Mathf.Max(0.2f, limitingHalfFov);
+
+            _previewDistance = Mathf.Clamp(radius / Mathf.Sin(safeHalfFov), 2.2f, 6f);
+            _cam.farClipPlane = Mathf.Max(10f, _previewDistance + 8f);
         }
 
         // ═════════════════════════════════════════════════════════════════════
