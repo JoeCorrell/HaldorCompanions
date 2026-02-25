@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using UnityEngine;
 
 namespace Companions
@@ -13,6 +14,7 @@ namespace Companions
         private Character        _character;
         private MonsterAI        _ai;
         private CompanionStamina _stamina;
+        private CompanionBrain   _brain;
         private ZSyncAnimation   _zanim;
 
         private bool  _isSitting;
@@ -25,6 +27,10 @@ namespace Companions
         private const float HealInterval  = 0.5f;
         private const float PlayerRange   = 5f;
         private const float FireRange     = 5f;
+        private const int FireScanBufferSize = 48;
+
+        private readonly Collider[] _fireScanBuffer = new Collider[FireScanBufferSize];
+        private readonly HashSet<int> _seenFireIds = new HashSet<int>();
 
         private void Awake()
         {
@@ -32,6 +38,7 @@ namespace Companions
             _character = GetComponent<Character>();
             _ai        = GetComponent<MonsterAI>();
             _stamina   = GetComponent<CompanionStamina>();
+            _brain     = GetComponent<CompanionBrain>();
             _zanim     = GetComponent<ZSyncAnimation>();
         }
 
@@ -124,6 +131,12 @@ namespace Companions
             if (player == null) { shouldStop = true; }
             else
             {
+                int mode = _nview?.GetZDO()?.GetInt(
+                    CompanionSetup.ActionModeHash, CompanionSetup.ModeFollow)
+                    ?? CompanionSetup.ModeFollow;
+                if (mode != CompanionSetup.ModeFollow)
+                    shouldStop = true;
+
                 // Player stopped sitting (static members)
                 if (Player.LastEmote == null ||
                     !Player.LastEmote.Equals("sit", StringComparison.OrdinalIgnoreCase) ||
@@ -178,28 +191,66 @@ namespace Companions
             // Disable resting bonus
             if (_stamina != null) _stamina.IsResting = false;
 
-            // Resume following player
-            if (_ai != null && Player.m_localPlayer != null)
+            if (_ai == null) return;
+
+            int mode = _nview?.GetZDO()?.GetInt(
+                CompanionSetup.ActionModeHash, CompanionSetup.ModeFollow)
+                ?? CompanionSetup.ModeFollow;
+
+            if (mode == CompanionSetup.ModeStay)
+            {
+                _ai.SetFollowTarget(null);
+                _ai.SetPatrolPoint();
+            }
+            else if (Player.m_localPlayer != null)
+            {
                 _ai.SetFollowTarget(Player.m_localPlayer.gameObject);
+            }
         }
 
         // ── Helpers ────────────────────────────────────────────────────────
 
         private GameObject FindNearbyFire()
         {
-            // Search for burning fireplaces within range
-            foreach (var fp in FindObjectsByType<Fireplace>(FindObjectsSortMode.None))
+            Vector3 center = transform.position;
+            float rangeSq = FireRange * FireRange;
+
+            int hitCount = Physics.OverlapSphereNonAlloc(
+                center, FireRange, _fireScanBuffer);
+            Collider[] colliders = _fireScanBuffer;
+            int colliderCount = hitCount;
+            if (colliderCount > FireScanBufferSize) colliderCount = FireScanBufferSize;
+
+            _seenFireIds.Clear();
+
+            Fireplace nearest = null;
+            float nearestSq = float.MaxValue;
+
+            for (int i = 0; i < colliderCount; i++)
             {
+                var col = colliders[i];
+                if (col == null) continue;
+
+                var fp = col.GetComponentInParent<Fireplace>();
                 if (fp == null || !fp.IsBurning()) continue;
-                float dist = Vector3.Distance(transform.position, fp.transform.position);
-                if (dist <= FireRange)
-                    return fp.gameObject;
+                if (!_seenFireIds.Add(fp.GetInstanceID())) continue;
+
+                float distSq = (fp.transform.position - center).sqrMagnitude;
+                if (distSq > rangeSq || distSq >= nearestSq) continue;
+
+                nearest = fp;
+                nearestSq = distSq;
             }
-            return null;
+
+            return nearest != null ? nearest.gameObject : null;
         }
 
         private bool HasEnemyNearby()
         {
+            if (_brain != null && _brain.Enemies != null)
+                return _brain.Enemies.NearestEnemy != null &&
+                       _brain.Enemies.NearestEnemyDist < 15f;
+
             if (_character == null) return false;
             foreach (var c in Character.GetAllCharacters())
             {

@@ -110,8 +110,8 @@ namespace Companions
         private Humanoid         _companionHumanoid;
         private ZNetView         _companionNview;
         private MonsterAI        _companionAI;
-        private CompanionAI      _companionCAI;
-        private CompanionHarvest _companionHarvest;
+        private CompanionBrain      _companionBrain;
+        private HarvestController   _companionHarvest;
 
         // ── UI elements ──────────────────────────────────────────────────────
         private GameObject      _root;
@@ -196,8 +196,8 @@ namespace Companions
             _companionHumanoid = companion.GetComponent<Humanoid>();
             _companionNview    = companion.GetComponent<ZNetView>();
             _companionAI       = companion.GetComponent<MonsterAI>();
-            _companionCAI      = companion.GetComponent<CompanionAI>();
-            _companionHarvest  = companion.GetComponent<CompanionHarvest>();
+            _companionBrain    = companion.GetComponent<CompanionBrain>();
+            _companionHarvest  = companion.GetComponent<HarvestController>();
             EnsureCompanionOwnership();
 
             // Rebuild if destroyed (scene change) or never built
@@ -251,7 +251,7 @@ namespace Companions
             _companionHumanoid = null;
             _companionNview    = null;
             _companionAI       = null;
-            _companionCAI      = null;
+            _companionBrain    = null;
             _companionHarvest  = null;
         }
 
@@ -490,6 +490,7 @@ namespace Companions
             modeRT.sizeDelta        = new Vector2(0f, 16f);
             modeRT.anchoredPosition = new Vector2(0f, -14f);
 
+            ApplyFallbackFont(_root.transform, font);
             _root.SetActive(false);
             _built = true;
         }
@@ -1183,10 +1184,12 @@ namespace Companions
                 mode = CompanionSetup.ModeFollow;
 
             EnsureCompanionOwnership();
+            int oldMode = _activeMode;
             _activeMode = mode;
             if (_companionNview != null && _companionNview.GetZDO() != null)
                 _companionNview.GetZDO().Set(CompanionSetup.ActionModeHash, mode);
 
+            _companionBrain?.OnActionModeChanged(oldMode, mode);
             _companionHarvest?.NotifyActionModeChanged();
             ApplyActionMode();
             RefreshActionButtons();
@@ -1256,17 +1259,17 @@ namespace Companions
 
         private void ToggleAutoPickup()
         {
-            if (_companionCAI == null) return;
+            if (_companionBrain == null || _companionBrain.Pickup == null) return;
             EnsureCompanionOwnership();
-            bool newState = !_companionCAI.AutoPickupEnabled;
-            _companionCAI.AutoPickupEnabled = newState;
+            bool newState = !_companionBrain.Pickup.Enabled;
+            _companionBrain.Pickup.Enabled = newState;
             RefreshAutoPickupButton();
         }
 
         private void RefreshAutoPickupButton()
         {
             if (_autoPickupBtn == null) return;
-            bool on = _companionCAI != null && _companionCAI.AutoPickupEnabled;
+            bool on = _companionBrain != null && _companionBrain.Pickup != null && _companionBrain.Pickup.Enabled;
             var txt = _autoPickupBtn.GetComponentInChildren<TMP_Text>(true);
             if (txt != null) txt.text = on ? "Auto Pickup: ON" : "Auto Pickup: OFF";
             SetBtnHighlight(_autoPickupBtn, on);
@@ -1821,11 +1824,53 @@ namespace Companions
         //  Helpers
         // ══════════════════════════════════════════════════════════════════════
 
+        private static bool IsBrokenTmpFont(TMP_FontAsset font)
+        {
+            return font == null ||
+                   font.name.IndexOf("LiberationSans", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
         private static TMP_FontAsset GetFont()
         {
-            if (InventoryGui.instance == null) return null;
-            var tmp = InventoryGui.instance.GetComponentInChildren<TextMeshProUGUI>(true);
-            return tmp != null ? tmp.font : null;
+            if (InventoryGui.instance != null)
+            {
+                var texts = InventoryGui.instance.GetComponentsInChildren<TextMeshProUGUI>(true);
+                for (int i = 0; i < texts.Length; i++)
+                {
+                    var text = texts[i];
+                    if (text == null || IsBrokenTmpFont(text.font)) continue;
+                    return text.font;
+                }
+            }
+
+            if (!IsBrokenTmpFont(TMP_Settings.defaultFontAsset))
+                return TMP_Settings.defaultFontAsset;
+
+            var fonts = Resources.FindObjectsOfTypeAll<TMP_FontAsset>();
+            TMP_FontAsset best = null;
+            for (int i = 0; i < fonts.Length; i++)
+            {
+                var font = fonts[i];
+                if (IsBrokenTmpFont(font)) continue;
+                string name = font.name.ToLowerInvariant();
+                if (name.Contains("averia") || name.Contains("norse") || name.Contains("valheim"))
+                    return font;
+                if (best == null) best = font;
+            }
+
+            return best;
+        }
+
+        private static void ApplyFallbackFont(Transform root, TMP_FontAsset font)
+        {
+            if (root == null || IsBrokenTmpFont(font)) return;
+            var texts = root.GetComponentsInChildren<TMP_Text>(true);
+            for (int i = 0; i < texts.Length; i++)
+            {
+                var text = texts[i];
+                if (text == null || !IsBrokenTmpFont(text.font)) continue;
+                text.font = font;
+            }
         }
 
         private static TextMeshProUGUI MakeText(Transform parent, string name, string text,

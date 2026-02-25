@@ -153,8 +153,10 @@ namespace Companions
 
             string owner   = zdo.GetString(OwnerHash, "");
             string localId = Player.m_localPlayer.GetPlayerID().ToString();
-            if (owner == localId)
-                _ai.SetFollowTarget(Player.m_localPlayer.gameObject);
+            if (owner != localId) return;
+
+            int mode = zdo.GetInt(ActionModeHash, ModeFollow);
+            ApplyFollowMode(mode);
         }
 
         // ──────────────────────────────────────────────────────────────────────
@@ -169,6 +171,13 @@ namespace Companions
             if (owner != localId) return;
 
             int mode = zdo.GetInt(ActionModeHash, ModeFollow);
+            ApplyFollowMode(mode);
+        }
+
+        private void ApplyFollowMode(int mode)
+        {
+            if (_ai == null) return;
+
             switch (mode)
             {
                 case ModeFollow:
@@ -242,8 +251,9 @@ namespace Companions
             var items = inv.GetAllItems();
 
             // Find best item per slot by damage/armor value
-            ItemDrop.ItemData bestRight    = null;  float bestRightDmg    = 0f;
-            ItemDrop.ItemData best2H       = null;  float best2HDmg       = 0f;
+            ItemDrop.ItemData bestRight    = null;  float bestRightDmg    = float.MinValue;
+            ItemDrop.ItemData best2H       = null;  float best2HDmg       = float.MinValue;
+            ItemDrop.ItemData bestTool     = null;  float bestToolDmg     = float.MinValue;
             ItemDrop.ItemData bestShield   = null;  float bestShieldBlock  = 0f;
             ItemDrop.ItemData bestChest    = null;  float bestChestArmor   = 0f;
             ItemDrop.ItemData bestLegs     = null;  float bestLegsArmor    = 0f;
@@ -253,7 +263,8 @@ namespace Companions
 
             foreach (var item in items)
             {
-                if (_humanoid.IsItemEquiped(item)) continue;
+                if (item == null || item.m_shared == null) continue;
+                if (item.m_shared.m_useDurability && item.m_durability <= 0f) continue;
 
                 var type = item.m_shared.m_itemType;
                 float dmg = item.GetDamage().GetTotalDamage();
@@ -263,7 +274,6 @@ namespace Companions
                 {
                     case ItemDrop.ItemData.ItemType.OneHandedWeapon:
                     case ItemDrop.ItemData.ItemType.Torch:
-                    case ItemDrop.ItemData.ItemType.Tool:
                         if (dmg > bestRightDmg)
                         {
                             bestRight = item;
@@ -277,6 +287,13 @@ namespace Companions
                         {
                             best2H = item;
                             best2HDmg = dmg;
+                        }
+                        break;
+                    case ItemDrop.ItemData.ItemType.Tool:
+                        if (dmg > bestToolDmg)
+                        {
+                            bestTool = item;
+                            bestToolDmg = dmg;
                         }
                         break;
                     case ItemDrop.ItemData.ItemType.Shield:
@@ -309,41 +326,76 @@ namespace Companions
             var curRight = GetEquipSlot(_rightItemField);
             var curLeft  = GetEquipSlot(_leftItemField);
 
-            if (curRight == null && curLeft == null)
+            bool use2H = best2H != null && (bestRight == null || best2HDmg >= bestRightDmg);
+            var desiredRight = use2H ? best2H : bestRight;
+            if (desiredRight == null) desiredRight = bestTool; // fallback only when no weapon exists
+
+            if (desiredRight != null && curRight != desiredRight)
             {
-                if (best2H != null && (bestRight == null || best2HDmg >= bestRightDmg))
-                    _humanoid.EquipItem(best2H, true);
-                else if (bestRight != null)
-                    _humanoid.EquipItem(bestRight, true);
+                if (curRight != null)
+                    _humanoid.UnequipItem(curRight, false);
+
+                bool desiredIs2H = IsTwoHandedWeapon(desiredRight);
+                if (desiredIs2H && curLeft != null)
+                {
+                    _humanoid.UnequipItem(curLeft, false);
+                    curLeft = null;
+                }
+
+                _humanoid.EquipItem(desiredRight, true);
+                curRight = desiredRight;
             }
-            else if (curRight == null && bestRight != null)
-            {
-                _humanoid.EquipItem(bestRight, true);
-            }
+
+            bool rightIs2H = curRight != null && IsTwoHandedWeapon(curRight);
 
             // Shield: only if left hand is free and no 2H in right
-            if (bestShield != null && GetEquipSlot(_leftItemField) == null)
+            if (!rightIs2H && bestShield != null)
             {
-                var right = GetEquipSlot(_rightItemField);
-                bool rightIs2H = right != null && (
-                    right.m_shared.m_itemType == ItemDrop.ItemData.ItemType.TwoHandedWeapon ||
-                    right.m_shared.m_itemType == ItemDrop.ItemData.ItemType.TwoHandedWeaponLeft ||
-                    right.m_shared.m_itemType == ItemDrop.ItemData.ItemType.Bow);
-                if (!rightIs2H)
+                if (curLeft != bestShield)
+                {
+                    if (curLeft != null)
+                        _humanoid.UnequipItem(curLeft, false);
                     _humanoid.EquipItem(bestShield, true);
+                }
+            }
+            else if (rightIs2H && curLeft != null)
+            {
+                _humanoid.UnequipItem(curLeft, false);
             }
 
-            // Armor slots
-            if (bestChest    != null && GetEquipSlot(_chestItemField)    == null) _humanoid.EquipItem(bestChest,    true);
-            if (bestLegs     != null && GetEquipSlot(_legItemField)      == null) _humanoid.EquipItem(bestLegs,     true);
-            if (bestHelmet   != null && GetEquipSlot(_helmetItemField)   == null) _humanoid.EquipItem(bestHelmet,   true);
-            if (bestShoulder != null && GetEquipSlot(_shoulderItemField) == null) _humanoid.EquipItem(bestShoulder, true);
-            if (bestUtility  != null && GetEquipSlot(_utilityItemField)  == null) _humanoid.EquipItem(bestUtility,  true);
+            // Armor/accessory slots: always converge to best available piece.
+            EquipBestArmorSlot(_chestItemField, bestChest);
+            EquipBestArmorSlot(_legItemField, bestLegs);
+            EquipBestArmorSlot(_helmetItemField, bestHelmet);
+            EquipBestArmorSlot(_shoulderItemField, bestShoulder);
+            EquipBestArmorSlot(_utilityItemField, bestUtility);
         }
 
         internal ItemDrop.ItemData GetEquipSlot(FieldInfo field)
         {
             return field?.GetValue(_humanoid) as ItemDrop.ItemData;
+        }
+
+        private void EquipBestArmorSlot(FieldInfo slotField, ItemDrop.ItemData bestItem)
+        {
+            if (_humanoid == null || slotField == null || bestItem == null) return;
+
+            var equipped = GetEquipSlot(slotField);
+            if (equipped == bestItem) return;
+
+            if (equipped != null)
+                _humanoid.UnequipItem(equipped, false);
+
+            _humanoid.EquipItem(bestItem, true);
+        }
+
+        private static bool IsTwoHandedWeapon(ItemDrop.ItemData item)
+        {
+            if (item == null || item.m_shared == null) return false;
+            var type = item.m_shared.m_itemType;
+            return type == ItemDrop.ItemData.ItemType.TwoHandedWeapon ||
+                   type == ItemDrop.ItemData.ItemType.TwoHandedWeaponLeft ||
+                   type == ItemDrop.ItemData.ItemType.Bow;
         }
 
         /// <summary>Sum of armor from all equipped armor pieces.</summary>

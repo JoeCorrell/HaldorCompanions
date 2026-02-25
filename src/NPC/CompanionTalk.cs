@@ -1,6 +1,3 @@
-using System.Collections.Generic;
-using System.Reflection;
-using HarmonyLib;
 using UnityEngine;
 
 namespace Companions
@@ -15,6 +12,7 @@ namespace Companions
         private Character      _character;
         private Humanoid       _humanoid;
         private CompanionFood  _food;
+        private CompanionBrain _brain;
         private CompanionSetup _setup;
 
         private float _talkTimer;
@@ -62,6 +60,7 @@ namespace Companions
             _character = GetComponent<Character>();
             _humanoid  = GetComponent<Humanoid>();
             _food      = GetComponent<CompanionFood>();
+            _brain     = GetComponent<CompanionBrain>();
             _setup     = GetComponent<CompanionSetup>();
             ResetTimer();
         }
@@ -177,6 +176,10 @@ namespace Companions
 
         private bool HasEnemyNearby()
         {
+            if (_brain != null && _brain.Enemies != null)
+                return _brain.Enemies.NearestEnemy != null &&
+                       _brain.Enemies.NearestEnemyDist < 10f;
+
             if (_character == null) return false;
             foreach (var c in Character.GetAllCharacters())
             {

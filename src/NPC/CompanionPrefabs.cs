@@ -100,11 +100,11 @@ namespace Companions
             // Custom stamina system (base 25 + food bonuses)
             go.AddComponent<CompanionStamina>();
 
-            // Resource harvesting AI (active in Gather modes 1-3)
-            go.AddComponent<CompanionHarvest>();
+            // Central AI coordinator (must be before HarvestController — it reads Tracker/Doors)
+            go.AddComponent<CompanionBrain>();
 
-            // Combat AI (blocking, parrying, tight follow)
-            go.AddComponent<CompanionAI>();
+            // Resource harvesting AI (active in Gather modes 1-3)
+            go.AddComponent<HarvestController>();
 
             // Overhead speech text (context-aware lines like Haldor)
             go.AddComponent<CompanionTalk>();
@@ -182,8 +182,11 @@ namespace Companions
             b.m_idleSoundInterval    = 10f;
             b.m_idleSoundChance      = 0f;
 
+            // Pathfinding — m_moveMinAngle=10 lets companion start moving while
+            // still turning (was 90f which froze movement until fully rotated).
+            // m_jumpInterval=0 matches vanilla — no creature auto-jumps.
             b.m_pathAgentType        = Pathfinding.AgentType.Humanoid;
-            b.m_moveMinAngle         = 90f;
+            b.m_moveMinAngle         = 10f;
             b.m_smoothMovement       = true;
             b.m_serpentMovement      = false;
             b.m_jumpInterval         = 0f;
@@ -192,11 +195,14 @@ namespace Companions
             b.m_randomMoveRange      = 0f;
             b.m_avoidFire            = false;
             b.m_afraidOfFire         = false;
-            b.m_avoidWater           = false;
+            b.m_avoidWater           = true;   // vanilla default — humanoids avoid water
             b.m_aggravatable         = false;
 
-            ai.m_alertRange                        = 15f;
-            ai.m_fleeIfHurtWhenTargetCantBeReached = false;
+            // MonsterAI — match vanilla defaults where possible so native AI works well.
+            // Fulings use all defaults (set in Unity editor, not code). The key is to
+            // NOT override values that vanilla handles correctly on its own.
+            ai.m_alertRange                        = 9999f; // vanilla default — always alert for companions
+            ai.m_fleeIfHurtWhenTargetCantBeReached = true;  // vanilla default — flee gets unstuck
             ai.m_fleeIfNotAlerted                  = false;
             ai.m_fleeIfLowHealth                   = 0f;
             ai.m_circulateWhileCharging            = true;
@@ -205,11 +211,11 @@ namespace Companions
             ai.m_privateAreaTriggerTreshold        = 1;
             ai.m_interceptTimeMax                  = 2f;
             ai.m_interceptTimeMin                  = 0f;
-            ai.m_maxChaseDistance                  = 20f;
-            ai.m_minAttackInterval                 = 2f;
-            ai.m_circleTargetInterval              = 3f;
-            ai.m_circleTargetDuration              = 1f;
-            ai.m_circleTargetDistance              = 4f;
+            ai.m_maxChaseDistance                  = 0f;    // vanilla default 0 = unlimited chase
+            ai.m_minAttackInterval                 = 0f;    // vanilla default 0 = weapon controls timing
+            ai.m_circleTargetInterval              = 0f;    // vanilla default 0 = no pause between circles
+            ai.m_circleTargetDuration              = 5f;    // vanilla default
+            ai.m_circleTargetDistance              = 10f;   // vanilla default
         }
 
         private static EffectList.EffectData[] BuildEffects(ZNetScene scene, params string[] names)

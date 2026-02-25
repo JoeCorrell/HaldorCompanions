@@ -107,15 +107,16 @@ namespace Companions
             float speed = _character != null ? _character.GetVelocity().magnitude : 0f;
             bool hasMoveSpeed = speed > 0.25f;
             bool isSwimming = _character != null && _character.IsSwimming() && hasMoveSpeed;
-            bool isRunning = IsRunning &&
-                             _character != null &&
-                             _character.IsRunning() &&
-                             isMoving &&
-                             hasMoveSpeed &&
-                             speed > (_character.m_walkSpeed * 1.05f) &&
-                             !isSwimming;
+            bool runStateActive = IsRunning &&
+                                  _character != null &&
+                                  isMoving &&
+                                  hasMoveSpeed &&
+                                  !isSwimming;
+            bool isRunning = runStateActive &&
+                             speed > (_character.m_walkSpeed * 1.05f);
 
-            if (!isRunning) IsRunning = false;
+            // Follow patch owns this flag; clear it when movement state no longer matches.
+            if (!runStateActive) IsRunning = false;
 
             // Drain only for active movement states that should consume stamina.
             if ((isRunning || isSwimming) && Stamina > 0f)
