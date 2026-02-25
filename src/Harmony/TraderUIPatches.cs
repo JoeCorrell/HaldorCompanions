@@ -6,7 +6,7 @@ using TMPro;
 using UnityEngine;
 using UnityEngine.UI;
 
-namespace HaldorCompanions
+namespace Companions
 {
     public static class TraderUIPatches
     {
@@ -33,13 +33,11 @@ namespace HaldorCompanions
 
         private static MethodInfo _refreshTabHighlightsMethod;
         private static MethodInfo _updateCategoryFilterVisualsMethod;
-        private static MethodInfo _switchTabMethod;
 
         // ── Our state ──
         private static GameObject _tabCompanions;
         private static CompanionPanel _companionPanel;
         private static bool _reflectionCached;
-        private static int _preUpdateTab = -1;
 
         /// <summary>Dynamic tab index — determined at runtime based on existing tabs.</summary>
         internal static int CompanionTabIndex { get; private set; } = -1;
@@ -50,10 +48,10 @@ namespace HaldorCompanions
         {
             if (_reflectionCached) return;
 
-            _traderUIType = Type.GetType("HaldorOverhaul.TraderUI, HaldorOverhaul");
+            _traderUIType = Type.GetType("TraderOverhaul.TraderUI, TraderOverhaul");
             if (_traderUIType == null)
             {
-                HaldorCompanions.Log.LogError("[TraderUIPatches] Could not find TraderUI type!");
+                CompanionsPlugin.Log.LogError("[TraderUIPatches] Could not find TraderUI type!");
                 return;
             }
 
@@ -77,18 +75,16 @@ namespace HaldorCompanions
             _isVisibleField                = _traderUIType.GetField("_isVisible", bf);
             _craftBtnHeightField           = _traderUIType.GetField("_craftBtnHeight", bf);
 
-            _refreshTabHighlightsMethod        = _traderUIType.GetMethod("RefreshTabHighlights", bf);
-            _updateCategoryFilterVisualsMethod  = _traderUIType.GetMethod("UpdateCategoryFilterVisuals", bf);
-            _switchTabMethod                   = _traderUIType.GetMethod("SwitchTab", bf);
+            _refreshTabHighlightsMethod       = _traderUIType.GetMethod("RefreshTabHighlights", bf);
+            _updateCategoryFilterVisualsMethod = _traderUIType.GetMethod("UpdateCategoryFilterVisuals", bf);
 
-            if (_mainPanelField     == null) HaldorCompanions.Log.LogWarning("[TraderUIPatches] _mainPanel field not found.");
-            if (_buttonTemplateField == null) HaldorCompanions.Log.LogWarning("[TraderUIPatches] _buttonTemplate field not found.");
-            if (_activeTabField     == null) HaldorCompanions.Log.LogWarning("[TraderUIPatches] _activeTab field not found.");
-            if (_panelWidthField    == null) HaldorCompanions.Log.LogWarning("[TraderUIPatches] _panelWidth field not found.");
-            if (_switchTabMethod    == null) HaldorCompanions.Log.LogWarning("[TraderUIPatches] SwitchTab method not found.");
+            if (_mainPanelField      == null) CompanionsPlugin.Log.LogWarning("[TraderUIPatches] _mainPanel field not found.");
+            if (_buttonTemplateField == null) CompanionsPlugin.Log.LogWarning("[TraderUIPatches] _buttonTemplate field not found.");
+            if (_activeTabField      == null) CompanionsPlugin.Log.LogWarning("[TraderUIPatches] _activeTab field not found.");
+            if (_panelWidthField     == null) CompanionsPlugin.Log.LogWarning("[TraderUIPatches] _panelWidth field not found.");
 
             _reflectionCached = true;
-            HaldorCompanions.Log.LogInfo("[TraderUIPatches] Reflection cached successfully.");
+            CompanionsPlugin.Log.LogInfo("[TraderUIPatches] Reflection cached successfully.");
         }
 
         // ══════════════════════════════════════════
@@ -100,7 +96,7 @@ namespace HaldorCompanions
         {
             static MethodBase TargetMethod()
             {
-                var t = Type.GetType("HaldorOverhaul.TraderUI, HaldorOverhaul");
+                var t = Type.GetType("TraderOverhaul.TraderUI, TraderOverhaul");
                 return t?.GetMethod("BuildUI", BindingFlags.Instance | BindingFlags.NonPublic);
             }
 
@@ -113,7 +109,7 @@ namespace HaldorCompanions
                 }
                 catch (Exception ex)
                 {
-                    HaldorCompanions.Log.LogError($"[TraderUIPatches] BuildUI postfix error: {ex}");
+                    CompanionsPlugin.Log.LogError($"[TraderUIPatches] BuildUI postfix error: {ex}");
                 }
             }
         }
@@ -124,9 +120,15 @@ namespace HaldorCompanions
                 _panelWidthField    == null || _tabBtnHeightField   == null || _colTopInsetField == null ||
                 _bottomPadField     == null || _valheimFontField    == null)
             {
-                HaldorCompanions.Log.LogError("[TraderUIPatches] Cannot inject companion tab — critical reflection fields are missing.");
+                CompanionsPlugin.Log.LogError("[TraderUIPatches] Cannot inject companion tab — critical reflection fields are missing.");
                 return;
             }
+
+            // Tear down any previous companion tab + panel (BuildUI can be called multiple times)
+            _companionPanel?.Teardown();
+            _companionPanel = null;
+            if (_tabCompanions != null) { UnityEngine.Object.Destroy(_tabCompanions); _tabCompanions = null; }
+            CompanionTabIndex = -1;
 
             var mainPanel      = (GameObject)_mainPanelField.GetValue(traderUI);
             var buttonTemplate = (GameObject)_buttonTemplateField.GetValue(traderUI);
@@ -147,22 +149,20 @@ namespace HaldorCompanions
                     existingTabs.Add(child);
             }
 
-            int totalTabs = existingTabs.Count + 1; // +1 for companions
-            CompanionTabIndex = existingTabs.Count;  // 0-based index for our tab
+            int totalTabs = existingTabs.Count + 1;
+            CompanionTabIndex = existingTabs.Count;
 
-            // Calculate new tab widths for totalTabs equal tabs
+            // Calculate new tab widths
             const float outerPad = 6f;
-            const float colGap = 4f;
+            const float colGap   = 4f;
             const float tabTopGap = 6f;
             float usable = panelWidth - outerPad * 2f - colGap * (totalTabs - 1);
-            float tabW = usable / totalTabs;
+            float tabW   = usable / totalTabs;
 
-            // Compute center positions for all tabs
             float[] centers = new float[totalTabs];
             for (int i = 0; i < totalTabs; i++)
                 centers[i] = outerPad + tabW / 2f + i * (tabW + colGap);
 
-            // Reposition and resize all existing tabs
             for (int i = 0; i < existingTabs.Count; i++)
                 ResizeTab(existingTabs[i], centers[i], tabW);
 
@@ -175,7 +175,7 @@ namespace HaldorCompanions
             if (btn != null)
             {
                 btn.onClick.RemoveAllListeners();
-                btn.onClick.AddListener(() => SwitchToCompanions(traderUI));
+                btn.onClick.AddListener(() => ActivateCompanionTab(traderUI));
                 btn.navigation = new Navigation { mode = Navigation.Mode.None };
             }
 
@@ -196,22 +196,39 @@ namespace HaldorCompanions
             }
 
             var tabRT = _tabCompanions.GetComponent<RectTransform>();
-            tabRT.anchorMin = new Vector2(0f, 1f);
-            tabRT.anchorMax = new Vector2(0f, 1f);
-            tabRT.pivot = new Vector2(0.5f, 1f);
-            tabRT.sizeDelta = new Vector2(tabW, tabBtnHeight);
+            tabRT.anchorMin        = new Vector2(0f, 1f);
+            tabRT.anchorMax        = new Vector2(0f, 1f);
+            tabRT.pivot            = new Vector2(0.5f, 1f);
+            tabRT.sizeDelta        = new Vector2(tabW, tabBtnHeight);
             tabRT.anchoredPosition = new Vector2(centers[CompanionTabIndex], -tabTopGap);
 
-            // Get button height from TraderUI
             float craftBtnHeight = 30f;
             if (_craftBtnHeightField != null)
                 craftBtnHeight = (float)_craftBtnHeightField.GetValue(traderUI);
 
-            // Build companion panel
-            _companionPanel = new CompanionPanel();
-            _companionPanel.Build(mainPanel.transform, colTopInset, bottomPad, font, buttonTemplate, craftBtnHeight);
+            // Read existing column positions from TraderUI so our panel matches exactly
+            var leftCol  = _leftColumnField?.GetValue(traderUI) as RectTransform;
+            var midCol   = _middleColumnField?.GetValue(traderUI) as RectTransform;
+            var rightCol = _rightColumnField?.GetValue(traderUI) as RectTransform;
 
-            HaldorCompanions.Log.LogInfo($"[TraderUIPatches] Companion tab injected at index {CompanionTabIndex} ({totalTabs} total tabs).");
+            float leftXL  = leftCol?.offsetMin.x  ?? 6f;
+            float leftXR  = leftCol?.offsetMax.x  ?? 266f;
+            float midXL   = midCol?.offsetMin.x   ?? 270f;
+            float midXR   = midCol?.offsetMax.x   ?? 610f;
+            float rightXL = rightCol?.offsetMin.x  ?? 614f;
+            float rightXR = rightCol?.offsetMax.x  ?? 874f;
+
+            // Get mainPanel height for proportional RT sizing
+            var mainPanelRT = mainPanel.GetComponent<RectTransform>();
+            float panelHeight = mainPanelRT != null ? mainPanelRT.sizeDelta.y : 432f;
+
+            _companionPanel = new CompanionPanel();
+            _companionPanel.Build(mainPanel.transform, colTopInset, bottomPad, font,
+                                  buttonTemplate, craftBtnHeight,
+                                  leftXL, leftXR, midXL, midXR, rightXL, rightXR,
+                                  panelHeight);
+
+            CompanionsPlugin.Log.LogInfo($"[TraderUIPatches] Companion tab injected at index {CompanionTabIndex} ({totalTabs} total tabs).");
         }
 
         private static void ResizeTab(GameObject tab, float centerX, float width)
@@ -219,7 +236,7 @@ namespace HaldorCompanions
             if (tab == null) return;
             var rt = tab.GetComponent<RectTransform>();
             if (rt == null) return;
-            rt.sizeDelta = new Vector2(width, rt.sizeDelta.y);
+            rt.sizeDelta        = new Vector2(width, rt.sizeDelta.y);
             rt.anchoredPosition = new Vector2(centerX, rt.anchoredPosition.y);
         }
 
@@ -232,7 +249,7 @@ namespace HaldorCompanions
         {
             static MethodBase TargetMethod()
             {
-                var t = Type.GetType("HaldorOverhaul.TraderUI, HaldorOverhaul");
+                var t = Type.GetType("TraderOverhaul.TraderUI, TraderOverhaul");
                 return t?.GetMethod("SwitchTab", BindingFlags.Instance | BindingFlags.NonPublic);
             }
 
@@ -245,44 +262,17 @@ namespace HaldorCompanions
                 if (newTab == CompanionTabIndex)
                 {
                     int currentTab = (int)_activeTabField.GetValue(__instance);
-                    if (currentTab == CompanionTabIndex) return false; // already on companions
+                    if (currentTab == CompanionTabIndex) return false;
 
-                    _activeTabField.SetValue(__instance, CompanionTabIndex);
-
-                    // Clear search/filters
-                    _searchFilterField?.SetValue(__instance, "");
-                    var searchInput = _searchInputField?.GetValue(__instance) as TMP_InputField;
-                    if (searchInput != null) searchInput.text = "";
-                    _activeCategoryFilterField?.SetValue(__instance, null);
-                    _joyCategoryFocusIndexField?.SetValue(__instance, -1);
-                    _updateCategoryFilterVisualsMethod?.Invoke(__instance, null);
-
-                    // Update tab highlights
-                    RefreshAllTabHighlights(__instance);
-
-                    // Hide columns, show companion panel
-                    HideColumns(__instance);
-                    if (_bankContentPanelField?.GetValue(__instance) is GameObject bankPanel)
-                        bankPanel.SetActive(false);
-
-                    if (_companionPanel?.Root != null)
-                    {
-                        _companionPanel.Root.SetActive(true);
-                        _companionPanel.Refresh();
-                    }
-
-                    // Clear event system selection
-                    if (UnityEngine.EventSystems.EventSystem.current != null)
-                        UnityEngine.EventSystems.EventSystem.current.SetSelectedGameObject(null);
-
-                    return false; // skip original
+                    ActivateCompanionTab(__instance);
+                    return false;
                 }
 
                 // Not our tab — hide companion panel
                 if (_companionPanel?.Root != null)
                     _companionPanel.Root.SetActive(false);
 
-                return true; // run original
+                return true;
             }
         }
 
@@ -295,7 +285,7 @@ namespace HaldorCompanions
         {
             static MethodBase TargetMethod()
             {
-                var t = Type.GetType("HaldorOverhaul.TraderUI, HaldorOverhaul");
+                var t = Type.GetType("TraderOverhaul.TraderUI, TraderOverhaul");
                 return t?.GetMethod("RefreshTabHighlights", BindingFlags.Instance | BindingFlags.NonPublic);
             }
 
@@ -305,15 +295,17 @@ namespace HaldorCompanions
                 if (_tabCompanions == null || _activeTabField == null) return;
 
                 int activeTab = (int)_activeTabField.GetValue(__instance);
-                var btn = _tabCompanions.GetComponent<Button>();
-                if (btn != null)
+                var tabBtn = _tabCompanions.GetComponent<Button>();
+                if (tabBtn != null)
                 {
-                    btn.interactable = true;
-                    btn.transition = Selectable.Transition.None;
+                    tabBtn.interactable = true;
+                    tabBtn.transition   = Selectable.Transition.None;
                 }
                 var img = _tabCompanions.GetComponent<Image>();
                 if (img != null)
-                    img.color = (activeTab == CompanionTabIndex) ? GoldColor : new Color(0.45f, 0.45f, 0.45f, 1f);
+                    img.color = (activeTab == CompanionTabIndex)
+                        ? GoldColor
+                        : new Color(0.45f, 0.45f, 0.45f, 1f);
             }
         }
 
@@ -326,7 +318,7 @@ namespace HaldorCompanions
         {
             static MethodBase TargetMethod()
             {
-                var t = Type.GetType("HaldorOverhaul.TraderUI, HaldorOverhaul");
+                var t = Type.GetType("TraderOverhaul.TraderUI, TraderOverhaul");
                 return t?.GetMethod("RefreshTabPanels", BindingFlags.Instance | BindingFlags.NonPublic);
             }
 
@@ -346,18 +338,17 @@ namespace HaldorCompanions
         {
             static MethodBase TargetMethod()
             {
-                var t = Type.GetType("HaldorOverhaul.TraderUI, HaldorOverhaul");
+                var t = Type.GetType("TraderOverhaul.TraderUI, TraderOverhaul");
                 return t?.GetMethod("Update", BindingFlags.Instance | BindingFlags.NonPublic);
             }
 
-            static void Prefix(object __instance)
+            static void Prefix(object __instance, ref int __state)
             {
                 CacheReflection();
-                if (_activeTabField == null) { _preUpdateTab = -1; return; }
-                _preUpdateTab = (int)_activeTabField.GetValue(__instance);
+                __state = (_activeTabField != null) ? (int)_activeTabField.GetValue(__instance) : -1;
             }
 
-            static void Postfix(object __instance)
+            static void Postfix(object __instance, int __state)
             {
                 if (CompanionTabIndex < 0) return;
                 if (_isVisibleField == null || _activeTabField == null) return;
@@ -371,32 +362,25 @@ namespace HaldorCompanions
                 bool searchFocused = searchInput != null && searchInput.isFocused;
                 if (searchFocused) return;
 
-                // ── Companion tab protection ──
-                // If we were on the companion tab and something moved us off
-                // without Q/Left, undo the change.
-                if (_preUpdateTab == CompanionTabIndex && activeTab != CompanionTabIndex)
+                // Companion tab protection: if we were on companion tab and something moved us off
+                if (__state == CompanionTabIndex && activeTab != CompanionTabIndex)
                 {
                     bool leftPressed = Input.GetKeyDown(KeyCode.Q) || ZInput.GetButtonDown("JoyTabLeft");
                     if (!leftPressed)
                     {
-                        SwitchToCompanions(__instance);
+                        ActivateCompanionTab(__instance);
                         activeTab = CompanionTabIndex;
                     }
                 }
-                // ── Extend right into companion tab ──
-                // If we're on the tab just before companions and right is pressed,
-                // navigate to companion tab.
-                else if (_preUpdateTab == CompanionTabIndex - 1)
+                // Extend right into companion tab
+                else if (__state == CompanionTabIndex - 1)
                 {
-                    // After all other postfixes run, the active tab may have been
-                    // restored (e.g. HaldorBounties restores tab 3). Re-read it.
                     activeTab = (int)_activeTabField.GetValue(__instance);
-
                     if (activeTab == CompanionTabIndex - 1)
                     {
                         if (Input.GetKeyDown(KeyCode.E) || ZInput.GetButtonDown("JoyTabRight"))
                         {
-                            SwitchToCompanions(__instance);
+                            ActivateCompanionTab(__instance);
                             activeTab = CompanionTabIndex;
                         }
                     }
@@ -413,25 +397,56 @@ namespace HaldorCompanions
         //  HELPERS
         // ══════════════════════════════════════════
 
-        private static void SwitchToCompanions(object traderUI)
+        /// <summary>
+        /// Activates companion tab by hiding ALL other mainPanel content (not just known panels).
+        /// This ensures bounty panels and any other mod content is properly hidden.
+        /// </summary>
+        private static void ActivateCompanionTab(object traderUI)
         {
-            _switchTabMethod?.Invoke(traderUI, new object[] { CompanionTabIndex });
+            if (_activeTabField == null || _mainPanelField == null) return;
+            int currentTab = (int)_activeTabField.GetValue(traderUI);
+            if (currentTab == CompanionTabIndex) return;
+
+            _activeTabField.SetValue(traderUI, CompanionTabIndex);
+
+            // Clear search / category filters
+            _searchFilterField?.SetValue(traderUI, "");
+            var searchInput = _searchInputField?.GetValue(traderUI) as TMP_InputField;
+            if (searchInput != null) searchInput.text = "";
+            _activeCategoryFilterField?.SetValue(traderUI, null);
+            _joyCategoryFocusIndexField?.SetValue(traderUI, -1);
+            _updateCategoryFilterVisualsMethod?.Invoke(traderUI, null);
+
+            // Update tab highlight colours
+            RefreshAllTabHighlights(traderUI);
+
+            // Hide ALL mainPanel children except tab buttons and our companion panel.
+            // This is critical: it hides TraderUI's 3 columns, bank panel, AND any other
+            // mod content (e.g. HaldorBounties panel) that might still be visible.
+            var mainPanel = (GameObject)_mainPanelField.GetValue(traderUI);
+            string companionRootName = _companionPanel?.Root != null ? _companionPanel.Root.name : "";
+            for (int i = 0; i < mainPanel.transform.childCount; i++)
+            {
+                var child = mainPanel.transform.GetChild(i).gameObject;
+                if (child.name.StartsWith("Tab_")) continue;
+                if (child.name == companionRootName && companionRootName.Length > 0) continue;
+                child.SetActive(false);
+            }
+
+            // Show companion panel
+            if (_companionPanel?.Root != null)
+            {
+                _companionPanel.Root.SetActive(true);
+                _companionPanel.Refresh();
+            }
+
+            if (UnityEngine.EventSystems.EventSystem.current != null)
+                UnityEngine.EventSystems.EventSystem.current.SetSelectedGameObject(null);
         }
 
         private static void RefreshAllTabHighlights(object traderUI)
         {
             _refreshTabHighlightsMethod?.Invoke(traderUI, null);
-        }
-
-        private static void HideColumns(object traderUI)
-        {
-            var left = _leftColumnField?.GetValue(traderUI) as RectTransform;
-            var mid = _middleColumnField?.GetValue(traderUI) as RectTransform;
-            var right = _rightColumnField?.GetValue(traderUI) as RectTransform;
-
-            if (left != null) left.gameObject.SetActive(false);
-            if (mid != null) mid.gameObject.SetActive(false);
-            if (right != null) right.gameObject.SetActive(false);
         }
     }
 }

@@ -2,14 +2,19 @@
   <PropertyGroup>
     <TargetFramework>net472</TargetFramework>
     <LangVersion>latest</LangVersion>
-    <RootNamespace>HaldorCompanions</RootNamespace>
-    <AssemblyName>HaldorCompanions</AssemblyName>
+    <RootNamespace>Companions</RootNamespace>
+    <AssemblyName>Companions</AssemblyName>
     <Nullable>disable</Nullable>
     <Optimize>true</Optimize>
     <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
     <OutputPath>..\build\bin\$(Configuration)\$(TargetFramework)\</OutputPath>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
   </PropertyGroup>
+  <ItemGroup>
+    <!-- Embedded texture resources -->
+    <EmbeddedResource Include="Resources\Textures\UI\*.png"
+      LogicalName="Companions.Resources.Textures.UI.%(Filename)%(Extension)" />
+  </ItemGroup>
   <ItemGroup>
     <!-- BepInEx / Harmony -->
     <Reference Include="0Harmony">
@@ -52,9 +57,18 @@
     <Reference Include="Splatform">
       <HintPath>C:\Program Files (x86)\Steam\steamapps\common\Valheim\Valheim_Data\Managed\Splatform.dll</HintPath>
     </Reference>
-    <!-- HaldorOverhaul (hard dependency) -->
-    <Reference Include="HaldorOverhaul">
-      <HintPath>C:\Program Files (x86)\Steam\steamapps\common\Valheim\BepInEx\plugins\HaldorOverhaul\HaldorOverhaul.dll</HintPath>
+    <Reference Include="UnityEngine.PhysicsModule">
+      <HintPath>C:\Program Files (x86)\Steam\steamapps\common\Valheim\Valheim_Data\Managed\UnityEngine.PhysicsModule.dll</HintPath>
+    </Reference>
+    <Reference Include="UnityEngine.AnimationModule">
+      <HintPath>C:\Program Files (x86)\Steam\steamapps\common\Valheim\Valheim_Data\Managed\UnityEngine.AnimationModule.dll</HintPath>
+    </Reference>
+    <Reference Include="UnityEngine.TextRenderingModule">
+      <HintPath>C:\Program Files (x86)\Steam\steamapps\common\Valheim\Valheim_Data\Managed\UnityEngine.TextRenderingModule.dll</HintPath>
+    </Reference>
+    <!-- TraderOverhaul (hard dependency) -->
+    <Reference Include="TraderOverhaul">
+      <HintPath>C:\Program Files (x86)\Steam\steamapps\common\Valheim\BepInEx\plugins\TraderOverhaul\TraderOverhaul.dll</HintPath>
     </Reference>
   </ItemGroup>
 

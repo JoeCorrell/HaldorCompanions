@@ -4,15 +4,15 @@ using BepInEx;
 using BepInEx.Logging;
 using HarmonyLib;
 
-namespace HaldorCompanions
+namespace Companions
 {
     [BepInPlugin(PluginGUID, PluginName, PluginVersion)]
-    [BepInDependency("com.haldor.overhaul")]
+    [BepInDependency("com.profmags.traderoverhaul")]
     [BepInDependency("com.haldor.bounties", BepInDependency.DependencyFlags.SoftDependency)]
-    public class HaldorCompanions : BaseUnityPlugin
+    public class CompanionsPlugin : BaseUnityPlugin
     {
-        public const string PluginGUID = "com.haldor.companions";
-        public const string PluginName = "Haldor Companions";
+        public const string PluginGUID = "com.profmags.companions";
+        public const string PluginName = "Companions";
         public const string PluginVersion = "1.0.0";
 
         private static Harmony _harmony;
@@ -30,7 +30,7 @@ namespace HaldorCompanions
             }
             catch (Exception ex)
             {
-                Log.LogError($"[HaldorCompanions] Harmony PatchAll failed: {ex}");
+                Log.LogError($"[Companions] Harmony PatchAll failed: {ex}");
             }
 
             int count = 0;
