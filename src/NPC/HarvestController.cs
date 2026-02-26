@@ -31,6 +31,7 @@ namespace Companions
         private bool         _toolEquipped;
         private string       _targetType;     // "TreeLog", "Stump", "TreeBase", "MineRock5", etc.
         private int          _swingCount;      // consecutive attack swings on current target
+        private float        _selfDefenseLogTimer;
 
         // ── Blacklist — tracks unreachable targets to prevent infinite stuck loops ──
         private readonly Dictionary<int, float> _blacklist = new Dictionary<int, float>();
@@ -180,8 +181,14 @@ namespace Companions
                     float enemyDist = Vector3.Distance(transform.position, creature.transform.position);
                     if (enemyDist < 10f)
                     {
-                        Log($"SELF-DEFENSE — pausing harvest, enemy \"{creature.m_name}\" " +
-                            $"at {enemyDist:F1}m — CombatController will engage");
+                        // Throttle this log — fires every frame during combat
+                        _selfDefenseLogTimer -= Time.deltaTime;
+                        if (_selfDefenseLogTimer <= 0f)
+                        {
+                            _selfDefenseLogTimer = 3f;
+                            Log($"SELF-DEFENSE — pausing harvest, enemy \"{creature.m_name}\" " +
+                                $"at {enemyDist:F1}m — CombatController will engage");
+                        }
                         // Don't clear the target! Let combat run.
                         return;
                     }
@@ -426,12 +433,26 @@ namespace Companions
 
             float range = GetAttackRange();
             Vector3 targetPos = _target.transform.position;
+            float distToTarget = Vector3.Distance(transform.position, targetPos);
 
-            // MonsterAI.Follow() handles primary movement (pathfinding, speed).
-            // We call MoveTo as reinforcement in case Follow stops early (< 3m).
-            // Low targets need tighter approach — use half range as goal.
-            float moveGoal = IsLowTarget() ? range * 0.5f : range;
-            bool moveResult = ReflectionHelper.TryMoveTo(_ai, dt, targetPos, moveGoal, true);
+            // MonsterAI.Follow() handles long-range pathfinding (> 4m).
+            // For the final approach (< 4m), use MoveTowards for direct movement
+            // that bypasses navmesh — Follow() stops issuing move commands at ~3m,
+            // leaving the companion stranded just outside attack range.
+            bool moveResult;
+            if (distToTarget < 4f)
+            {
+                Vector3 dir = (targetPos - transform.position);
+                dir.y = 0f;
+                if (dir.sqrMagnitude > 0.01f)
+                    _ai.MoveTowards(dir.normalized, true);
+                moveResult = true;
+            }
+            else
+            {
+                float moveGoal = IsLowTarget() ? range * 0.5f : range;
+                moveResult = ReflectionHelper.TryMoveTo(_ai, dt, targetPos, moveGoal, true);
+            }
 
             // Periodic movement logging (every 1s to avoid spam)
             _moveLogTimer -= dt;
@@ -454,7 +475,7 @@ namespace Companions
 
             // Check if we've arrived — low targets (logs/stumps) need tighter approach
             // so the hit detection sphere actually reaches them
-            float distToTarget = Vector3.Distance(transform.position, targetPos);
+            distToTarget = Vector3.Distance(transform.position, targetPos);
             bool isLow = IsLowTarget();
             float arrivalDist = isLow ? range * 0.7f : range + ArrivalSlack;
             if (distToTarget <= arrivalDist)

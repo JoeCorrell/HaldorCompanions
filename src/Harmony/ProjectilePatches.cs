@@ -26,10 +26,13 @@ namespace Companions
             Character target = ReflectionHelper.GetTargetCreature(ai);
             if (target == null || target.IsDead()) return;
 
-            // Preserve original speed, redirect toward target center mass
+            // Redirect toward target center mass — enforce minimum arrow speed
+            // (vanilla fires with 0% draw → speed=2 when ChargeStart doesn't work)
             Vector3 currentVel = _velRef(__instance);
             float speed = currentVel.magnitude;
             if (speed < 0.1f) return;
+            const float MinArrowSpeed = 60f;
+            if (speed < MinArrowSpeed) speed = MinArrowSpeed;
 
             Vector3 origin = __instance.transform.position;
             Vector3 targetPoint = target.GetCenterPoint();

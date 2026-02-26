@@ -56,6 +56,16 @@ namespace Companions
         private bool  _initialized;
         private bool  _bowEquipped;
 
+        // Bow draw state (manual — vanilla ChargeStart doesn't work for player bows)
+        private float _bowDrawTimer;
+        private float _bowFireCooldown;
+        private const float BowDrawTime     = 1.2f;  // seconds to fully draw bow
+        private const float BowFireInterval = 2.5f;  // seconds between shots
+
+        // Target abandon tracking — prevents infinite re-engage on fleeing animals
+        private int   _abandonedTargetId;
+        private float _abandonCooldown;
+
         private void Awake()
         {
             _ai       = GetComponent<MonsterAI>();
@@ -88,6 +98,8 @@ namespace Companions
             _attackCooldownTimer = Mathf.Max(0f, _attackCooldownTimer - dt);
             _consumeTimer = Mathf.Max(0f, _consumeTimer - dt);
             _powerAttackTimer = Mathf.Max(0f, _powerAttackTimer - dt);
+            _bowFireCooldown = Mathf.Max(0f, _bowFireCooldown - dt);
+            _abandonCooldown = Mathf.Max(0f, _abandonCooldown - dt);
 
             // Mode check — in gather modes, only allow self-defense combat
             int mode = _nview.GetZDO().GetInt(CompanionSetup.ActionModeHash,
@@ -145,9 +157,9 @@ namespace Companions
             // ── CRITICAL: Ensure we have a combat weapon, not a tool/pickaxe ──
             EnsureCombatWeapon();
 
-            // ── Stuck detection ──
+            // ── Stuck detection (melee only — ranged stands still intentionally) ──
             float movedSinceLast = Vector3.Distance(transform.position, _lastStuckPos);
-            if (_phase != CombatPhase.Idle && _phase != CombatPhase.Retreat)
+            if (_phase == CombatPhase.Melee)
             {
                 if (movedSinceLast < 0.3f && !_character.InAttack())
                     _stuckTimer += dt;
@@ -160,11 +172,16 @@ namespace Companions
                         $"[Combat] STUCK for {_stuckTimer:F1}s in {_phase} — " +
                         $"target=\"{target.m_name}\" dist={Vector3.Distance(transform.position, target.transform.position):F1} " +
                         $"inAttack={_character.InAttack()} — clearing target");
+                    AbandonTarget(target);
                     ReflectionHelper.ClearAllTargets(_ai);
                     ExitCombat("stuck timeout");
                     _stuckTimer = 0f;
                     return;
                 }
+            }
+            else
+            {
+                _stuckTimer = 0f;
             }
             _lastStuckPos = transform.position;
 
@@ -196,6 +213,14 @@ namespace Companions
             bool isFleeingAnimal = target.GetComponent<AnimalAI>() != null;
             bool hasBow = HasBowAndArrows();
 
+            // Skip recently abandoned targets (prevents infinite re-engage on fleeing animals)
+            if (_abandonCooldown > 0f && target.GetInstanceID() == _abandonedTargetId)
+            {
+                ReflectionHelper.ClearAllTargets(_ai);
+                if (_phase != CombatPhase.Idle) ExitCombat("target on abandon cooldown");
+                return;
+            }
+
             // Fleeing animals: always use bow, never chase on foot
             if (isFleeingAnimal)
             {
@@ -212,6 +237,7 @@ namespace Companions
                 {
                     CompanionsPlugin.Log.LogInfo(
                         $"[Combat] Ignoring fleeing animal \"{target.m_name}\" — no bow+arrows");
+                    AbandonTarget(target);
                     ReflectionHelper.ClearAllTargets(_ai);
                     if (_phase != CombatPhase.Idle) ExitCombat("no bow for animal");
                 }
@@ -388,30 +414,71 @@ namespace Companions
         }
 
         // ════════════════════════════════════════════════════════════════════
-        //  Ranged Combat — uses vanilla charge system for bow draw
+        //  Ranged Combat — manual draw timer + fire (vanilla ChargeStart
+        //  doesn't work for player bows on MonsterAI creatures)
         // ════════════════════════════════════════════════════════════════════
 
         private void UpdateRanged(Character target, float dt)
         {
             float dist = Vector3.Distance(transform.position, target.transform.position);
 
-            // Target out of range — give up
+            // Target out of range — give up and abandon
             if (dist > BowMaxRange)
             {
                 CompanionsPlugin.Log.LogInfo(
-                    $"[Combat] Target \"{target.m_name}\" out of bow range ({dist:F1} > {BowMaxRange}) — disengaging");
+                    $"[Combat] Target \"{target.m_name}\" out of bow range ({dist:F1} > {BowMaxRange}) — abandoning");
+                AbandonTarget(target);
                 ReflectionHelper.ClearAllTargets(_ai);
                 ExitCombat("target out of bow range");
                 return;
             }
 
-            // Let vanilla MonsterAI handle the full bow cycle:
-            //   1. SelectBestAttack → returns our equipped bow (EquipBestWeapon patched out)
-            //   2. ChargeStart() when attack ready + weapon has chargeAnimationBool
-            //   3. LookAt target center point
-            //   4. DoAttack when looking at target + charge ready → fires with draw percentage
-            //   5. Movement: vanilla positions within aiAttackRange
-            // We only manage weapon selection (EquipBow/RestoreMelee) and phase transitions.
+            // Don't fire while moving into position — let vanilla move us closer first
+            if (_character.InAttack()) return;
+
+            // Aim at target center mass with velocity lead
+            Vector3 aimPoint = target.GetCenterPoint();
+            Vector3 targetVel = target.GetVelocity();
+            if (targetVel.magnitude > 0.5f)
+            {
+                float arrowSpeed = 60f;
+                float travelTime = dist / arrowSpeed;
+                aimPoint += targetVel * travelTime;
+            }
+
+            // Face target and stop to aim
+            ReflectionHelper.LookAt(_ai, aimPoint);
+            _ai.StopMoving();
+
+            // Check if we're looking at the target
+            bool onTarget = ReflectionHelper.IsLookingAt(_ai, aimPoint, 15f);
+
+            // Draw timer — only accumulates while facing target
+            if (onTarget && _bowFireCooldown <= 0f)
+                _bowDrawTimer += dt;
+            else if (!onTarget)
+                _bowDrawTimer = Mathf.Max(0f, _bowDrawTimer - dt * 2f); // decay if off-target
+
+            // Fire when fully drawn and on target
+            if (_bowDrawTimer >= BowDrawTime && onTarget && _bowFireCooldown <= 0f)
+            {
+                bool fired = _humanoid.StartAttack(target, false);
+                _bowDrawTimer = 0f;
+                _bowFireCooldown = BowFireInterval;
+
+                CompanionsPlugin.Log.LogInfo(
+                    $"[Combat] BOW FIRE at \"{target.m_name}\" dist={dist:F1} " +
+                    $"fired={fired} onTarget={onTarget}");
+            }
+        }
+
+        private void AbandonTarget(Character target)
+        {
+            if (target == null) return;
+            _abandonedTargetId = target.GetInstanceID();
+            _abandonCooldown = 30f; // Don't re-engage this target for 30s
+            CompanionsPlugin.Log.LogInfo(
+                $"[Combat] Abandoned target \"{target.m_name}\" — 30s cooldown");
         }
 
         // ════════════════════════════════════════════════════════════════════
@@ -578,6 +645,8 @@ namespace Companions
             TransitionTo(CombatPhase.Idle);
             _stuckTimer = 0f;
             _retreatTimer = 0f;
+            _bowDrawTimer = 0f;
+            _bowFireCooldown = 0f;
 
             CompanionsPlugin.Log.LogInfo(
                 $"[Combat] EXIT combat ({oldPhase} → Idle) — reason: {reason}");
@@ -686,7 +755,8 @@ namespace Companions
                 $"weapon=\"{weapon?.m_shared?.m_name ?? "null"}\" " +
                 $"right=\"{rightItem?.m_shared?.m_name ?? "NONE"}\" " +
                 $"left=\"{leftItem?.m_shared?.m_name ?? "NONE"}\" " +
-                $"bowEquipped={_bowEquipped} charging={_ai.IsCharging()} " +
+                $"bowEquipped={_bowEquipped} bowDraw={_bowDrawTimer:F1}/{BowDrawTime:F1} " +
+                $"bowCD={_bowFireCooldown:F1} charging={_ai.IsCharging()} " +
                 $"inAttack={_character.InAttack()} " +
                 $"hp={_character.GetHealthPercentage():P0} " +
                 $"stam={(_stamina != null ? _stamina.GetStaminaPercentage() : 1f):P0} " +
