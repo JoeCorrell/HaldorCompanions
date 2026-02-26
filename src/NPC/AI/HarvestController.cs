@@ -721,9 +721,14 @@ namespace Companions
                     Log($"  Candidate #{candidateCount}: \"{candidate.name}\" " +
                         $"type={type} dist={dist:F1}m pos={candidate.transform.position:F1}");
 
-                if (dist < bestDist)
+                // Prioritize fallen logs and stumps over standing trees —
+                // standing trees create more logs/stumps, so clean up first.
+                float score = dist;
+                if (type == "TreeBase") score *= 3f;
+
+                if (score < bestDist)
                 {
-                    bestDist = dist;
+                    bestDist = score;
                     best = candidate;
                 }
             }
