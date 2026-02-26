@@ -105,6 +105,9 @@ namespace Companions
             _fireTarget  = fire;
             _healTimer   = 0f;
 
+            CompanionsPlugin.Log.LogInfo(
+                $"[Rest] Sitting near fire \"{fire.name}\" — starting heal + stamina regen");
+
             // Stop movement and face the fire
             if (_ai != null) _ai.SetFollowTarget(null);
 
@@ -182,6 +185,8 @@ namespace Companions
         {
             _isSitting  = false;
             _fireTarget = null;
+
+            CompanionsPlugin.Log.LogInfo("[Rest] Stopped sitting — resuming normal behavior");
 
             // Stop sit animation
             if (_zanim != null) _zanim.SetTrigger("emote_stop");

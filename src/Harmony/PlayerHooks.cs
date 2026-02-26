@@ -15,4 +15,20 @@ namespace Companions
             CompanionManager.RestoreFollowTargets();
         }
     }
+
+    /// <summary>
+    /// Block all player input while the companion interaction panel is visible.
+    /// Prevents jumping/moving/attacking while editing the companion name, etc.
+    /// </summary>
+    [HarmonyPatch(typeof(Player), "TakeInput")]
+    internal static class TakeInput_BlockForCompanionUI
+    {
+        static void Postfix(ref bool __result)
+        {
+            if (!__result) return;
+            var panel = CompanionInteractPanel.Instance;
+            if (panel != null && panel.IsVisible)
+                __result = false;
+        }
+    }
 }

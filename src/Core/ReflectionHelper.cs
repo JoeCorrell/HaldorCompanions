@@ -38,6 +38,11 @@ namespace Companions
         private static readonly MethodInfo _moveToMethod =
             AccessTools.Method(typeof(BaseAI), "MoveTo",
                 new[] { typeof(float), typeof(Vector3), typeof(float), typeof(bool) });
+        private static readonly MethodInfo _lookAtMethod =
+            AccessTools.Method(typeof(BaseAI), "LookAt", new[] { typeof(Vector3) });
+        private static readonly MethodInfo _isLookingAtMethod =
+            AccessTools.Method(typeof(BaseAI), "IsLookingAt",
+                new[] { typeof(Vector3), typeof(float), typeof(bool) });
 
         private static bool _loggedMoveToInit;
 
@@ -232,6 +237,24 @@ namespace Companions
                 CompanionsPlugin.Log.LogError($"[Reflection] MoveTo exception: {ex.Message}");
                 return false;
             }
+        }
+
+        // ══════════════════════════════════════════════════════════════════════
+        //  BaseAI.LookAt / IsLookingAt (protected)
+        // ══════════════════════════════════════════════════════════════════════
+
+        internal static void LookAt(BaseAI ai, Vector3 point)
+        {
+            if (ai == null || _lookAtMethod == null) return;
+            try { _lookAtMethod.Invoke(ai, new object[] { point }); }
+            catch { }
+        }
+
+        internal static bool IsLookingAt(BaseAI ai, Vector3 point, float minAngle = 20f)
+        {
+            if (ai == null || _isLookingAtMethod == null) return false;
+            try { return (bool)_isLookingAtMethod.Invoke(ai, new object[] { point, minAngle, false }); }
+            catch { return false; }
         }
 
         // ══════════════════════════════════════════════════════════════════════

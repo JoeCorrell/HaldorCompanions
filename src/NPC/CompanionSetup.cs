@@ -45,6 +45,7 @@ namespace Companions
         private MonsterAI    _ai;
         private Humanoid     _humanoid;
         private bool         _initialized;
+        private bool         _ownerMismatchLogged;
 
         /// <summary>
         /// When true, auto-equip is suppressed (used by CompanionHarvest to keep tools equipped).
@@ -91,8 +92,33 @@ namespace Companions
                 if (zdo == null) return;
 
                 string owner   = zdo.GetString(OwnerHash, "");
-                string localId = Player.m_localPlayer.GetPlayerID().ToString();
-                if (owner != localId) return;
+                long   localPid = Player.m_localPlayer.GetPlayerID();
+                string localId = localPid.ToString();
+
+                // Skip ownership check while player ID is 0 (ZDO not loaded yet)
+                if (localPid == 0L) return;
+
+                // Claim orphaned companions (empty owner = just spawned before ZDO synced)
+                if (string.IsNullOrEmpty(owner))
+                {
+                    zdo.Set(OwnerHash, localId);
+                    CompanionsPlugin.Log.LogInfo(
+                        $"[Setup] Claimed orphan companion — set owner to {localId}");
+                    owner = localId;
+                }
+
+                if (owner != localId)
+                {
+                    // Log once to aid debugging — don't spam every frame
+                    if (!_ownerMismatchLogged)
+                    {
+                        _ownerMismatchLogged = true;
+                        CompanionsPlugin.Log.LogWarning(
+                            $"[Setup] Owner mismatch — zdo owner=\"{owner}\" localId=\"{localId}\" " +
+                            $"— follow target NOT restored");
+                    }
+                    return;
+                }
 
                 int mode = zdo.GetInt(ActionModeHash, ModeFollow);
 
@@ -194,8 +220,25 @@ namespace Companions
             if (zdo == null) return;
 
             string owner   = zdo.GetString(OwnerHash, "");
-            string localId = Player.m_localPlayer.GetPlayerID().ToString();
-            if (owner != localId) return;
+            long   localPid = Player.m_localPlayer.GetPlayerID();
+            string localId = localPid.ToString();
+
+            if (localPid == 0L) return; // Player ZDO not ready yet
+
+            if (string.IsNullOrEmpty(owner))
+            {
+                zdo.Set(OwnerHash, localId);
+                CompanionsPlugin.Log.LogInfo(
+                    $"[Setup] RestoreFollow — claimed orphan, set owner to {localId}");
+                owner = localId;
+            }
+
+            if (owner != localId)
+            {
+                CompanionsPlugin.Log.LogInfo(
+                    $"[Setup] RestoreFollow — owner mismatch: zdo=\"{owner}\" local=\"{localId}\"");
+                return;
+            }
 
             int mode = zdo.GetInt(ActionModeHash, ModeFollow);
             ApplyFollowMode(mode);
@@ -209,7 +252,17 @@ namespace Companions
             if (zdo == null) return;
 
             string owner   = zdo.GetString(OwnerHash, "");
-            string localId = Player.m_localPlayer.GetPlayerID().ToString();
+            long   localPid = Player.m_localPlayer.GetPlayerID();
+            string localId = localPid.ToString();
+
+            if (localPid == 0L) return;
+
+            if (string.IsNullOrEmpty(owner))
+            {
+                zdo.Set(OwnerHash, localId);
+                owner = localId;
+            }
+
             if (owner != localId) return;
 
             int mode = zdo.GetInt(ActionModeHash, ModeFollow);
@@ -346,12 +399,24 @@ namespace Companions
                         break;
                     case ItemDrop.ItemData.ItemType.TwoHandedWeapon:
                     case ItemDrop.ItemData.ItemType.TwoHandedWeaponLeft:
-                    case ItemDrop.ItemData.ItemType.Bow:
+                        // Pickaxes are TwoHandedWeapon — exclude from combat weapons
+                        if (item.GetDamage().m_pickaxe > 0f)
+                        {
+                            if (dmg > bestToolDmg)
+                            {
+                                bestTool = item;
+                                bestToolDmg = dmg;
+                            }
+                            break;
+                        }
                         if (dmg > best2HDmg)
                         {
                             best2H = item;
                             best2HDmg = dmg;
                         }
+                        break;
+                    case ItemDrop.ItemData.ItemType.Bow:
+                        // Bows are managed by CombatController — skip for auto-equip
                         break;
                     case ItemDrop.ItemData.ItemType.Tool:
                         if (dmg > bestToolDmg)
@@ -392,7 +457,7 @@ namespace Companions
 
             bool use2H = best2H != null && (bestRight == null || best2HDmg >= bestRightDmg);
             var desiredRight = use2H ? best2H : bestRight;
-            if (desiredRight == null) desiredRight = bestTool; // fallback only when no weapon exists
+            // Tools (pickaxes) are never auto-equipped as weapons — HarvestController manages them
 
             if (desiredRight != null && curRight != desiredRight)
             {

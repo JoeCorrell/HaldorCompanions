@@ -3,13 +3,59 @@ using HarmonyLib;
 namespace Companions
 {
     /// <summary>
-    /// Perfect parry timing and food-based max health for companions.
-    /// Uses ReflectionHelper for safe block timer access.
+    /// Perfect parry timing, food-based max health, power attacks, and weapon control
+    /// for companions. Uses ReflectionHelper for safe block timer access.
     /// </summary>
     public static class CombatPatches
     {
+        /// <summary>
+        /// Prevents vanilla MonsterAI.SelectBestAttack from overriding the
+        /// CombatController's weapon selections. Without this, MonsterAI calls
+        /// EquipBestWeapon every 1s, causing pickaxe/bow cycling mid-combat.
+        /// </summary>
+        [HarmonyPatch(typeof(Humanoid), nameof(Humanoid.EquipBestWeapon))]
+        private static class EquipBestWeapon_SuppressForCompanion
+        {
+            static bool Prefix(Humanoid __instance)
+            {
+                var setup = __instance.GetComponent<CompanionSetup>();
+                if (setup == null) return true; // Not a companion — run vanilla
+
+                // Companions manage their own weapons via CombatController + AutoEquipBest
+                return false;
+            }
+        }
+
         private static float _lastHealthLogTime;
         private const float HealthLogInterval = 5f;
+
+        /// <summary>
+        /// When a companion's DoAttack fires and the target is staggered,
+        /// upgrade the normal attack to a power attack (secondary).
+        /// </summary>
+        [HarmonyPatch(typeof(MonsterAI), "DoAttack")]
+        private static class DoAttack_PowerAttack
+        {
+            static bool Prefix(MonsterAI __instance, Character target, ref bool __result)
+            {
+                if (target == null) return true;
+                var setup = __instance.GetComponent<CompanionSetup>();
+                if (setup == null) return true;
+
+                if (!target.IsStaggering()) return true;
+
+                var humanoid = __instance.GetComponent<Humanoid>();
+                if (humanoid == null) return true;
+
+                var weapon = humanoid.GetCurrentWeapon();
+                if (weapon == null || !weapon.HaveSecondaryAttack()) return true;
+
+                __result = humanoid.StartAttack(target, true);
+                CompanionsPlugin.Log.LogInfo(
+                    $"[Combat] DoAttack — power attack on staggered \"{target.m_name}\"");
+                return false;
+            }
+        }
 
         [HarmonyPatch(typeof(Humanoid), "BlockAttack")]
         private static class BlockAttack_Patch

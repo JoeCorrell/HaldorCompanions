@@ -29,6 +29,12 @@ namespace Companions
         private float        _attackTimer;
         private float        _moveTimer;
         private bool         _toolEquipped;
+        private string       _targetType;     // "TreeLog", "Stump", "TreeBase", "MineRock5", etc.
+        private int          _swingCount;      // consecutive attack swings on current target
+
+        // ── Blacklist — tracks unreachable targets to prevent infinite stuck loops ──
+        private readonly Dictionary<int, float> _blacklist = new Dictionary<int, float>();
+        private const float BlacklistDuration = 60f;
 
         private const HarvestState State_Idle           = HarvestState.Idle;
         private const HarvestState State_Moving         = HarvestState.Moving;
@@ -42,6 +48,7 @@ namespace Companions
         private const float AttackRetry    = 0.25f;
         private const float MoveTimeout    = 12f;
         private const float ArrivalSlack   = 0.5f;
+        private const int   WhiffRetryMax  = 8;    // abandon target after this many swings
 
         // Drop collection config
         private const float DropScanRadius  = 8f;   // radius around destroy pos to look for drops
@@ -160,17 +167,39 @@ namespace Companions
                 LogHeartbeat();
             }
 
-            // Clear combat targets every frame — TargetPatches.Prefix handles
-            // suppressing UpdateTarget, but clear here as a safety net.
-            if (_ai != null)
+            // Check for nearby enemies — if any are close, pause gathering and
+            // let CombatController handle self-defense. Must match TargetPatches
+            // SelfDefenseRange so the two systems agree.
+            if (_ai != null && _character != null)
             {
                 var creature = ReflectionHelper.GetTargetCreature(_ai);
-                var staticT  = ReflectionHelper.GetTargetStatic(_ai);
-                if (creature != null || staticT != null)
+
+                if (creature != null && !creature.IsDead())
                 {
-                    Log($"Clearing combat targets: creature=\"{creature?.m_name ?? ""}\" " +
-                        $"static=\"{staticT?.name ?? ""}\"");
-                    ReflectionHelper.ClearAllTargets(_ai);
+                    // MonsterAI has a target — let combat handle it, pause harvest
+                    float enemyDist = Vector3.Distance(transform.position, creature.transform.position);
+                    if (enemyDist < 10f)
+                    {
+                        Log($"SELF-DEFENSE — pausing harvest, enemy \"{creature.m_name}\" " +
+                            $"at {enemyDist:F1}m — CombatController will engage");
+                        // Don't clear the target! Let combat run.
+                        return;
+                    }
+                    else
+                    {
+                        // Enemy is far away — clear and continue gathering
+                        Log($"Clearing distant combat target \"{creature.m_name}\" " +
+                            $"dist={enemyDist:F1}m — too far for self-defense");
+                        ReflectionHelper.ClearAllTargets(_ai);
+                    }
+                }
+
+                // Also clear static targets that might have been set
+                var staticT = ReflectionHelper.GetTargetStatic(_ai);
+                if (staticT != null)
+                {
+                    Log($"Clearing static combat target \"{staticT.name}\"");
+                    ReflectionHelper.TrySetTargetStatic(_ai, null);
                 }
             }
 
@@ -270,9 +299,11 @@ namespace Companions
         private void ResetToIdle()
         {
             var prevState = _state;
-            _state     = State_Idle;
-            _target    = null;
-            _scanTimer = 0f;
+            _state      = State_Idle;
+            _target     = null;
+            _targetType = null;
+            _swingCount = 0;
+            _scanTimer  = 0f;
 
             // Restore follow target so companion follows player between targets
             if (_ai != null && Player.m_localPlayer != null)
@@ -291,6 +322,27 @@ namespace Companions
             _scanTimer -= Time.deltaTime;
             if (_scanTimer > 0f) return;
             _scanTimer = ScanInterval;
+
+            // Cleanup expired blacklist entries
+            if (_blacklist.Count > 0)
+            {
+                float now = Time.time;
+                List<int> expired = null;
+                foreach (var kvp in _blacklist)
+                {
+                    if (now - kvp.Value > BlacklistDuration)
+                    {
+                        if (expired == null) expired = new List<int>();
+                        expired.Add(kvp.Key);
+                    }
+                }
+                if (expired != null)
+                {
+                    for (int i = 0; i < expired.Count; i++)
+                        _blacklist.Remove(expired[i]);
+                    Log($"Blacklist cleanup: removed {expired.Count} expired, {_blacklist.Count} remain");
+                }
+            }
 
             Log($"Scanning for targets... mode={mode} " +
                 $"pos={transform.position:F1} radius={ScanRadius}");
@@ -319,6 +371,8 @@ namespace Companions
                 $"chop={tool.GetDamage().m_chop:F0} pick={tool.GetDamage().m_pickaxe:F0}");
 
             _target = target;
+            _targetType = ClassifyTargetType(target, mode);
+            _swingCount = 0;
             EquipTool(tool);
 
             // Set follow target to the harvest resource — MonsterAI.Follow() will
@@ -364,6 +418,8 @@ namespace Companions
                     $"myPos={transform.position:F1} targetPos={_target.transform.position:F1} " +
                     $"targetY={_target.transform.position.y:F2} myY={transform.position.y:F2} " +
                     $"heightDiff={(_target.transform.position.y - transform.position.y):F2}");
+                _blacklist[_target.GetInstanceID()] = Time.time;
+                Log($"Blacklisted \"{_target.name}\" (id={_target.GetInstanceID()}) for {BlacklistDuration}s");
                 ResetToIdle();
                 return;
             }
@@ -373,7 +429,9 @@ namespace Companions
 
             // MonsterAI.Follow() handles primary movement (pathfinding, speed).
             // We call MoveTo as reinforcement in case Follow stops early (< 3m).
-            bool moveResult = ReflectionHelper.TryMoveTo(_ai, dt, targetPos, range, true);
+            // Low targets need tighter approach — use half range as goal.
+            float moveGoal = IsLowTarget() ? range * 0.5f : range;
+            bool moveResult = ReflectionHelper.TryMoveTo(_ai, dt, targetPos, moveGoal, true);
 
             // Periodic movement logging (every 1s to avoid spam)
             _moveLogTimer -= dt;
@@ -394,9 +452,12 @@ namespace Companions
                     $"heightDiff={(targetPos.y - transform.position.y):F2}");
             }
 
-            // Check if we've arrived (distance within attack range + slack)
+            // Check if we've arrived — low targets (logs/stumps) need tighter approach
+            // so the hit detection sphere actually reaches them
             float distToTarget = Vector3.Distance(transform.position, targetPos);
-            if (distToTarget <= range + ArrivalSlack)
+            bool isLow = IsLowTarget();
+            float arrivalDist = isLow ? range * 0.7f : range + ArrivalSlack;
+            if (distToTarget <= arrivalDist)
             {
                 if (_ai != null) _ai.StopMoving();
                 FaceTarget();
@@ -404,7 +465,7 @@ namespace Companions
                 _state = State_Attacking;
 
                 Log($"ARRIVED at \"{_target.name}\" dist={distToTarget:F1}m " +
-                    $"(range={range:F1} + slack={ArrivalSlack}) — switching to Attacking");
+                    $"(threshold={arrivalDist:F1} isLow={isLow}) — switching to Attacking");
             }
         }
 
@@ -426,12 +487,16 @@ namespace Companions
             // During attack, shuffle closer if beyond actual hit range.
             // Follow() stops at ~3m but weapon range is ~2.2m — the gap means
             // small targets get missed. LateUpdate overrides Follow's StopMoving.
+            // After 2+ swings (likely whiffing), get much more aggressive about closing distance.
             if (_state == State_Attacking && _target != null && _ai != null)
             {
                 float dist = Vector3.Distance(transform.position, _target.transform.position);
                 float range = GetAttackRange();
-                if (dist > range * 0.8f)
-                    ReflectionHelper.TryMoveTo(_ai, Time.deltaTime, _target.transform.position, range * 0.5f, false);
+                bool needsCloser = _swingCount >= 2 || IsLowTarget();
+                float shuffleThreshold = needsCloser ? range * 0.5f : range * 0.8f;
+                float shuffleGoal     = needsCloser ? range * 0.2f : range * 0.5f;
+                if (dist > shuffleThreshold)
+                    ReflectionHelper.TryMoveTo(_ai, Time.deltaTime, _target.transform.position, shuffleGoal, false);
             }
         }
 
@@ -507,13 +572,31 @@ namespace Companions
                 return;
             }
 
-            // Swing at target (null = not a Character, false = primary attack)
-            bool attacked = _humanoid != null && _humanoid.StartAttack(null, false);
+            // Use power attack (secondary, downward swing) for low targets like
+            // fallen logs and stumps — horizontal swing often passes over them.
+            // Also escalate to power attack after 3+ whiffs on any target.
+            bool usePowerAttack = IsLowTarget() || _swingCount >= 3;
+
+            bool attacked = _humanoid != null && _humanoid.StartAttack(null, usePowerAttack);
             _attackTimer = attacked ? AttackInterval : AttackRetry;
+            if (attacked) _swingCount++;
+
+            // Whiff bailout — if we've swung this many times without destroying
+            // the target, it's unreachable. Abandon and find something else.
+            if (_swingCount >= WhiffRetryMax)
+            {
+                LogWarn($"Whiff bailout — {_swingCount} swings on \"{_target.name}\" " +
+                    $"dist={dist:F1}m without destruction. Abandoning target.");
+                _blacklist[_target.GetInstanceID()] = Time.time;
+                Log($"Blacklisted \"{_target.name}\" (id={_target.GetInstanceID()}) for {BlacklistDuration}s");
+                ResetToIdle();
+                return;
+            }
 
             Log($"Attack swing → \"{_target.name}\" " +
                 $"success={attacked} dist={dist:F1}m " +
                 $"weapon=\"{weapon?.m_shared?.m_name ?? "NONE"}\" " +
+                $"power={usePowerAttack} swings={_swingCount} " +
                 $"equipped={(_humanoid != null && weapon != null ? _humanoid.IsItemEquiped(weapon) : false)} " +
                 $"nextSwing={_attackTimer:F1}s");
 
@@ -735,6 +818,9 @@ namespace Companions
                 if (candidate == null) continue;
                 if (!_seenIds.Add(candidate.GetInstanceID())) continue;
 
+                // Skip blacklisted (unreachable) targets
+                if (_blacklist.ContainsKey(candidate.GetInstanceID())) continue;
+
                 candidateCount++;
                 float dist = Vector3.Distance(transform.position, candidate.transform.position);
 
@@ -841,6 +927,7 @@ namespace Companions
             foreach (var item in inv.GetAllItems())
             {
                 if (item?.m_shared == null) continue;
+                if (item.m_shared.m_useDurability && item.m_durability <= 0f) continue;
                 var dmg = item.GetDamage();
 
                 bool match = false;
@@ -1004,6 +1091,30 @@ namespace Companions
             if (weapon?.m_shared?.m_attack != null)
                 return weapon.m_shared.m_attack.m_attackRange;
             return 2f;
+        }
+
+        /// <summary>True for targets lying on the ground (logs, stumps) where horizontal swings whiff.</summary>
+        private bool IsLowTarget()
+        {
+            return _targetType == "TreeLog" || _targetType == "Stump";
+        }
+
+        /// <summary>Determine the resource type of the target for attack strategy.</summary>
+        private static string ClassifyTargetType(GameObject target, int mode)
+        {
+            if (target == null) return null;
+            if (mode == CompanionSetup.ModeGatherWood)
+            {
+                if (target.GetComponent<TreeBase>() != null) return "TreeBase";
+                if (target.GetComponent<TreeLog>() != null) return "TreeLog";
+                var dest = target.GetComponent<Destructible>();
+                if (dest != null && target.name.IndexOf("stub", System.StringComparison.OrdinalIgnoreCase) >= 0)
+                    return "Stump";
+            }
+            if (target.GetComponent<MineRock5>() != null) return "MineRock5";
+            if (target.GetComponent<MineRock>() != null) return "MineRock";
+            if (target.GetComponent<Destructible>() != null) return "Destructible";
+            return "Unknown";
         }
 
         private void FaceTarget()

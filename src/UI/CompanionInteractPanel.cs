@@ -21,20 +21,21 @@ namespace Companions
 
         // ── Public state ─────────────────────────────────────────────────────
         public bool IsVisible => _visible;
+        public bool IsNameInputFocused => _nameInput != null && _nameInput.isFocused;
         public CompanionSetup CurrentCompanion => _companion;
 
         // ── Layout constants ─────────────────────────────────────────────────
-        private const float PanelW       = 270f;
-        private const float PanelH       = 490f;
+        private const float PanelW       = 260f;
+        private const float PanelH       = 349f;
         private const float UiScale      = 1.25f;
         private const float OuterPad     = 6f;
         private const float TabBarH      = 28f;
 
         // ── Grid constants ───────────────────────────────────────────────────
-        private const int GridCols          = 4;
-        private const int GridSlots         = 32;
+        private const int GridCols          = 5;
+        private const int GridSlots         = 30;
         private const int FoodSlotCount     = 3;
-        private const int MainGridSlots     = 32;
+        private const int MainGridSlots     = 30;
         private const float InventorySlotGap = 3f;
 
         // ── Style constants ──────────────────────────────────────────────────
@@ -44,10 +45,6 @@ namespace Companions
         private static readonly Color GoldTextColor  = new Color(0.83f, 0.52f, 0.18f, 1f);
         private static readonly Color LabelText      = new Color(1f, 0.9f, 0.5f, 1f);
         private static readonly Color EquipBlue      = new Color(0.29f, 0.55f, 0.94f, 1f);
-        private static readonly Color HealthRed      = new Color(0.48f, 0.08f, 0.08f, 1f);
-        private static readonly Color StaminaYellow  = new Color(0.48f, 0.40f, 0.08f, 1f);
-        private static readonly Color ArmorGray      = new Color(0.35f, 0.35f, 0.38f, 1f);
-        private static readonly Color WeightOrange   = new Color(0.48f, 0.30f, 0.08f, 1f);
         private static readonly Color BarBg          = new Color(0.15f, 0.15f, 0.15f, 0.85f);
         private static readonly Color SlotTint       = new Color(0f, 0f, 0f, 0.5625f);
         private static readonly Color EquippedSlotTint = new Color(0.10f, 0.20f, 0.38f, 0.80f);
@@ -55,14 +52,6 @@ namespace Companions
         // ── Custom sprite caches ─────────────────────────────────────────────
         private static Sprite _panelBgSprite;
         private static Sprite _sliderBgSprite;
-        private static Sprite _healthBarGradientSprite;
-        private static Sprite _staminaBarGradientSprite;
-        private static Sprite _armorBarGradientSprite;
-        private static Sprite _weightBarGradientSprite;
-        private static Texture2D _healthBarGradientTex;
-        private static Texture2D _staminaBarGradientTex;
-        private static Texture2D _armorBarGradientTex;
-        private static Texture2D _weightBarGradientTex;
 
         // ── Button template ──────────────────────────────────────────────────
         private static GameObject _buttonTemplate;
@@ -113,14 +102,6 @@ namespace Companions
         // ── UI elements ──────────────────────────────────────────────────────
         private GameObject      _root;
         private TMP_InputField  _nameInput;
-        private Image           _healthFill;
-        private TextMeshProUGUI _healthText;
-        private Image           _staminaFill;
-        private TextMeshProUGUI _staminaText;
-        private Image           _weightFill;
-        private TextMeshProUGUI _weightText;
-        private Image           _armorFill;
-        private TextMeshProUGUI _armorText;
         private TextMeshProUGUI _modeText;
         private Button          _followBtn;
         private Button          _gatherWoodBtn;
@@ -139,6 +120,8 @@ namespace Companions
         private Image[]           _slotIcons;
         private TextMeshProUGUI[] _slotCounts;
         private Image[]           _slotBorders;
+        private GameObject[]      _slotDurabilityBars;
+        private Image[]           _slotDurabilityFills;
         private Image[]           _foodSlotIcons;
         private TextMeshProUGUI[] _foodSlotCounts;
         private float             _invRefreshTimer;
@@ -308,77 +291,6 @@ namespace Companions
             return _sliderBgSprite;
         }
 
-        private static Sprite BuildBarGradientSprite(
-            ref Sprite cacheSprite, ref Texture2D cacheTexture,
-            Color leftColor, Color rightColor, string name)
-        {
-            if (cacheSprite != null) return cacheSprite;
-
-            const int w = 64;
-            const int h = 8;
-            cacheTexture = new Texture2D(w, h, TextureFormat.RGBA32, false);
-            cacheTexture.wrapMode   = TextureWrapMode.Clamp;
-            cacheTexture.filterMode = FilterMode.Bilinear;
-
-            for (int y = 0; y < h; y++)
-            {
-                float v = h <= 1 ? 0f : y / (float)(h - 1);
-                float vertical = Mathf.Lerp(1.06f, 0.84f, v);
-                for (int x = 0; x < w; x++)
-                {
-                    float t = w <= 1 ? 0f : x / (float)(w - 1);
-                    var c = Color.Lerp(leftColor, rightColor, t) * vertical;
-                    c.a = 1f;
-                    cacheTexture.SetPixel(x, y, c);
-                }
-            }
-            cacheTexture.Apply();
-
-            cacheSprite = Sprite.Create(
-                cacheTexture,
-                new Rect(0f, 0f, w, h),
-                new Vector2(0.5f, 0.5f),
-                100f);
-            cacheSprite.name = name;
-            return cacheSprite;
-        }
-
-        private static Sprite GetHealthBarFillSprite()
-        {
-            return BuildBarGradientSprite(
-                ref _healthBarGradientSprite, ref _healthBarGradientTex,
-                new Color(0.52f, 0.11f, 0.11f, 1f),
-                new Color(0.27f, 0.05f, 0.05f, 1f),
-                "CIP_HealthBarGradient");
-        }
-
-        private static Sprite GetStaminaBarFillSprite()
-        {
-            return BuildBarGradientSprite(
-                ref _staminaBarGradientSprite, ref _staminaBarGradientTex,
-                new Color(0.52f, 0.43f, 0.10f, 1f),
-                new Color(0.30f, 0.24f, 0.05f, 1f),
-                "CIP_StaminaBarGradient");
-        }
-
-        private static Sprite GetArmorBarFillSprite()
-        {
-            return BuildBarGradientSprite(
-                ref _armorBarGradientSprite, ref _armorBarGradientTex,
-                new Color(0.40f, 0.40f, 0.44f, 1f),
-                new Color(0.22f, 0.22f, 0.26f, 1f),
-                "CIP_ArmorBarGradient");
-        }
-
-        private static Sprite GetWeightBarFillSprite()
-        {
-            return BuildBarGradientSprite(
-                ref _weightBarGradientSprite, ref _weightBarGradientTex,
-                new Color(0.55f, 0.35f, 0.12f, 1f),
-                new Color(0.35f, 0.20f, 0.06f, 1f),
-                "CIP_WeightBarGradient");
-        }
-
         // ══════════════════════════════════════════════════════════════════════
         //  Button template
         // ══════════════════════════════════════════════════════════════════════
@@ -494,7 +406,7 @@ namespace Companions
             BuildPreview(_actionsContent, font);
 
             // Inventory tab: inventory grid + food slots
-            var invPad = MakePadded(_inventoryContent, 4f);
+            var invPad = MakePadded(_inventoryContent, 2f);
             BuildInventoryContent(invPad, font);
 
             // Mode text — anchored to bottom of root panel (always visible)
@@ -601,11 +513,28 @@ namespace Companions
             SetBtnHighlight(_inventoryTabBtn, tab == 1);
         }
 
+        private static float ComputeInventorySlotSize()
+        {
+            int gridRows = Mathf.CeilToInt(MainGridSlots / (float)GridCols);
+
+            float availW = PanelW - OuterPad * 2f - 4f;
+            float slotW = (availW - (GridCols - 1) * InventorySlotGap) / GridCols;
+
+            // Food section overhead: bottomY(4) + gap(2) + label(14) + gap(4) + sep(1) + gridGap(8) = 33
+            const float foodOverhead = 33f;
+            float totalH = PanelH - OuterPad * 2f - TabBarH - 4f;
+            // Height budget: gridRows grid slots + 1 food slot row + overhead + row gaps
+            float slotH = (totalH - foodOverhead - (gridRows - 1) * InventorySlotGap) / (gridRows + 1);
+
+            return Mathf.Floor(Mathf.Min(slotW, slotH));
+        }
+
         private void BuildInventoryContent(RectTransform parent, TMP_FontAsset font)
         {
+            float slotSize = ComputeInventorySlotSize();
             float y = 0f;
-            BuildInventoryGrid(parent, font, ref y);
-            BuildFoodSlots(parent, font);
+            BuildInventoryGrid(parent, font, ref y, slotSize);
+            BuildFoodSlots(parent, font, slotSize);
         }
 
         private void BuildActionControls(RectTransform parent, TMP_FontAsset font, ref float y)
@@ -628,7 +557,7 @@ namespace Companions
 
         private float BuildNameInput(RectTransform parent, TMP_FontAsset font, float y)
         {
-            float h = 30f;
+            float h = 26f;
 
             var inputGO = new GameObject("NameInput", typeof(RectTransform), typeof(Image));
             inputGO.transform.SetParent(parent, false);
@@ -694,74 +623,20 @@ namespace Companions
             return y - h;
         }
 
-        private void BuildStatBar(RectTransform parent, TMP_FontAsset font, ref float y,
-            Sprite fillSprite, Color fillColor, out Image fill, out TextMeshProUGUI text)
-        {
-            float barH = 17f;
-
-            var barGO = new GameObject("Bar", typeof(RectTransform), typeof(Image));
-            barGO.transform.SetParent(parent, false);
-            var barRT = barGO.GetComponent<RectTransform>();
-            barRT.anchorMin = new Vector2(0.03f, 1f);
-            barRT.anchorMax = new Vector2(0.97f, 1f);
-            barRT.pivot = new Vector2(0.5f, 1f);
-            barRT.sizeDelta = new Vector2(0f, barH);
-            barRT.anchoredPosition = new Vector2(0f, y);
-
-            var bgSprite = GetSliderBgSprite();
-            var bgImg = barGO.GetComponent<Image>();
-            if (bgSprite != null)
-            {
-                bgImg.sprite = bgSprite;
-                bgImg.type = Image.Type.Simple;
-                bgImg.color = Color.white;
-            }
-            else
-            {
-                bgImg.color = BarBg;
-            }
-
-            var fillGO = new GameObject("Fill", typeof(RectTransform), typeof(Image));
-            fillGO.transform.SetParent(barGO.transform, false);
-            var fillRT = fillGO.GetComponent<RectTransform>();
-            fillRT.anchorMin = Vector2.zero;
-            fillRT.anchorMax = new Vector2(1f, 1f);
-            fillRT.offsetMin = new Vector2(2f, 2f);
-            fillRT.offsetMax = new Vector2(-2f, -2f);
-            fill = fillGO.GetComponent<Image>();
-            if (fillSprite != null)
-            {
-                fill.sprite = fillSprite;
-                fill.type = Image.Type.Simple;
-                fill.color = Color.white;
-            }
-            else
-            {
-                fill.color = fillColor;
-            }
-
-            var valTmp = MakeText(barGO.transform, "Value", "0 / 0",
-                font, 11f, Color.white, TextAlignmentOptions.Center);
-            StretchFill(valTmp.GetComponent<RectTransform>());
-            text = valTmp;
-
-            y -= barH;
-        }
-
-        private void BuildInventoryGrid(RectTransform parent, TMP_FontAsset font, ref float y)
+        private void BuildInventoryGrid(RectTransform parent, TMP_FontAsset font, ref float y, float slotSize)
         {
             _slotBgs = new Image[MainGridSlots];
             _slotIcons = new Image[MainGridSlots];
             _slotCounts = new TextMeshProUGUI[MainGridSlots];
             _slotBorders = new Image[MainGridSlots];
+            _slotDurabilityBars = new GameObject[MainGridSlots];
+            _slotDurabilityFills = new Image[MainGridSlots];
+            CompanionsPlugin.Log.LogInfo(
+                $"[UI] BuildInventoryGrid — {GridCols}x{Mathf.CeilToInt(MainGridSlots / (float)GridCols)} grid, " +
+                $"slotSize={slotSize}px, durability bars enabled");
 
             int gridRows = Mathf.CeilToInt(MainGridSlots / (float)GridCols);
 
-            float availW = PanelW - OuterPad * 2f - 8f;
-            float availH = PanelH - OuterPad * 2f - TabBarH - 8f;
-            float slotW = (availW - (GridCols - 1) * InventorySlotGap) / GridCols;
-            float slotH = (availH - (gridRows - 1) * InventorySlotGap) / gridRows;
-            float slotSize = Mathf.Floor(Mathf.Min(slotW, slotH));
             float gridW = GridCols * slotSize + (GridCols - 1) * InventorySlotGap;
             float gridH = gridRows * slotSize + (gridRows - 1) * InventorySlotGap;
 
@@ -839,9 +714,11 @@ namespace Companions
                 countGO.transform.SetParent(slotGO.transform, false);
                 var countTmp = countGO.AddComponent<TextMeshProUGUI>();
                 if (font != null) countTmp.font = font;
-                countTmp.fontSize = 10f;
+                countTmp.fontSize = 9f;
                 countTmp.color = Color.white;
                 countTmp.alignment = TextAlignmentOptions.BottomRight;
+                countTmp.textWrappingMode = TextWrappingModes.NoWrap;
+                countTmp.overflowMode = TextOverflowModes.Overflow;
                 countTmp.raycastTarget = false;
                 var countRT = countGO.GetComponent<RectTransform>();
                 countRT.anchorMin = Vector2.zero;
@@ -850,17 +727,42 @@ namespace Companions
                 countRT.offsetMax = new Vector2(-2f, -1f);
                 _slotCounts[i] = countTmp;
                 _slotCounts[i].enabled = false;
+
+                // Durability bar — thin bar at slot bottom
+                var durBarGO = new GameObject("DurabilityBg", typeof(RectTransform), typeof(Image));
+                durBarGO.transform.SetParent(slotGO.transform, false);
+                var durBgRT = durBarGO.GetComponent<RectTransform>();
+                durBgRT.anchorMin = new Vector2(0f, 0f);
+                durBgRT.anchorMax = new Vector2(1f, 0f);
+                durBgRT.pivot = new Vector2(0.5f, 0f);
+                durBgRT.sizeDelta = new Vector2(0f, 3f);
+                durBgRT.anchoredPosition = new Vector2(0f, 1f);
+                durBarGO.GetComponent<Image>().color = new Color(0f, 0f, 0f, 0.5f);
+                durBarGO.GetComponent<Image>().raycastTarget = false;
+                durBarGO.SetActive(false);
+
+                var durFillGO = new GameObject("DurabilityFill", typeof(RectTransform), typeof(Image));
+                durFillGO.transform.SetParent(durBarGO.transform, false);
+                var durFillRT = durFillGO.GetComponent<RectTransform>();
+                durFillRT.anchorMin = Vector2.zero;
+                durFillRT.anchorMax = Vector2.one;
+                durFillRT.offsetMin = Vector2.zero;
+                durFillRT.offsetMax = Vector2.zero;
+                durFillGO.GetComponent<Image>().raycastTarget = false;
+
+                _slotDurabilityBars[i] = durBarGO;
+                _slotDurabilityFills[i] = durFillGO.GetComponent<Image>();
             }
 
             y -= gridH;
         }
 
-        private void BuildFoodSlots(RectTransform parent, TMP_FontAsset font)
+        private void BuildFoodSlots(RectTransform parent, TMP_FontAsset font, float slotSize)
         {
-            float bottomY = 6f;
+            float bottomY = 4f;
             _foodSlotIcons = new Image[FoodSlotCount];
             _foodSlotCounts = new TextMeshProUGUI[FoodSlotCount];
-            float foodSlotSz = 42f;
+            float foodSlotSz = slotSize;
             float foodGap = 3f;
             float foodRowW = FoodSlotCount * foodSlotSz + (FoodSlotCount - 1) * foodGap;
 
@@ -940,9 +842,11 @@ namespace Companions
                 countGO.transform.SetParent(slotGO.transform, false);
                 var countTmp = countGO.AddComponent<TextMeshProUGUI>();
                 if (font != null) countTmp.font = font;
-                countTmp.fontSize = 10f;
+                countTmp.fontSize = 9f;
                 countTmp.color = Color.white;
                 countTmp.alignment = TextAlignmentOptions.BottomRight;
+                countTmp.textWrappingMode = TextWrappingModes.NoWrap;
+                countTmp.overflowMode = TextOverflowModes.Overflow;
                 countTmp.raycastTarget = false;
                 var countRT = countGO.GetComponent<RectTransform>();
                 countRT.anchorMin = Vector2.zero;
@@ -1003,26 +907,7 @@ namespace Companions
             PlaceTopStretch(nameHeader.GetComponent<RectTransform>(), ref topY, 14f);
             topY -= 2f;
             topY = BuildNameInput(col, font, topY);
-            topY -= 6f;
-
-            // ── Stats section ──
-            var statsHeader = MakeText(col, "StatsHeader", "Stats",
-                font, 11f, GoldColor, TextAlignmentOptions.Center);
-            statsHeader.fontStyle = FontStyles.Bold;
-            PlaceTopStretch(statsHeader.GetComponent<RectTransform>(), ref topY, 14f);
-            topY -= 2f;
-            BuildStatBar(col, font, ref topY, GetHealthBarFillSprite(), HealthRed,
-                out _healthFill, out _healthText);
-            topY -= 2f;
-            BuildStatBar(col, font, ref topY, GetStaminaBarFillSprite(), StaminaYellow,
-                out _staminaFill, out _staminaText);
-            topY -= 2f;
-            BuildStatBar(col, font, ref topY, GetArmorBarFillSprite(), ArmorGray,
-                out _armorFill, out _armorText);
-            topY -= 2f;
-            BuildStatBar(col, font, ref topY, GetWeightBarFillSprite(), WeightOrange,
-                out _weightFill, out _weightText);
-            topY -= 6f;
+            topY -= 4f;
 
             // ── Actions section ──
             var actionsHeader = MakeText(col, "ActionsHeader", "Actions",
@@ -1105,19 +990,16 @@ namespace Companions
                 $"dragItem=\"{dragItem?.m_shared?.m_name}\" dragInv={dragInv != null} dragAmt={dragAmt} " +
                 $"invItems={inv.GetAllItems().Count}");
 
-            // Food row = row 0, columns 0..2 — always enforce food-only
-            bool isFoodRow = gy == 0 && gx < FoodSlotCount;
-
             if (dragItem != null && dragInv != null)
             {
-                if ((consumableOnly || isFoodRow) && !IsConsumableItem(dragItem))
+                if (consumableOnly && !IsConsumableItem(dragItem))
                 {
                     CompanionsPlugin.Log.LogInfo(
                         $"[UI] Food slot REJECTED drag — \"{dragItem.m_shared?.m_name}\" " +
                         $"type={dragItem.m_shared?.m_itemType} " +
                         $"food={dragItem.m_shared?.m_food} stam={dragItem.m_shared?.m_foodStamina} " +
                         $"eitr={dragItem.m_shared?.m_foodEitr} " +
-                        $"slot=({gx},{gy}) consumableOnly={consumableOnly} isFoodRow={isFoodRow}");
+                        $"slot=({gx},{gy}) consumableOnly={consumableOnly}");
                     MessageHud.instance?.ShowMessage(
                         MessageHud.MessageType.Center,
                         "Food slots only accept food items.");
@@ -1140,7 +1022,7 @@ namespace Companions
                 }
 
                 var targetItem = inv.GetItemAt(gx, gy);
-                if ((consumableOnly || isFoodRow) && targetItem != null && !IsConsumableItem(targetItem))
+                if (consumableOnly && targetItem != null && !IsConsumableItem(targetItem))
                 {
                     CompanionsPlugin.Log.LogInfo(
                         $"[UI] Food slot REJECTED swap — target \"{targetItem.m_shared?.m_name}\" " +
@@ -1173,37 +1055,24 @@ namespace Companions
             }
             else
             {
-                // Click item in companion inventory -> move to player inventory
+                // No drag active — pick up item from companion inventory to start drag
                 var item = inv.GetItemAt(gx, gy);
                 if (item == null)
                 {
-                    CompanionsPlugin.Log.LogInfo($"[UI] No item at companion slot ({gx},{gy}) — nothing to move");
+                    CompanionsPlugin.Log.LogInfo($"[UI] No item at companion slot ({gx},{gy}) — nothing to pick up");
                     return;
                 }
-                if (Player.m_localPlayer != null)
+
+                CompanionsPlugin.Log.LogInfo(
+                    $"[UI] Picking up \"{item.m_shared?.m_name}\" from companion({gx},{gy}) " +
+                    $"stack={item.m_stack} — starting drag");
+
+                if (_setupDragItem != null && InventoryGui.instance != null)
                 {
-                    var playerInv = Player.m_localPlayer.GetInventory();
-                    if (playerInv != null)
-                    {
-                        bool wasEquipped = _companionHumanoid.IsItemEquiped(item);
-                        if (wasEquipped)
-                            _companionHumanoid.UnequipItem(item, false);
-                        int beforeCount = inv.GetAllItems().Count;
-                        int beforeStack = item.m_stack;
-                        Vector2i beforePos = item.m_gridPos;
-                        CompanionsPlugin.Log.LogInfo(
-                            $"[UI] Moving \"{item.m_shared?.m_name}\" from companion({gx},{gy}) → player " +
-                            $"stack={item.m_stack} wasEquipped={wasEquipped}");
-                        playerInv.MoveItemToThis(inv, item);
-                        changed = !inv.ContainsItem(item) ||
-                                  item.m_stack != beforeStack ||
-                                  item.m_gridPos.x != beforePos.x ||
-                                  item.m_gridPos.y != beforePos.y ||
-                                  inv.GetAllItems().Count != beforeCount;
-                        CompanionsPlugin.Log.LogInfo(
-                            $"[UI] MoveItemToThis result: changed={changed}");
-                    }
+                    _setupDragItem.Invoke(InventoryGui.instance,
+                        new object[] { item, inv, item.m_stack });
                 }
+                return;
             }
 
             if (changed)
@@ -1496,48 +1365,6 @@ namespace Companions
 
         private void UpdateBars()
         {
-            if (_companionChar != null && _healthFill != null)
-            {
-                float hp    = _companionChar.GetHealth();
-                float maxHp = _companionChar.GetMaxHealth();
-                float pct   = maxHp > 0f ? hp / maxHp : 0f;
-                _healthFill.GetComponent<RectTransform>().anchorMax = new Vector2(pct, 1f);
-                if (_healthText != null)
-                    _healthText.text = $"Health: {Mathf.CeilToInt(hp)} / {Mathf.CeilToInt(maxHp)}";
-            }
-
-            if (_companionStamina != null && _staminaFill != null)
-            {
-                float pct = _companionStamina.GetStaminaPercentage();
-                float cur = _companionStamina.Stamina;
-                float max = _companionStamina.MaxStamina;
-                _staminaFill.GetComponent<RectTransform>().anchorMax = new Vector2(pct, 1f);
-                if (_staminaText != null)
-                    _staminaText.text = $"Stamina: {Mathf.CeilToInt(cur)} / {Mathf.CeilToInt(max)}";
-            }
-
-            if (_companion != null && _armorFill != null)
-            {
-                float armor = _companion.GetTotalArmor();
-                _armorFill.GetComponent<RectTransform>().anchorMax = new Vector2(1f, 1f);
-                if (_armorText != null)
-                    _armorText.text = $"Armor: {Mathf.RoundToInt(armor)}";
-            }
-
-            if (_companionHumanoid != null && _weightFill != null)
-            {
-                var inv = _companionHumanoid.GetInventory();
-                if (inv != null)
-                {
-                    float weight = inv.GetTotalWeight();
-                    float maxWeight = CompanionTierData.MaxCarryWeight;
-                    float pct = maxWeight > 0f ? Mathf.Clamp01(weight / maxWeight) : 0f;
-                    _weightFill.GetComponent<RectTransform>().anchorMax = new Vector2(pct, 1f);
-                    if (_weightText != null)
-                        _weightText.text = $"Weight: {Mathf.RoundToInt(weight)} / {Mathf.RoundToInt(maxWeight)}";
-                }
-            }
-
         }
 
         // ══════════════════════════════════════════════════════════════════════
@@ -1561,6 +1388,8 @@ namespace Companions
                 _slotCounts[i].enabled  = false;
                 _slotBorders[i].enabled = false;
                 _slotBgs[i].color       = SlotTint;
+                if (_slotDurabilityBars != null && _slotDurabilityBars[i] != null)
+                    _slotDurabilityBars[i].SetActive(false);
             }
             if (_foodSlotIcons != null && _foodSlotCounts != null)
             {
@@ -1591,6 +1420,34 @@ namespace Companions
                 {
                     _slotBorders[flatIndex].enabled = true;
                     _slotBgs[flatIndex].color = EquippedSlotTint;
+                }
+
+                // Durability bar
+                if (_slotDurabilityBars != null && _slotDurabilityFills != null
+                    && item.m_shared != null && item.m_shared.m_useDurability)
+                {
+                    bool damaged = item.m_durability < item.GetMaxDurability();
+                    _slotDurabilityBars[flatIndex].SetActive(damaged);
+                    if (damaged)
+                    {
+                        var fillRT = _slotDurabilityFills[flatIndex].GetComponent<RectTransform>();
+                        if (item.m_durability <= 0f)
+                        {
+                            fillRT.anchorMax = Vector2.one;
+                            bool blink = Mathf.Sin(Time.time * 10f) > 0f;
+                            _slotDurabilityFills[flatIndex].color = blink
+                                ? Color.red : new Color(0f, 0f, 0f, 0f);
+                        }
+                        else
+                        {
+                            float pct = item.GetDurabilityPercentage();
+                            fillRT.anchorMax = new Vector2(pct, 1f);
+                            Color durColor = pct > 0.5f
+                                ? Color.Lerp(Color.yellow, Color.green, (pct - 0.5f) * 2f)
+                                : Color.Lerp(Color.red, Color.yellow, pct * 2f);
+                            _slotDurabilityFills[flatIndex].color = durColor;
+                        }
+                    }
                 }
             }
 
@@ -1628,7 +1485,7 @@ namespace Companions
                 if (showedActiveFood) continue;
 
                 var slotted = inv.GetItemAt(i, 0);
-                if (slotted == null) continue;
+                if (slotted == null || !IsConsumableItem(slotted)) continue;
                 _foodSlotIcons[i].sprite = slotted.GetIcon();
                 _foodSlotIcons[i].enabled = true;
                 if (slotted.m_shared != null && slotted.m_shared.m_maxStackSize > 1)
@@ -1998,14 +1855,6 @@ namespace Companions
 
             _panelBgSprite  = null;
             _sliderBgSprite = null;
-            if (_healthBarGradientSprite != null) { UnityEngine.Object.Destroy(_healthBarGradientSprite); _healthBarGradientSprite = null; }
-            if (_staminaBarGradientSprite != null) { UnityEngine.Object.Destroy(_staminaBarGradientSprite); _staminaBarGradientSprite = null; }
-            if (_armorBarGradientSprite != null) { UnityEngine.Object.Destroy(_armorBarGradientSprite); _armorBarGradientSprite = null; }
-            if (_weightBarGradientSprite != null) { UnityEngine.Object.Destroy(_weightBarGradientSprite); _weightBarGradientSprite = null; }
-            if (_healthBarGradientTex != null) { UnityEngine.Object.Destroy(_healthBarGradientTex); _healthBarGradientTex = null; }
-            if (_staminaBarGradientTex != null) { UnityEngine.Object.Destroy(_staminaBarGradientTex); _staminaBarGradientTex = null; }
-            if (_armorBarGradientTex != null) { UnityEngine.Object.Destroy(_armorBarGradientTex); _armorBarGradientTex = null; }
-            if (_weightBarGradientTex != null) { UnityEngine.Object.Destroy(_weightBarGradientTex); _weightBarGradientTex = null; }
         }
 
         // ══════════════════════════════════════════════════════════════════════

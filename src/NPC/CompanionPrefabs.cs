@@ -85,8 +85,8 @@ namespace Companions
             // Container — for vanilla chest-style inventory interaction
             var container           = go.AddComponent<Container>();
             container.m_name        = "Companion";
-            container.m_width       = 4;
-            container.m_height      = 8;
+            container.m_width       = 5;
+            container.m_height      = 6;
             container.m_privacy     = Container.PrivacySetting.Public;
             container.m_checkGuardStone = false;
             container.m_openEffects  = new EffectList();
@@ -105,11 +105,18 @@ namespace Companions
             go.AddComponent<HarvestController>();
             CompanionsPlugin.Log.LogInfo("[CompanionPrefabs]   + HarvestController");
 
+            // Advanced combat AI (active in Follow/Stay modes)
+            go.AddComponent<CombatController>();
+            CompanionsPlugin.Log.LogInfo("[CompanionPrefabs]   + CombatController");
+
             // Overhead speech text (context-aware lines like Haldor)
             go.AddComponent<CompanionTalk>();
 
             // Campfire sitting + rested regen
             go.AddComponent<CompanionRest>();
+
+            // Door handling (open, pass through, close behind)
+            go.AddComponent<DoorHandler>();
 
             // Register with ZNetScene
             int hash = StringExtensionMethods.GetStableHashCode(go.name);
