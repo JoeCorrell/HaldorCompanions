@@ -101,8 +101,17 @@ namespace Companions
 
             if (_cooldown > 0f) return;
 
-            // Detect incoming attack — ALWAYS parry if we can
+            // Detect incoming attack — ALWAYS parry if we can.
+            // Primary: EnemyCache's NearestAttackingEnemy (updated every 0.25s).
+            // Fallback: direct InAttack() check on nearest enemy to catch fast
+            // attacks between cache updates (enemy swings are often 0.3-0.5s).
             var attacker = enemies.NearestAttackingEnemy;
+            if (attacker == null && enemies.NearestEnemy != null &&
+                enemies.NearestEnemyDist < DetectRange &&
+                enemies.NearestEnemy.InAttack())
+            {
+                attacker = enemies.NearestEnemy;
+            }
             if (attacker == null) return;
 
             if (HasBlocker())

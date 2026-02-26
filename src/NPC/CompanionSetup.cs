@@ -57,6 +57,11 @@ namespace Companions
             _visEquip = GetComponent<VisEquipment>();
             _ai       = GetComponent<MonsterAI>();
             _humanoid = GetComponent<Humanoid>();
+
+            CompanionsPlugin.Log.LogInfo(
+                $"[Setup] Awake — nview={_nview != null} visEquip={_visEquip != null} " +
+                $"ai={_ai != null} humanoid={_humanoid != null} name=\"{gameObject.name}\"");
+
             TryInit();
         }
 
@@ -66,8 +71,20 @@ namespace Companions
         {
             if (!_initialized) { TryInit(); return; }
 
+            // Process deferred auto-equip (throttled during rapid pickup)
+            if (_autoEquipCooldown > 0f)
+            {
+                _autoEquipCooldown -= Time.deltaTime;
+                if (_autoEquipCooldown <= 0f && _autoEquipPending)
+                {
+                    _autoEquipPending = false;
+                    if (_humanoid != null && _nview != null && _nview.IsOwner() && !SuppressAutoEquip)
+                        AutoEquipBest();
+                }
+            }
+
             // Ensure follow target stays set for follow/gather modes.
-            // It can be lost on zone reload or player respawn.
+            // It can be lost on zone reload, player respawn, or after MonsterAI combat.
             if (_ai != null && _ai.GetFollowTarget() == null && Player.m_localPlayer != null)
             {
                 var zdo = _nview?.GetZDO();
@@ -78,8 +95,28 @@ namespace Companions
                 if (owner != localId) return;
 
                 int mode = zdo.GetInt(ActionModeHash, ModeFollow);
-                if (mode == ModeFollow)
+
+                // ** CONFLICT CHECK ** — If HarvestController is actively moving
+                // to a resource, it intentionally sets followTarget=null.
+                // Do NOT restore it or we'll create a tug-of-war.
+                var harvest = GetComponent<HarvestController>();
+                if (harvest != null && harvest.IsActive)
+                {
+                    // HarvestController is driving movement — don't fight it
+                    return;
+                }
+
+                // Follow and gather modes: companion should follow player when no
+                // harvest waypoint is active. HarvestController overrides with waypoint
+                // when it enters Moving state, but during Idle the companion follows player.
+                if (mode == ModeFollow ||
+                    (mode >= ModeGatherWood && mode <= ModeGatherOre))
+                {
                     _ai.SetFollowTarget(Player.m_localPlayer.gameObject);
+                    CompanionsPlugin.Log.LogInfo(
+                        $"[Setup] Follow target was null — restored to player " +
+                        $"(mode={mode} harvestActive={harvest?.IsActive ?? false})");
+                }
             }
         }
 
@@ -100,6 +137,11 @@ namespace Companions
             RestoreActionMode();
             RestoreName();
             RegisterInventoryCallback();
+
+            int mode = zdo.GetInt(ActionModeHash, ModeFollow);
+            CompanionsPlugin.Log.LogInfo(
+                $"[Setup] Initialized — mode={mode} appearance={(string.IsNullOrEmpty(serial) ? "default" : "saved")} " +
+                $"pos={transform.position:F1}");
 
             _initialized = true;
         }
@@ -178,6 +220,8 @@ namespace Companions
         {
             if (_ai == null) return;
 
+            CompanionsPlugin.Log.LogInfo($"[Setup] ApplyFollowMode — mode={mode}");
+
             switch (mode)
             {
                 case ModeFollow:
@@ -185,13 +229,16 @@ namespace Companions
                 case ModeGatherStone:
                 case ModeGatherOre:
                     _ai.SetFollowTarget(Player.m_localPlayer.gameObject);
+                    CompanionsPlugin.Log.LogInfo($"[Setup]   → Follow player (mode={mode})");
                     break;
                 case ModeStay:
                     _ai.SetFollowTarget(null);
                     _ai.SetPatrolPoint();
+                    CompanionsPlugin.Log.LogInfo($"[Setup]   → Stay/patrol at {transform.position:F1}");
                     break;
                 default:
                     _ai.SetFollowTarget(Player.m_localPlayer.gameObject);
+                    CompanionsPlugin.Log.LogInfo($"[Setup]   → Follow player (default fallback, mode={mode})");
                     break;
             }
         }
@@ -212,6 +259,9 @@ namespace Companions
         // ── Auto-equip ──────────────────────────────────────────────────────
 
         private bool _equipping;
+        private float _autoEquipCooldown;
+        private bool  _autoEquipPending;
+        private const float AutoEquipMinInterval = 0.5f;
 
         private void RegisterInventoryCallback()
         {
@@ -231,7 +281,19 @@ namespace Companions
             try
             {
                 UnequipMissingEquippedItems();
-                if (owner && !SuppressAutoEquip) AutoEquipBest();
+                if (owner && !SuppressAutoEquip)
+                {
+                    CompanionsPlugin.Log.LogInfo("[Setup] OnInventoryChanged — auto-equip triggered");
+                    // Throttle: during rapid pickup the callback fires many times.
+                    // Defer the expensive full scan if on cooldown.
+                    if (_autoEquipCooldown > 0f)
+                        _autoEquipPending = true;
+                    else
+                    {
+                        AutoEquipBest();
+                        _autoEquipCooldown = AutoEquipMinInterval;
+                    }
+                }
             }
             finally { _equipping = false; }
         }
@@ -239,6 +301,8 @@ namespace Companions
         internal void SyncEquipmentToInventory()
         {
             if (_humanoid == null || _nview == null || !_nview.IsOwner()) return;
+            CompanionsPlugin.Log.LogInfo(
+                $"[Setup] SyncEquipmentToInventory — SuppressAutoEquip={SuppressAutoEquip}");
             UnequipMissingEquippedItems();
             if (!SuppressAutoEquip) AutoEquipBest();
         }

@@ -110,7 +110,6 @@ namespace Companions
         private Humanoid         _companionHumanoid;
         private ZNetView         _companionNview;
         private MonsterAI        _companionAI;
-        private CompanionBrain      _companionBrain;
         private HarvestController   _companionHarvest;
 
         // ── UI elements ──────────────────────────────────────────────────────
@@ -196,8 +195,15 @@ namespace Companions
             _companionHumanoid = companion.GetComponent<Humanoid>();
             _companionNview    = companion.GetComponent<ZNetView>();
             _companionAI       = companion.GetComponent<MonsterAI>();
-            _companionBrain    = companion.GetComponent<CompanionBrain>();
             _companionHarvest  = companion.GetComponent<HarvestController>();
+
+            CompanionsPlugin.Log.LogInfo(
+                $"[UI] Show — companion=\"{companion.name}\" " +
+                $"char={_companionChar != null} stamina={_companionStamina != null} " +
+                $"food={_companionFood != null} humanoid={_companionHumanoid != null} " +
+                $"nview={_companionNview != null} ai={_companionAI != null} " +
+                $"harvest={_companionHarvest != null}");
+
             EnsureCompanionOwnership();
 
             // Rebuild if destroyed (scene change) or never built
@@ -251,7 +257,6 @@ namespace Companions
             _companionHumanoid = null;
             _companionNview    = null;
             _companionAI       = null;
-            _companionBrain    = null;
             _companionHarvest  = null;
         }
 
@@ -1186,19 +1191,48 @@ namespace Companions
             EnsureCompanionOwnership();
             int oldMode = _activeMode;
             _activeMode = mode;
-            if (_companionNview != null && _companionNview.GetZDO() != null)
-                _companionNview.GetZDO().Set(CompanionSetup.ActionModeHash, mode);
 
-            _companionBrain?.OnActionModeChanged(oldMode, mode);
+            string oldName = ModeName(oldMode);
+            string newName = ModeName(mode);
+            CompanionsPlugin.Log.LogInfo(
+                $"[UI] SetActionMode: {oldName}({oldMode}) → {newName}({mode}) " +
+                $"harvest={(_companionHarvest != null ? "attached" : "NULL")} " +
+                $"ai={(_companionAI != null ? "attached" : "NULL")}");
+
+            if (_companionNview != null && _companionNview.GetZDO() != null)
+            {
+                _companionNview.GetZDO().Set(CompanionSetup.ActionModeHash, mode);
+                CompanionsPlugin.Log.LogInfo($"[UI]   ZDO ActionModeHash set to {mode}");
+            }
+            else
+                CompanionsPlugin.Log.LogWarning("[UI]   ZDO is null — mode NOT persisted!");
+
             _companionHarvest?.NotifyActionModeChanged();
             ApplyActionMode();
             RefreshActionButtons();
             RefreshModeText();
         }
 
+        private static string ModeName(int mode)
+        {
+            switch (mode)
+            {
+                case CompanionSetup.ModeFollow:      return "Follow";
+                case CompanionSetup.ModeGatherWood:  return "GatherWood";
+                case CompanionSetup.ModeGatherStone: return "GatherStone";
+                case CompanionSetup.ModeGatherOre:   return "GatherOre";
+                case CompanionSetup.ModeStay:        return "Stay";
+                default:                             return "Unknown";
+            }
+        }
+
         private void ApplyActionMode()
         {
-            if (_companionAI == null) return;
+            if (_companionAI == null)
+            {
+                CompanionsPlugin.Log.LogWarning("[UI] ApplyActionMode — _companionAI is null!");
+                return;
+            }
 
             switch (_activeMode)
             {
@@ -1207,15 +1241,24 @@ namespace Companions
                 case CompanionSetup.ModeGatherStone:
                 case CompanionSetup.ModeGatherOre:
                     if (Player.m_localPlayer != null)
+                    {
                         _companionAI.SetFollowTarget(Player.m_localPlayer.gameObject);
+                        CompanionsPlugin.Log.LogInfo(
+                            $"[UI] ApplyActionMode: SetFollowTarget → player (mode={_activeMode})");
+                    }
+                    else
+                        CompanionsPlugin.Log.LogWarning("[UI] ApplyActionMode — no local player!");
                     break;
                 case CompanionSetup.ModeStay:
                     _companionAI.SetFollowTarget(null);
                     _companionAI.SetPatrolPoint();
+                    CompanionsPlugin.Log.LogInfo("[UI] ApplyActionMode: Stay — cleared follow, set patrol");
                     break;
                 default:
                     if (Player.m_localPlayer != null)
                         _companionAI.SetFollowTarget(Player.m_localPlayer.gameObject);
+                    CompanionsPlugin.Log.LogInfo(
+                        $"[UI] ApplyActionMode: default follow (mode={_activeMode})");
                     break;
             }
         }
@@ -1259,17 +1302,19 @@ namespace Companions
 
         private void ToggleAutoPickup()
         {
-            if (_companionBrain == null || _companionBrain.Pickup == null) return;
+            if (_companionNview == null || _companionNview.GetZDO() == null) return;
             EnsureCompanionOwnership();
-            bool newState = !_companionBrain.Pickup.Enabled;
-            _companionBrain.Pickup.Enabled = newState;
+            var zdo = _companionNview.GetZDO();
+            bool current = zdo.GetBool(CompanionSetup.AutoPickupHash, true);
+            zdo.Set(CompanionSetup.AutoPickupHash, !current);
             RefreshAutoPickupButton();
         }
 
         private void RefreshAutoPickupButton()
         {
             if (_autoPickupBtn == null) return;
-            bool on = _companionBrain != null && _companionBrain.Pickup != null && _companionBrain.Pickup.Enabled;
+            bool on = _companionNview != null && _companionNview.GetZDO() != null
+                && _companionNview.GetZDO().GetBool(CompanionSetup.AutoPickupHash, true);
             var txt = _autoPickupBtn.GetComponentInChildren<TMP_Text>(true);
             if (txt != null) txt.text = on ? "Auto Pickup: ON" : "Auto Pickup: OFF";
             SetBtnHighlight(_autoPickupBtn, on);

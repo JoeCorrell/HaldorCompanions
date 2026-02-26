@@ -19,8 +19,8 @@ namespace Companions
             PrefabName  = "HC_Companion",
             DisplayName = "Companion",
             Health      = 25f,
-            WalkSpeed   = 1.5f,
-            RunSpeed    = 4.5f,
+            WalkSpeed   = 2f,
+            RunSpeed    = 7f,
         };
     }
 }

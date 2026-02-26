@@ -23,7 +23,7 @@ namespace Companions
         private Bounds _cachedBounds;
         private float  _boundsCacheExpiry;
 
-        private const float AttackRange            = 2.6f;
+        private const float DefaultAttackRange      = 2.6f;
         private const float PreferredSurfaceDist   = 1.0f;
         private const float MinSurfaceDist         = 0.65f;
         private const float MaxSurfaceDist         = 1.35f;
@@ -49,15 +49,22 @@ namespace Companions
         //  Interaction Point Calculation
         // ══════════════════════════════════════════════════════════════════════
 
+        /// <param name="weaponRange">
+        /// The equipped weapon's m_shared.m_attack.m_attackRange, or 0 to use default.
+        /// VikingNPC lesson: using the weapon's actual attack range as stop distance
+        /// matches what vanilla enemies do in HandleStaticTarget.
+        /// </param>
         internal bool TryGetInteractionPoint(
             GameObject target,
             out Vector3 targetCenter, out Vector3 standPoint,
-            out float minDist, out float maxDist)
+            out float minDist, out float maxDist,
+            float weaponRange = 0f)
         {
+            float effectiveRange = weaponRange > 0f ? weaponRange : DefaultAttackRange;
             targetCenter = _transform.position;
             standPoint   = _transform.position;
             minDist      = 1.2f;
-            maxDist      = AttackRange;
+            maxDist      = effectiveRange;
 
             if (target == null) return false;
 
@@ -69,8 +76,8 @@ namespace Companions
             float radius = Mathf.Clamp(
                 Mathf.Max(bounds.extents.x, bounds.extents.z),
                 MinTargetRadius, MaxTargetRadius);
-            minDist = Mathf.Clamp(radius + MinSurfaceDist, 1.0f, AttackRange - 0.15f);
-            maxDist = Mathf.Clamp(radius + MaxSurfaceDist, minDist + 0.2f, AttackRange);
+            minDist = Mathf.Clamp(radius + MinSurfaceDist, 1.0f, effectiveRange - 0.15f);
+            maxDist = Mathf.Clamp(radius + MaxSurfaceDist, minDist + 0.2f, effectiveRange);
             float preferredDist = Mathf.Clamp(
                 radius + PreferredSurfaceDist, minDist, maxDist);
 
@@ -264,9 +271,23 @@ namespace Companions
             return !IsLineOfSightBlocked(eye, targetCenter, targetRoot);
         }
 
+        /// <summary>True when the companion is too far below the target to attack it.</summary>
         internal bool IsTooFarBelow(Vector3 targetCenter)
         {
+            return (targetCenter.y - _transform.position.y) > MaxUpwardAttackOffset;
+        }
+
+        /// <summary>True when the companion is too far above the target to attack it.</summary>
+        internal bool IsTooFarAbove(Vector3 targetCenter)
+        {
             return (_transform.position.y - targetCenter.y) > MaxDownwardAttackOffset;
+        }
+
+        /// <summary>True when the height difference is too large in either direction.</summary>
+        internal bool IsHeightOutOfRange(Vector3 targetCenter)
+        {
+            float yDiff = _transform.position.y - targetCenter.y;
+            return yDiff < -MaxUpwardAttackOffset || yDiff > MaxDownwardAttackOffset;
         }
 
         internal static float HorizontalDistance(Vector3 a, Vector3 b)
@@ -275,9 +296,29 @@ namespace Companions
             return Vector3.Distance(a, b);
         }
 
+        // Cached LOS layer mask — excludes "character" layer to avoid self-hits.
+        // Computed once on first use (layer IDs are stable after scene load).
+        private static int _losMask = 0;
+        private static bool _losMaskInit;
+
+        private static int GetLOSMask()
+        {
+            if (!_losMaskInit)
+            {
+                _losMaskInit = true;
+                int charLayer = LayerMask.NameToLayer("character");
+                int charNetLayer = LayerMask.NameToLayer("character_net");
+                int mask = ~0;
+                if (charLayer >= 0) mask &= ~(1 << charLayer);
+                if (charNetLayer >= 0) mask &= ~(1 << charNetLayer);
+                _losMask = mask;
+            }
+            return _losMask;
+        }
+
         internal static bool IsLineOfSightBlocked(Vector3 from, Vector3 to, Transform targetRoot)
         {
-            if (!Physics.Linecast(from, to, out RaycastHit hit, ~0, QueryTriggerInteraction.Ignore))
+            if (!Physics.Linecast(from, to, out RaycastHit hit, GetLOSMask(), QueryTriggerInteraction.Ignore))
                 return false;
 
             var hitCollider = hit.collider;

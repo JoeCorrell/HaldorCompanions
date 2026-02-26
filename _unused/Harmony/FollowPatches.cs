@@ -289,16 +289,18 @@ namespace Companions
                 // when within max(dist, runThreshold), so 1.5f gives a stable arrival
                 // zone. HarvestController checks its own attack range for actual
                 // in-range detection, so this just needs to get us "close enough".
+                // Use horizontal distance to match vanilla MoveTo (which uses DistanceXZ).
                 const float WaypointStopDist = 1.5f;
 
-                if (dist <= WaypointStopDist)
+                float hDist = Utils.DistanceXZ(go.transform.position, ai.transform.position);
+                if (hDist <= WaypointStopDist)
                 {
                     ai.StopMoving();
                     if (stamina != null) stamina.IsRunning = false;
                     return false;
                 }
 
-                bool wantRun = dist > 4f;
+                bool wantRun = hDist > 4f;
                 bool canRun = stamina == null || stamina.Stamina > 0f;
                 bool encumbered = brain?.Encumbrance?.IsEncumbered == true;
                 bool run = wantRun && canRun && !encumbered;

@@ -65,6 +65,13 @@ namespace Companions
         /// </summary>
         internal System.Func<bool> IsHarvestActive;
 
+        /// <summary>
+        /// True when companion is in any gather mode (Wood/Stone/Ore).
+        /// Broader than IsHarvestActive — covers Idle state between scans too.
+        /// Used to suppress proactive combat target acquisition during gathering.
+        /// </summary>
+        internal System.Func<bool> IsInGatherMode;
+
         internal CombatBrain(Character character, Humanoid humanoid, MonsterAI ai,
                              ZNetView nview, CompanionStamina stamina,
                              CompanionSetup setup, CompanionTalk talk, Transform transform)
@@ -254,19 +261,11 @@ namespace Companions
         {
             if (item == null || item.m_shared == null) return false;
 
-            // Check if it has a status effect (meads/potions always do)
-            if (item.m_shared.m_consumeStatusEffect != null)
-                return true;
-
-            // Fall back to checking if the food values indicate a mead/potion pattern:
-            // Meads typically have high single-stat values with no food duration
-            // or have specific food values that indicate they're not regular meals
-            string name = (item.m_shared.m_name ?? "").ToLowerInvariant();
-            return name.Contains("mead") ||
-                   name.Contains("potion") ||
-                   name.Contains("brew") ||
-                   name.Contains("elixir") ||
-                   name.Contains("tonic");
+            // Combat consumables (meads/potions) always have a status effect.
+            // Regular food does not — it just provides food/stamina/eitr stats.
+            // No string-matching fallback: new meads/potions from game updates
+            // will always have m_consumeStatusEffect set.
+            return item.m_shared.m_consumeStatusEffect != null;
         }
 
         private static float ScoreConsumable(ItemDrop.ItemData item, ConsumableType type)
@@ -330,8 +329,9 @@ namespace Companions
             if (_assistScanTimer > 0f) return;
             _assistScanTimer = AssistScanInterval;
 
-            // Bug #3 fix: don't set combat targets during active harvest
-            if (IsHarvestActive?.Invoke() == true) return;
+            // Bug #3 fix: don't set combat targets during gather modes
+            // (uses IsInGatherMode, not IsHarvestActive, to cover Idle state too)
+            if (IsInGatherMode?.Invoke() == true) return;
 
             if (Player.m_localPlayer == null) return;
             if (enemies.BestThreatAssistTarget == null) return;
@@ -347,8 +347,8 @@ namespace Companions
         {
             if (!combat.InCombat) return;
 
-            // Bug #3 fix: don't set combat targets during active harvest
-            if (IsHarvestActive?.Invoke() == true) return;
+            // Bug #3 fix: don't set combat targets during gather modes
+            if (IsInGatherMode?.Invoke() == true) return;
 
             _focusScanTimer -= dt;
             if (_focusScanTimer > 0f) return;

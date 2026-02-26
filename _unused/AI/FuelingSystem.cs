@@ -17,6 +17,7 @@ namespace Companions
         private float _fuelTimer;
         private readonly Collider[] _scanBuffer = new Collider[96];
         private readonly HashSet<int> _seenIds = new HashSet<int>();
+        private readonly int _scanMask;
 
         private const float CheckInterval = 2f;
         private const float FuelRange     = 3f;
@@ -26,6 +27,14 @@ namespace Companions
             _humanoid  = humanoid;
             _nview     = nview;
             _transform = transform;
+
+            // Smelters/fireplaces are on "piece" layer
+            int piece = LayerMask.NameToLayer("piece");
+            int def   = LayerMask.NameToLayer("Default");
+            int mask = 0;
+            if (piece >= 0) mask |= (1 << piece);
+            if (def   >= 0) mask |= (1 << def);
+            _scanMask = mask != 0 ? mask : ~0;
         }
 
         internal void Update(float dt)
@@ -47,7 +56,7 @@ namespace Companions
             _seenIds.Clear();
             float scanRange = FuelRange + 1.5f;
             int hitCount = Physics.OverlapSphereNonAlloc(
-                _transform.position, scanRange, _scanBuffer);
+                _transform.position, scanRange, _scanBuffer, _scanMask, QueryTriggerInteraction.Ignore);
             if (hitCount > _scanBuffer.Length) hitCount = _scanBuffer.Length;
 
             for (int i = 0; i < hitCount; i++)

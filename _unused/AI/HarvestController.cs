@@ -3,9 +3,9 @@ using UnityEngine;
 namespace Companions
 {
     /// <summary>
-    /// Main harvest state machine. Replaces CompanionHarvest as the MonoBehaviour.
+    /// Main harvest state machine.
     /// States: Idle → Moving → Attacking → CollectingDrops.
-    /// Bug #2 fix: Checks CombatBrain.IsRetreating to pause during retreat.
+    /// Simplified: no combat dependencies — health-based safety only.
     /// </summary>
     public class HarvestController : MonoBehaviour
     {
@@ -177,20 +177,23 @@ namespace Companions
             {
                 if (_character.IsDead()) return;
                 if (_character.InAttack()) return;
+
+                // Simple safety: pause harvesting when health is low (enemy attack)
+                float healthPct = _character.GetHealthPercentage();
+                if (healthPct < 0.35f)
+                {
+                    if (_state != HarvestState.Idle) PauseForEnemy();
+                    return;
+                }
+                // Don't start new harvest tasks while recovering
+                if (healthPct < 0.5f && _state == HarvestState.Idle)
+                    return;
             }
 
-            // Bug #2 fix: pause during retreat
-            if (_brain != null && _brain.CombatBrain != null && _brain.CombatBrain.IsRetreating)
-            {
-                if (_state != HarvestState.Idle) PauseForEnemy();
-                return;
-            }
-
-            if (HasEnemyNearby())
-            {
-                if (_state != HarvestState.Idle) PauseForEnemy();
-                return;
-            }
+            // Prevent MonsterAI from chasing enemies during active harvest —
+            // this replaces the old TargetPatches approach with an inline clear.
+            if (_state != HarvestState.Idle && _ai != null)
+                ReflectionHelper.ClearAllTargets(_ai);
 
             if (Player.m_localPlayer != null)
             {
@@ -305,6 +308,10 @@ namespace Companions
             ExitState(_state);
             _state = HarvestState.Idle;
             _scanTimer = 0.5f;
+
+            // Redirect follow to player so companion can engage enemies / retreat
+            if (_ai != null && Player.m_localPlayer != null)
+                _ai.SetFollowTarget(Player.m_localPlayer.gameObject);
         }
 
         internal void AbortForLeash(GameObject playerTarget)
@@ -482,7 +489,8 @@ namespace Companions
 
                 if (!_nav.TryGetInteractionPoint(_currentTarget,
                         out _cachedTargetCenter, out _cachedStandPoint,
-                        out _cachedMinDist, out _cachedMaxDist))
+                        out _cachedMinDist, out _cachedMaxDist,
+                        GetToolAttackRange()))
                 {
                     HandleTargetLost();
                     return;
@@ -495,10 +503,10 @@ namespace Companions
                 transform.position, _cachedTargetCenter);
 
             if (flatDist >= _cachedMinDist && flatDist <= _cachedMaxDist &&
-                !_nav.IsTooFarBelow(_cachedTargetCenter))
+                !_nav.IsHeightOutOfRange(_cachedTargetCenter))
             {
-                _ai?.SetFollowTarget(null);
-                _ai?.StopMoving();
+                // EnterState(Attacking) parks the waypoint at companion's feet
+                // and calls StopMoving — no need to null the follow target first
                 EnterState(HarvestState.Attacking);
                 return;
             }
@@ -533,7 +541,8 @@ namespace Companions
                 _atkNavTimer = 0.5f;
                 if (!_nav.TryGetInteractionPoint(_currentTarget,
                         out _atkCenter, out _atkStand,
-                        out _atkMinDist, out _atkMaxDist))
+                        out _atkMinDist, out _atkMaxDist,
+                        GetToolAttackRange()))
                 {
                     HandleTargetLost();
                     return;
@@ -548,7 +557,7 @@ namespace Companions
             // Hysteresis: wider tolerance prevents Moving↔Attacking oscillation (the shaking)
             if (flatDist < _atkMinDist - 0.4f ||
                 flatDist > _atkMaxDist + 0.6f ||
-                _nav.IsTooFarBelow(_atkCenter))
+                _nav.IsHeightOutOfRange(_atkCenter))
             {
                 _waypoint.transform.position = _atkStand;
                 _ai.SetFollowTarget(_waypoint);
@@ -674,7 +683,7 @@ namespace Companions
 
         private void NavigateToTarget(GameObject target)
         {
-            if (!_nav.TryGetInteractionPoint(target, out _, out Vector3 standPoint, out _, out _))
+            if (!_nav.TryGetInteractionPoint(target, out _, out Vector3 standPoint, out _, out _, GetToolAttackRange()))
                 standPoint = target.transform.position;
             _lastTargetPos = target.transform.position;
             _waypoint.transform.position = standPoint;
@@ -767,12 +776,14 @@ namespace Companions
                    target.GetComponent<Destructible>() != null;
         }
 
-        private bool HasEnemyNearby()
+
+        /// <summary>Get the equipped tool's attack range, or 0 for default.</summary>
+        private float GetToolAttackRange()
         {
-            return _brain != null &&
-                   _brain.Enemies != null &&
-                   _brain.Enemies.NearestEnemy != null &&
-                   _brain.Enemies.NearestEnemyDist < 15f;
+            var tool = _tools.GetEquippedTool();
+            if (tool?.m_shared?.m_attack != null)
+                return tool.m_shared.m_attack.m_attackRange;
+            return 0f;
         }
 
         private void LogNoResource(ResourceType targetType, ItemDrop.ItemData tool)

@@ -80,6 +80,7 @@ namespace Companions
 
             // CompanionSetup — reads appearance from ZDO and applies it
             go.AddComponent<CompanionSetup>();
+            CompanionsPlugin.Log.LogInfo("[CompanionPrefabs]   + CompanionSetup");
 
             // Container — for vanilla chest-style inventory interaction
             var container           = go.AddComponent<Container>();
@@ -100,11 +101,9 @@ namespace Companions
             // Custom stamina system (base 25 + food bonuses)
             go.AddComponent<CompanionStamina>();
 
-            // Central AI coordinator (must be before HarvestController — it reads Tracker/Doors)
-            go.AddComponent<CompanionBrain>();
-
             // Resource harvesting AI (active in Gather modes 1-3)
             go.AddComponent<HarvestController>();
+            CompanionsPlugin.Log.LogInfo("[CompanionPrefabs]   + HarvestController");
 
             // Overhead speech text (context-aware lines like Haldor)
             go.AddComponent<CompanionTalk>();
@@ -134,11 +133,11 @@ namespace Companions
 
             c.m_walkSpeed            = def.WalkSpeed;
             c.m_runSpeed             = def.RunSpeed;
-            c.m_speed                = 2f;
+            c.m_speed                = 5f;  // jog speed — matches player default
             c.m_crouchSpeed          = 2f;
             c.m_turnSpeed            = 300f;
             c.m_runTurnSpeed         = 300f;
-            c.m_acceleration         = 0.6f;
+            c.m_acceleration         = 1f;  // faster acceleration (was 0.6)
             c.m_jumpForce            = 8f;
             c.m_jumpForceForward     = 2f;
             c.m_jumpForceTiredFactor = 0.6f;
@@ -171,6 +170,7 @@ namespace Companions
 
         private static void SetupMonsterAI(MonsterAI ai)
         {
+            CompanionsPlugin.Log.LogInfo("[CompanionPrefabs] Setting up MonsterAI...");
             var b = (BaseAI)ai;
 
             b.m_viewRange            = 30f;
@@ -216,6 +216,13 @@ namespace Companions
             ai.m_circleTargetInterval              = 0f;    // vanilla default 0 = no pause between circles
             ai.m_circleTargetDuration              = 5f;    // vanilla default
             ai.m_circleTargetDistance              = 10f;   // vanilla default
+
+            CompanionsPlugin.Log.LogInfo(
+                $"[CompanionPrefabs] MonsterAI configured: pathAgent=Humanoid " +
+                $"moveMinAngle={b.m_moveMinAngle} smoothMove={b.m_smoothMovement} " +
+                $"viewRange={b.m_viewRange} hearRange={b.m_hearRange} " +
+                $"randomMoveInterval={b.m_randomMoveInterval} " +
+                $"randomMoveRange={b.m_randomMoveRange}");
         }
 
         private static EffectList.EffectData[] BuildEffects(ZNetScene scene, params string[] names)

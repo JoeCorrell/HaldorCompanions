@@ -19,6 +19,7 @@ namespace Companions
         private float _scanTimer;
         private readonly Collider[] _scanBuffer = new Collider[48];
         private readonly HashSet<int> _seenIds = new HashSet<int>();
+        private readonly int _scanMask;
 
         private const float CooldownTime       = 2f;
         private const float ScanInterval        = 1f;
@@ -32,6 +33,14 @@ namespace Companions
             _character = character;
             _transform = transform;
             _zanim     = zanim;
+
+            // Doors are on "piece" layer; also include Default as fallback
+            int piece = LayerMask.NameToLayer("piece");
+            int def   = LayerMask.NameToLayer("Default");
+            int mask = 0;
+            if (piece >= 0) mask |= (1 << piece);
+            if (def   >= 0) mask |= (1 << def);
+            _scanMask = mask != 0 ? mask : ~0;
         }
 
         /// <summary>
@@ -65,7 +74,7 @@ namespace Companions
 
             _seenIds.Clear();
             int hitCount = Physics.OverlapSphereNonAlloc(
-                _transform.position, ScanRadius, _scanBuffer);
+                _transform.position, ScanRadius, _scanBuffer, _scanMask, QueryTriggerInteraction.Ignore);
             if (hitCount > _scanBuffer.Length) hitCount = _scanBuffer.Length;
 
             for (int i = 0; i < hitCount; i++)

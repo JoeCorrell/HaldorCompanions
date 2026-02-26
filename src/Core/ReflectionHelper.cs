@@ -39,6 +39,8 @@ namespace Companions
             AccessTools.Method(typeof(BaseAI), "MoveTo",
                 new[] { typeof(float), typeof(Vector3), typeof(float), typeof(bool) });
 
+        private static bool _loggedMoveToInit;
+
         // ── VisEquipment ─────────────────────────────────────────────────────
         internal static readonly MethodInfo UpdateVisualsMethod =
             AccessTools.Method(typeof(VisEquipment), "UpdateVisuals");
@@ -191,8 +193,14 @@ namespace Companions
 
         internal static void ClearAllTargets(MonsterAI ai)
         {
+            var hadCreature = GetTargetCreature(ai);
+            var hadStatic = GetTargetStatic(ai);
             TrySetTargetCreature(ai, null);
             TrySetTargetStatic(ai, null);
+            if (hadCreature != null || hadStatic != null)
+                CompanionsPlugin.Log.LogInfo(
+                    $"[Reflection] ClearAllTargets — cleared creature=\"{hadCreature?.m_name ?? ""}\" " +
+                    $"static=\"{hadStatic?.name ?? ""}\"");
         }
 
         // ══════════════════════════════════════════════════════════════════════
@@ -201,6 +209,13 @@ namespace Companions
 
         internal static bool TryMoveTo(BaseAI ai, float dt, Vector3 point, float dist, bool run)
         {
+            if (!_loggedMoveToInit)
+            {
+                _loggedMoveToInit = true;
+                CompanionsPlugin.Log.LogInfo(
+                    $"[Reflection] MoveTo method resolved: {(_moveToMethod != null ? "OK" : "FAILED")}");
+            }
+
             if (ai == null || _moveToMethod == null)
             {
                 WarnOnce(ref _warnedMoveTo, "BaseAI.MoveTo");
@@ -211,9 +226,10 @@ namespace Companions
                 _moveToMethod.Invoke(ai, new object[] { dt, point, dist, run });
                 return true;
             }
-            catch (Exception)
+            catch (Exception ex)
             {
                 WarnOnce(ref _warnedMoveTo, "BaseAI.MoveTo");
+                CompanionsPlugin.Log.LogError($"[Reflection] MoveTo exception: {ex.Message}");
                 return false;
             }
         }
