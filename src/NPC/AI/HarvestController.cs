@@ -13,7 +13,7 @@ namespace Companions
     /// </summary>
     public class HarvestController : MonoBehaviour
     {
-        private enum HarvestState { Idle, Moving, Attacking }
+        private enum HarvestState { Idle, Moving, Attacking, CollectingDrops }
 
         // ── Components ──────────────────────────────────────────────────────
         private ZNetView       _nview;
@@ -30,9 +30,10 @@ namespace Companions
         private float        _moveTimer;
         private bool         _toolEquipped;
 
-        private const HarvestState State_Idle      = HarvestState.Idle;
-        private const HarvestState State_Moving    = HarvestState.Moving;
-        private const HarvestState State_Attacking = HarvestState.Attacking;
+        private const HarvestState State_Idle           = HarvestState.Idle;
+        private const HarvestState State_Moving         = HarvestState.Moving;
+        private const HarvestState State_Attacking      = HarvestState.Attacking;
+        private const HarvestState State_CollectingDrops = HarvestState.CollectingDrops;
 
         // ── Config ──────────────────────────────────────────────────────────
         private const float ScanInterval   = 4f;
@@ -42,9 +43,24 @@ namespace Companions
         private const float MoveTimeout    = 12f;
         private const float ArrivalSlack   = 0.5f;
 
+        // Drop collection config
+        private const float DropScanRadius  = 8f;   // radius around destroy pos to look for drops
+        private const float DropPickupRange = 3.0f;  // must be >= MonsterAI.Follow() stop distance (~3m)
+        private const float DropTimeout     = 10f;   // max time in CollectingDrops before giving up
+        private const float DropScanDelay   = 0.5f;  // brief delay after destroy before scanning (drops need time to spawn)
+
         // ── Per-instance scan buffer (thread-safe with multiple companions) ─
         private readonly Collider[]  _scanBuffer = new Collider[1024];
+        private readonly Collider[]  _dropBuffer = new Collider[128];
         private readonly HashSet<int> _seenIds   = new HashSet<int>();
+
+        // ── Drop collection state ─────────────────────────────────────────
+        private Vector3    _lastDestroyPos;
+        private GameObject _currentDrop;
+        private float      _dropTimer;
+        private float      _dropScanDelayTimer;
+        private int        _dropsPickedUp;
+        private int        _itemLayerMask;
 
         // ── Logging ────────────────────────────────────────────────────────
         private string _tag;   // per-companion log prefix
@@ -80,6 +96,9 @@ namespace Companions
             int id = GetInstanceID();
             _tag = $"[Harvest#{id & 0xFFFF}]";
 
+            // Layer mask for item drops — same as Player.m_autoPickupMask
+            _itemLayerMask = LayerMask.GetMask("item");
+
             Log($"Awake — nview={_nview != null} ai={_ai != null} " +
                 $"humanoid={_humanoid != null} character={_character != null} " +
                 $"setup={_setup != null} instanceId={id}");
@@ -88,6 +107,13 @@ namespace Companions
         private void Update()
         {
             if (_nview == null || !_nview.IsOwner()) return;
+
+            // Freeze when this companion's UI panel is open — player is managing inventory
+            if (IsCompanionUIOpen())
+            {
+                if (_ai != null) _ai.StopMoving();
+                return;
+            }
 
             // Update tag with companion name if available (may be set after Awake)
             if (_character != null && !_tag.Contains("|"))
@@ -133,9 +159,10 @@ namespace Companions
 
             switch (_state)
             {
-                case State_Idle:      UpdateIdle(mode);     break;
-                case State_Moving:    UpdateMoving();       break;
-                case State_Attacking: UpdateAttacking();    break;
+                case State_Idle:           UpdateIdle(mode);        break;
+                case State_Moving:         UpdateMoving();          break;
+                case State_Attacking:      UpdateAttacking();       break;
+                case State_CollectingDrops: UpdateCollectingDrops(); break;
             }
         }
 
@@ -153,6 +180,10 @@ namespace Companions
 
             bool inAttack = _character is Humanoid h ? h.InAttack() : false;
 
+            string dropInfo = _state == State_CollectingDrops
+                ? $" dropTarget=\"{(_currentDrop != null ? _currentDrop.name : "scanning")}\" dropsPickedUp={_dropsPickedUp} dropTimer={_dropTimer:F1}"
+                : "";
+
             Log($"♥ HEARTBEAT state={_state} " +
                 $"target=\"{(_target != null ? _target.name : "null")}\" " +
                 $"pos={transform.position:F1} vel={vel.magnitude:F1} " +
@@ -163,7 +194,8 @@ namespace Companions
                 $"toolEquipped={_toolEquipped} suppress={_setup?.SuppressAutoEquip ?? false} " +
                 $"scanTimer={_scanTimer:F1} attackTimer={_attackTimer:F1} " +
                 $"moveTimer={_moveTimer:F1} " +
-                $"combatTarget=\"{creature?.m_name ?? "null"}\"");
+                $"combatTarget=\"{creature?.m_name ?? "null"}\"" +
+                dropInfo);
         }
 
         // ══════════════════════════════════════════════════════════════════════
@@ -362,12 +394,28 @@ namespace Companions
         /// <summary>
         /// LateUpdate runs AFTER all Update calls, including MonsterAI.UpdateAI.
         /// We force run speed here so it overrides Follow()'s walk decision
-        /// for distances under 10m.
+        /// for distances under 10m. Also shuffles the companion closer during
+        /// Attacking state — MonsterAI.Follow() stops at ~3m but small targets
+        /// (stumps) need the companion within actual weapon range to land hits.
         /// </summary>
         private void LateUpdate()
         {
-            if (_state == State_Moving && _character != null)
+            if (_character == null) return;
+            if (IsCompanionUIOpen()) return;
+
+            if (_state == State_Moving || (_state == State_CollectingDrops && _currentDrop != null))
                 _character.SetRun(true);
+
+            // During attack, shuffle closer if beyond actual hit range.
+            // Follow() stops at ~3m but weapon range is ~2.2m — the gap means
+            // small targets get missed. LateUpdate overrides Follow's StopMoving.
+            if (_state == State_Attacking && _target != null && _ai != null)
+            {
+                float dist = Vector3.Distance(transform.position, _target.transform.position);
+                float range = GetAttackRange();
+                if (dist > range * 0.8f)
+                    ReflectionHelper.TryMoveTo(_ai, Time.deltaTime, _target.transform.position, range * 0.5f, false);
+            }
         }
 
         // ══════════════════════════════════════════════════════════════════════
@@ -378,10 +426,16 @@ namespace Companions
         {
             if (!IsTargetValid(_target))
             {
-                Log("Target destroyed — waiting 1.5s for logs/drops to spawn");
-                ResetToIdle();
-                // Delay rescan so TreeLog/drops have time to spawn after tree falls
-                _scanTimer = 1.5f;
+                Log("Target destroyed — entering drop collection phase");
+                _lastDestroyPos = transform.position;
+                _currentDrop = null;
+                _dropTimer = 0f;
+                _dropScanDelayTimer = DropScanDelay;
+                _dropsPickedUp = 0;
+                _state = State_CollectingDrops;
+
+                // Stop moving while we wait for drops to spawn
+                if (_ai != null) _ai.StopMoving();
                 return;
             }
 
@@ -463,6 +517,166 @@ namespace Companions
         }
 
         // ══════════════════════════════════════════════════════════════════════
+        //  CollectingDrops — pick up items near the destroy position
+        // ══════════════════════════════════════════════════════════════════════
+
+        private void UpdateCollectingDrops()
+        {
+            float dt = Time.deltaTime;
+            _dropTimer += dt;
+
+            // Overall timeout — give up and go back to harvesting
+            if (_dropTimer > DropTimeout)
+            {
+                Log($"Drop collection timeout ({DropTimeout}s) — picked up {_dropsPickedUp} items, resuming harvest");
+                FinishDropCollection();
+                return;
+            }
+
+            // Brief delay after destroy to let drops spawn
+            if (_dropScanDelayTimer > 0f)
+            {
+                _dropScanDelayTimer -= dt;
+                return;
+            }
+
+            // If we have a current drop target, move toward it and try to pick up
+            if (_currentDrop != null)
+            {
+                // Drop was picked up by someone else or despawned
+                if (_currentDrop == null || _currentDrop.GetComponent<ZNetView>() == null ||
+                    !_currentDrop.GetComponent<ZNetView>().IsValid())
+                {
+                    Log("Current drop target gone — scanning for more");
+                    _currentDrop = null;
+                    // Fall through to scan for next drop
+                }
+                else
+                {
+                    float distToDrop = Vector3.Distance(transform.position, _currentDrop.transform.position);
+
+                    // Close enough to pick up
+                    if (distToDrop <= DropPickupRange)
+                    {
+                        TryPickupDrop(_currentDrop);
+                        _currentDrop = null;
+                        // Fall through to scan for next drop
+                    }
+                    else
+                    {
+                        // Still moving toward drop — MoveTo reinforcement
+                        ReflectionHelper.TryMoveTo(_ai, dt, _currentDrop.transform.position, DropPickupRange * 0.5f, true);
+                        return;
+                    }
+                }
+            }
+
+            // Scan for next nearby drop
+            var nextDrop = ScanForDrops();
+            if (nextDrop == null)
+            {
+                Log($"No more drops nearby — picked up {_dropsPickedUp} items, resuming harvest");
+                FinishDropCollection();
+                return;
+            }
+
+            _currentDrop = nextDrop;
+            float dist = Vector3.Distance(transform.position, nextDrop.transform.position);
+
+            // Set follow target so MonsterAI.Follow() drives pathfinding
+            if (_ai != null)
+                _ai.SetFollowTarget(nextDrop);
+
+            var itemDrop = nextDrop.GetComponent<ItemDrop>();
+            string itemName = itemDrop?.m_itemData?.m_shared?.m_name ?? "?";
+            Log($"Moving to drop: \"{itemName}\" dist={dist:F1}m pos={nextDrop.transform.position:F1}");
+        }
+
+        private GameObject ScanForDrops()
+        {
+            int count = Physics.OverlapSphereNonAlloc(
+                _lastDestroyPos, DropScanRadius, _dropBuffer, _itemLayerMask);
+
+            if (count > _dropBuffer.Length) count = _dropBuffer.Length;
+
+            GameObject best = null;
+            float bestDist = float.MaxValue;
+            int validCount = 0;
+
+            for (int i = 0; i < count; i++)
+            {
+                var col = _dropBuffer[i];
+                if (col == null || col.attachedRigidbody == null) continue;
+
+                var itemDrop = col.attachedRigidbody.GetComponent<ItemDrop>();
+                if (itemDrop == null) continue;
+                if (!itemDrop.m_autoPickup) continue;
+
+                var nview = itemDrop.GetComponent<ZNetView>();
+                if (nview == null || !nview.IsValid()) continue;
+
+                // Check if companion inventory can hold this item
+                var inv = _humanoid?.GetInventory();
+                if (inv != null)
+                {
+                    itemDrop.Load();
+                    if (!inv.CanAddItem(itemDrop.m_itemData))
+                        continue;
+                }
+
+                validCount++;
+                float dist = Vector3.Distance(transform.position, itemDrop.transform.position);
+                if (dist < bestDist)
+                {
+                    bestDist = dist;
+                    best = itemDrop.gameObject;
+                }
+            }
+
+            if (validCount > 0)
+                Log($"Drop scan: {validCount} pickable items within {DropScanRadius}m of destroy pos");
+
+            return best;
+        }
+
+        private void TryPickupDrop(GameObject dropGO)
+        {
+            if (dropGO == null || _humanoid == null) return;
+
+            var itemDrop = dropGO.GetComponent<ItemDrop>();
+            if (itemDrop == null) return;
+
+            string itemName = itemDrop.m_itemData?.m_shared?.m_name ?? "?";
+            int stack = itemDrop.m_itemData?.m_stack ?? 0;
+
+            // Use Humanoid.Pickup — autoequip=false (keep harvest tool), autoPickupDelay=false (skip 0.5s spawn delay)
+            bool picked = _humanoid.Pickup(dropGO, false, false);
+
+            if (picked)
+            {
+                _dropsPickedUp++;
+                Log($"Picked up: \"{itemName}\" x{stack} (total {_dropsPickedUp} this cycle)");
+            }
+            else
+            {
+                Log($"Failed to pick up: \"{itemName}\" x{stack} — inventory full or item invalid");
+            }
+        }
+
+        private void FinishDropCollection()
+        {
+            _currentDrop = null;
+            _state = State_Idle;
+            _scanTimer = 0f; // scan immediately for next harvest target
+
+            // Restore follow target to player
+            if (_ai != null && Player.m_localPlayer != null)
+                _ai.SetFollowTarget(Player.m_localPlayer.gameObject);
+
+            Log($"ResetToIdle (was CollectingDrops) — collected {_dropsPickedUp} items, follow target restored to player");
+        }
+
+        // ══════════════════════════════════════════════════════════════════════
         //  Resource scanning
         // ══════════════════════════════════════════════════════════════════════
 
@@ -481,7 +695,7 @@ namespace Companions
             GameObject best = null;
             float bestDist = float.MaxValue;
             int candidateCount = 0;
-            int treeBaseCount = 0, treeLogCount = 0, rockCount = 0;
+            int treeBaseCount = 0, treeLogCount = 0, stumpCount = 0, rockCount = 0;
 
             for (int i = 0; i < count; i++)
             {
@@ -499,6 +713,7 @@ namespace Companions
                 // Count by type
                 if (type == "TreeBase") treeBaseCount++;
                 else if (type == "TreeLog") treeLogCount++;
+                else if (type == "Stump") stumpCount++;
                 else rockCount++;
 
                 // Log first 5 candidates and any TreeLogs (always interesting)
@@ -518,7 +733,7 @@ namespace Companions
 
             // Type breakdown
             if (mode == CompanionSetup.ModeGatherWood)
-                Log($"  Breakdown: {treeBaseCount} TreeBase, {treeLogCount} TreeLog " +
+                Log($"  Breakdown: {treeBaseCount} TreeBase, {treeLogCount} TreeLog, {stumpCount} Stump " +
                     $"(total {candidateCount} unique targets)");
             else
                 Log($"  Breakdown: {rockCount} rocks (total {candidateCount} unique targets)");
@@ -540,6 +755,15 @@ namespace Companions
 
                 var log = col.GetComponentInParent<TreeLog>();
                 if (log != null) { type = "TreeLog"; return log.gameObject; }
+
+                // Tree stumps — spawned by TreeBase.m_stubPrefab, always named "*_stub*"
+                var dest = col.GetComponentInParent<Destructible>();
+                if (dest != null && dest.m_damages.m_chop != HitData.DamageModifier.Immune
+                    && dest.gameObject.name.IndexOf("stub", System.StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    type = "Stump";
+                    return dest.gameObject;
+                }
             }
             else // Stone or Ore
             {
@@ -548,6 +772,14 @@ namespace Companions
 
                 var rock = col.GetComponentInParent<MineRock>();
                 if (rock != null) { type = "MineRock"; return rock.gameObject; }
+
+                // Destructible rocks/ores with pickaxe damage not immune
+                var dest = col.GetComponentInParent<Destructible>();
+                if (dest != null && dest.m_damages.m_pickaxe != HitData.DamageModifier.Immune)
+                {
+                    type = "Destructible";
+                    return dest.gameObject;
+                }
             }
 
             return null;
@@ -704,6 +936,12 @@ namespace Companions
         // ══════════════════════════════════════════════════════════════════════
         //  Helpers
         // ══════════════════════════════════════════════════════════════════════
+
+        private bool IsCompanionUIOpen()
+        {
+            var panel = CompanionInteractPanel.Instance;
+            return panel != null && panel.IsVisible && panel.CurrentCompanion == _setup;
+        }
 
         private int GetMode()
         {

@@ -21,6 +21,7 @@ namespace Companions
 
         // ── Public state ─────────────────────────────────────────────────────
         public bool IsVisible => _visible;
+        public CompanionSetup CurrentCompanion => _companion;
 
         // ── Layout constants ─────────────────────────────────────────────────
         private const float PanelW       = 570f;
