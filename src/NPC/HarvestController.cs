@@ -49,6 +49,10 @@ namespace Companions
         private const float DropTimeout     = 10f;   // max time in CollectingDrops before giving up
         private const float DropScanDelay   = 0.5f;  // brief delay after destroy before scanning (drops need time to spawn)
 
+        // Weight limit — stop gathering when near max carry weight
+        private const float OverweightThreshold = 298f;
+        private float _overweightMsgTimer;
+
         // ── Per-instance scan buffer (thread-safe with multiple companions) ─
         private readonly Collider[]  _scanBuffer = new Collider[1024];
         private readonly Collider[]  _dropBuffer = new Collider[128];
@@ -108,13 +112,6 @@ namespace Companions
         {
             if (_nview == null || !_nview.IsOwner()) return;
 
-            // Freeze when this companion's UI panel is open — player is managing inventory
-            if (IsCompanionUIOpen())
-            {
-                if (_ai != null) _ai.StopMoving();
-                return;
-            }
-
             // Update tag with companion name if available (may be set after Awake)
             if (_character != null && !_tag.Contains("|"))
             {
@@ -134,6 +131,26 @@ namespace Companions
             }
 
             if (!IsInGatherMode) EnterGatherMode();
+
+            // Weight check — stop gathering if overweight
+            if (IsOverweight())
+            {
+                var talk = GetComponent<CompanionTalk>();
+                if (talk != null && _overweightMsgTimer <= 0f)
+                {
+                    talk.Say("My back is hurting from all this weight!");
+                    _overweightMsgTimer = 15f;
+                }
+                LogWarn($"OVERWEIGHT — weight={GetCurrentWeight():F1} >= {OverweightThreshold}, " +
+                    $"stopping gather, reverting to follow");
+                ExitGatherMode();
+
+                // Force mode back to Follow via ZDO
+                if (_nview != null && _nview.GetZDO() != null)
+                    _nview.GetZDO().Set(CompanionSetup.ActionModeHash, CompanionSetup.ModeFollow);
+                return;
+            }
+            _overweightMsgTimer -= Time.deltaTime;
 
             // Heartbeat — full state dump every 5s
             _heartbeatTimer -= Time.deltaTime;
@@ -615,6 +632,10 @@ namespace Companions
                 var nview = itemDrop.GetComponent<ZNetView>();
                 if (nview == null || !nview.IsValid()) continue;
 
+                // Check weight limit before pickup
+                if (IsOverweight())
+                    continue;
+
                 // Check if companion inventory can hold this item
                 var inv = _humanoid?.GetInventory();
                 if (inv != null)
@@ -642,6 +663,13 @@ namespace Companions
         private void TryPickupDrop(GameObject dropGO)
         {
             if (dropGO == null || _humanoid == null) return;
+
+            // Weight limit check
+            if (IsOverweight())
+            {
+                Log($"Skipping pickup — overweight ({GetCurrentWeight():F1} >= {OverweightThreshold})");
+                return;
+            }
 
             var itemDrop = dropGO.GetComponent<ItemDrop>();
             if (itemDrop == null) return;
@@ -778,9 +806,12 @@ namespace Companions
                 var rock = col.GetComponentInParent<MineRock>();
                 if (rock != null) { type = "MineRock"; return rock.gameObject; }
 
-                // Destructible rocks/ores with pickaxe damage not immune
+                // Destructible rocks/ores: must respond to pickaxe AND be immune to chop
+                // (wood-type destructibles like Beech_small2, stumps respond to chop — exclude them)
                 var dest = col.GetComponentInParent<Destructible>();
-                if (dest != null && dest.m_damages.m_pickaxe != HitData.DamageModifier.Immune)
+                if (dest != null
+                    && dest.m_damages.m_pickaxe != HitData.DamageModifier.Immune
+                    && dest.m_damages.m_chop == HitData.DamageModifier.Immune)
                 {
                     type = "Destructible";
                     return dest.gameObject;
@@ -946,6 +977,18 @@ namespace Companions
         {
             var panel = CompanionInteractPanel.Instance;
             return panel != null && panel.IsVisible && panel.CurrentCompanion == _setup;
+        }
+
+        private float GetCurrentWeight()
+        {
+            var inv = _humanoid?.GetInventory();
+            return inv != null ? inv.GetTotalWeight() : 0f;
+        }
+
+        /// <summary>True when companion weight is at or above the overweight threshold.</summary>
+        public bool IsOverweight()
+        {
+            return GetCurrentWeight() >= OverweightThreshold;
         }
 
         private int GetMode()

@@ -11,8 +11,8 @@ namespace Companions
 {
     /// <summary>
     /// Companion interaction overlay — appears alongside InventoryGui when
-    /// a companion's Container is opened.  Two-panel layout:
-    /// Left = companion inventory, Right = stats + controls + food row.
+    /// a companion's Container is opened.  Single panel with two tabs:
+    /// Actions = stats + controls, Inventory = grid + food slots.
     /// Vanilla container panel is hidden; our grid handles item transfer.
     /// </summary>
     public class CompanionInteractPanel : MonoBehaviour
@@ -24,13 +24,11 @@ namespace Companions
         public CompanionSetup CurrentCompanion => _companion;
 
         // ── Layout constants ─────────────────────────────────────────────────
-        private const float PanelW       = 570f;
-        private const float PanelH       = 480f;
+        private const float PanelW       = 270f;
+        private const float PanelH       = 490f;
         private const float UiScale      = 1.25f;
         private const float OuterPad     = 6f;
-        private const float ColGap       = 4f;
-        private const float LeftColW     = 261f;
-        private const float RightColW    = 293f;
+        private const float TabBarH      = 28f;
 
         // ── Grid constants ───────────────────────────────────────────────────
         private const int GridCols          = 4;
@@ -48,10 +46,9 @@ namespace Companions
         private static readonly Color EquipBlue      = new Color(0.29f, 0.55f, 0.94f, 1f);
         private static readonly Color HealthRed      = new Color(0.48f, 0.08f, 0.08f, 1f);
         private static readonly Color StaminaYellow  = new Color(0.48f, 0.40f, 0.08f, 1f);
-        private static readonly Color EitrBlue       = new Color(0.08f, 0.20f, 0.48f, 1f);
+        private static readonly Color ArmorGray      = new Color(0.35f, 0.35f, 0.38f, 1f);
         private static readonly Color WeightOrange   = new Color(0.48f, 0.30f, 0.08f, 1f);
         private static readonly Color BarBg          = new Color(0.15f, 0.15f, 0.15f, 0.85f);
-        private static readonly Color BtnTint        = new Color(0f, 0f, 0f, 0.75f);
         private static readonly Color SlotTint       = new Color(0f, 0f, 0f, 0.5625f);
         private static readonly Color EquippedSlotTint = new Color(0.10f, 0.20f, 0.38f, 0.80f);
 
@@ -60,11 +57,11 @@ namespace Companions
         private static Sprite _sliderBgSprite;
         private static Sprite _healthBarGradientSprite;
         private static Sprite _staminaBarGradientSprite;
-        private static Sprite _eitrBarGradientSprite;
+        private static Sprite _armorBarGradientSprite;
         private static Sprite _weightBarGradientSprite;
         private static Texture2D _healthBarGradientTex;
         private static Texture2D _staminaBarGradientTex;
-        private static Texture2D _eitrBarGradientTex;
+        private static Texture2D _armorBarGradientTex;
         private static Texture2D _weightBarGradientTex;
 
         // ── Button template ──────────────────────────────────────────────────
@@ -120,10 +117,9 @@ namespace Companions
         private TextMeshProUGUI _healthText;
         private Image           _staminaFill;
         private TextMeshProUGUI _staminaText;
-        private Image           _eitrFill;
-        private TextMeshProUGUI _eitrText;
         private Image           _weightFill;
         private TextMeshProUGUI _weightText;
+        private Image           _armorFill;
         private TextMeshProUGUI _armorText;
         private TextMeshProUGUI _modeText;
         private Button          _followBtn;
@@ -131,6 +127,7 @@ namespace Companions
         private Button          _gatherStoneBtn;
         private Button          _gatherOreBtn;
         private Button          _stayBtn;
+        private Button          _setHomeBtn;
         private Button          _autoPickupBtn;
         private int             _activeMode;
 
@@ -147,6 +144,11 @@ namespace Companions
         private float             _invRefreshTimer;
 
         // ── Tab system ───────────────────────────────────────────────────────
+        private RectTransform   _actionsContent;
+        private RectTransform   _inventoryContent;
+        private Button          _actionsTabBtn;
+        private Button          _inventoryTabBtn;
+        private int             _activeTab;
 
         // ══════════════════════════════════════════════════════════════════════
         //  Lifecycle
@@ -181,6 +183,19 @@ namespace Companions
 
             UpdateBars();
             RefreshInventoryGrid();
+
+            // Sync action mode from ZDO (may change externally, e.g. overweight auto-revert)
+            if (_companionNview != null && _companionNview.GetZDO() != null)
+            {
+                int zdoMode = _companionNview.GetZDO().GetInt(
+                    CompanionSetup.ActionModeHash, CompanionSetup.ModeFollow);
+                if (zdoMode != _activeMode)
+                {
+                    _activeMode = zdoMode;
+                    RefreshActionButtons();
+                    RefreshModeText();
+                }
+            }
         }
 
         // ══════════════════════════════════════════════════════════════════════
@@ -203,7 +218,9 @@ namespace Companions
                 $"char={_companionChar != null} stamina={_companionStamina != null} " +
                 $"food={_companionFood != null} humanoid={_companionHumanoid != null} " +
                 $"nview={_companionNview != null} ai={_companionAI != null} " +
-                $"harvest={_companionHarvest != null}");
+                $"harvest={_companionHarvest != null} " +
+                $"dragField={_dragItemField != null} dragInvField={_dragInventoryField != null} " +
+                $"dragAmtField={_dragAmountField != null} setupDrag={_setupDragItem != null}");
 
             EnsureCompanionOwnership();
 
@@ -232,6 +249,8 @@ namespace Companions
             RefreshModeText();
             RefreshAutoPickupButton();
             _invRefreshTimer = 0f;
+
+            SwitchTab(0); // Always open on Actions tab
 
             _root.SetActive(true);
             _root.transform.SetAsLastSibling();
@@ -342,13 +361,13 @@ namespace Companions
                 "CIP_StaminaBarGradient");
         }
 
-        private static Sprite GetEitrBarFillSprite()
+        private static Sprite GetArmorBarFillSprite()
         {
             return BuildBarGradientSprite(
-                ref _eitrBarGradientSprite, ref _eitrBarGradientTex,
-                new Color(0.12f, 0.25f, 0.55f, 1f),
-                new Color(0.06f, 0.14f, 0.35f, 1f),
-                "CIP_EitrBarGradient");
+                ref _armorBarGradientSprite, ref _armorBarGradientTex,
+                new Color(0.40f, 0.40f, 0.44f, 1f),
+                new Color(0.22f, 0.22f, 0.26f, 1f),
+                "CIP_ArmorBarGradient");
         }
 
         private static Sprite GetWeightBarFillSprite()
@@ -411,18 +430,6 @@ namespace Companions
                 btn.targetGraphic = img;
             }
 
-            // Tint overlay
-            var tintGO = new GameObject("Tint", typeof(RectTransform), typeof(Image));
-            tintGO.transform.SetParent(go.transform, false);
-            tintGO.transform.SetAsFirstSibling();
-            var tintRT = tintGO.GetComponent<RectTransform>();
-            tintRT.anchorMin = Vector2.zero;
-            tintRT.anchorMax = Vector2.one;
-            tintRT.offsetMin = Vector2.zero;
-            tintRT.offsetMax = Vector2.zero;
-            tintGO.GetComponent<Image>().color         = BtnTint;
-            tintGO.GetComponent<Image>().raycastTarget = false;
-
             return go;
         }
 
@@ -476,17 +483,21 @@ namespace Companions
             ApplyPanelBg(rootImg, PanelBg);
             rootImg.raycastTarget = true;
 
-            float rightX   = OuterPad + LeftColW + ColGap;
-            var leftCol  = CreateColumn(_root.transform, "LeftCol", OuterPad, OuterPad + LeftColW);
-            var rightCol = CreateColumn(_root.transform, "RightCol", rightX, rightX + RightColW);
+            // Tab bar — two buttons at the top
+            BuildTabBar(_root.transform, font);
 
-            // Left column: inventory
-            BuildLeftPanel(leftCol, font);
+            // Content containers — fill area below tab bar, above mode text
+            _actionsContent = CreateContentContainer(_root.transform, "ActionsContent");
+            _inventoryContent = CreateContentContainer(_root.transform, "InventoryContent");
 
-            // Right column: stat bars + action controls + food slots
-            BuildPreview(rightCol, font);
+            // Actions tab: stat bars + action controls + food display
+            BuildPreview(_actionsContent, font);
 
-            // Mode text — anchored to bottom of root panel
+            // Inventory tab: inventory grid + food slots
+            var invPad = MakePadded(_inventoryContent, 4f);
+            BuildInventoryContent(invPad, font);
+
+            // Mode text — anchored to bottom of root panel (always visible)
             _modeText = MakeText(_root.transform, "ModeText", "Follow into Battle",
                 font, 11f, GoldColor, TextAlignmentOptions.Center);
             var modeRT = _modeText.GetComponent<RectTransform>();
@@ -496,26 +507,12 @@ namespace Companions
             modeRT.sizeDelta        = new Vector2(0f, 16f);
             modeRT.anchoredPosition = new Vector2(0f, -14f);
 
+            // Default to Actions tab
+            SwitchTab(0);
+
             ApplyFallbackFont(_root.transform, font);
             _root.SetActive(false);
             _built = true;
-        }
-
-        private RectTransform CreateColumn(Transform parent, string name, float xLeft, float xRight)
-        {
-            var go = new GameObject(name, typeof(RectTransform), typeof(Image));
-            go.transform.SetParent(parent, false);
-            var rt = go.GetComponent<RectTransform>();
-            rt.anchorMin = new Vector2(0f, 0f);
-            rt.anchorMax = new Vector2(0f, 1f);
-            rt.pivot     = new Vector2(0f, 0.5f);
-            rt.offsetMin = new Vector2(xLeft, OuterPad);
-            rt.offsetMax = new Vector2(xRight, -OuterPad);
-            var colImg = go.GetComponent<Image>();
-            colImg.sprite = null;
-            colImg.color  = ColBg;
-            colImg.raycastTarget = false;
-            return rt;
         }
 
         private static void ApplyPanelBg(Image img, Color fallback)
@@ -534,32 +531,94 @@ namespace Companions
             }
         }
 
-        // ── Left panel: content only (tabs are at root level) ────────────
-
-        private void BuildLeftPanel(RectTransform col, TMP_FontAsset font)
+        private void BuildTabBar(Transform parent, TMP_FontAsset font)
         {
-            var pad = MakePadded(col, 10f);
-            BuildInventoryContent(pad, font);
+            var barGO = new GameObject("TabBar", typeof(RectTransform));
+            barGO.transform.SetParent(parent, false);
+            var barRT = barGO.GetComponent<RectTransform>();
+            barRT.anchorMin = new Vector2(0f, 1f);
+            barRT.anchorMax = new Vector2(1f, 1f);
+            barRT.pivot = new Vector2(0.5f, 1f);
+            barRT.sizeDelta = new Vector2(0f, TabBarH);
+            barRT.anchoredPosition = new Vector2(0f, -OuterPad);
+
+            float halfW = (PanelW - OuterPad * 2f - 4f) / 2f;
+
+            _actionsTabBtn = BuildTabButton(barGO.transform, "ActionsTab", "Actions",
+                font, OuterPad, halfW);
+            if (_actionsTabBtn != null)
+                _actionsTabBtn.onClick.AddListener(() => SwitchTab(0));
+
+            _inventoryTabBtn = BuildTabButton(barGO.transform, "InventoryTab", "Inventory",
+                font, OuterPad + halfW + 4f, halfW);
+            if (_inventoryTabBtn != null)
+                _inventoryTabBtn.onClick.AddListener(() => SwitchTab(1));
+        }
+
+        private Button BuildTabButton(Transform parent, string name, string label,
+            TMP_FontAsset font, float xOffset, float width)
+        {
+            var go = CreateTintedButton(parent, name, label);
+            if (go == null) return null;
+
+            var rt = go.GetComponent<RectTransform>();
+            rt.anchorMin = new Vector2(0f, 0f);
+            rt.anchorMax = new Vector2(0f, 1f);
+            rt.pivot = new Vector2(0f, 0.5f);
+            rt.sizeDelta = new Vector2(width, 0f);
+            rt.anchoredPosition = new Vector2(xOffset, 0f);
+
+            return go.GetComponent<Button>();
+        }
+
+        private RectTransform CreateContentContainer(Transform parent, string name)
+        {
+            var go = new GameObject(name, typeof(RectTransform), typeof(Image));
+            go.transform.SetParent(parent, false);
+            var rt = go.GetComponent<RectTransform>();
+            // Fill area below tab bar, above mode text area
+            rt.anchorMin = new Vector2(0f, 0f);
+            rt.anchorMax = new Vector2(1f, 1f);
+            rt.offsetMin = new Vector2(OuterPad, OuterPad);
+            rt.offsetMax = new Vector2(-OuterPad, -(OuterPad + TabBarH + 4f));
+            var img = go.GetComponent<Image>();
+            img.sprite = null;
+            img.color = ColBg;
+            img.raycastTarget = false;
+            return rt;
+        }
+
+        private void SwitchTab(int tab)
+        {
+            CompanionsPlugin.Log.LogInfo($"[UI] SwitchTab — {_activeTab} → {tab}");
+            _activeTab = tab;
+            if (_actionsContent != null)
+                _actionsContent.gameObject.SetActive(tab == 0);
+            if (_inventoryContent != null)
+                _inventoryContent.gameObject.SetActive(tab == 1);
+
+            SetBtnHighlight(_actionsTabBtn, tab == 0);
+            SetBtnHighlight(_inventoryTabBtn, tab == 1);
         }
 
         private void BuildInventoryContent(RectTransform parent, TMP_FontAsset font)
         {
             float y = 0f;
             BuildInventoryGrid(parent, font, ref y);
+            BuildFoodSlots(parent, font);
         }
 
         private void BuildActionControls(RectTransform parent, TMP_FontAsset font, ref float y)
         {
             float btnH = 30f;
-            float btnGap = 3f;
+            float btnGap = 2f;
             _followBtn = BuildActionButton(parent, ref y, btnH, btnGap, "Follow into Battle", CompanionSetup.ModeFollow);
             _gatherWoodBtn = BuildActionButton(parent, ref y, btnH, btnGap, "Gather Wood", CompanionSetup.ModeGatherWood);
             _gatherStoneBtn = BuildActionButton(parent, ref y, btnH, btnGap, "Gather Stone", CompanionSetup.ModeGatherStone);
             _gatherOreBtn = BuildActionButton(parent, ref y, btnH, btnGap, "Gather Ore", CompanionSetup.ModeGatherOre);
             _stayBtn = BuildActionButton(parent, ref y, btnH, btnGap, "Stay Home", CompanionSetup.ModeStay);
-            DisableButtonTintOverlay(_stayBtn);
+            _setHomeBtn = BuildUnwiredActionButton(parent, ref y, btnH, btnGap, "Set Home");
             _autoPickupBtn = BuildActionButton(parent, ref y, btnH, btnGap, "Auto Pickup: OFF", -1);
-            DisableButtonTintOverlay(_autoPickupBtn);
             if (_autoPickupBtn != null)
             {
                 _autoPickupBtn.onClick.RemoveAllListeners();
@@ -698,8 +757,8 @@ namespace Companions
 
             int gridRows = Mathf.CeilToInt(MainGridSlots / (float)GridCols);
 
-            float availW = LeftColW - 20f;
-            float availH = PanelH - OuterPad * 2f - 20f;
+            float availW = PanelW - OuterPad * 2f - 8f;
+            float availH = PanelH - OuterPad * 2f - TabBarH - 8f;
             float slotW = (availW - (GridCols - 1) * InventorySlotGap) / GridCols;
             float slotH = (availH - (gridRows - 1) * InventorySlotGap) / gridRows;
             float slotSize = Mathf.Floor(Mathf.Min(slotW, slotH));
@@ -796,81 +855,8 @@ namespace Companions
             y -= gridH;
         }
 
-        private Button BuildActionButton(RectTransform parent,
-            ref float y, float h, float gap, string label, int mode)
+        private void BuildFoodSlots(RectTransform parent, TMP_FontAsset font)
         {
-            var go = CreateTintedButton(parent, label, label);
-            if (go == null) return null;
-
-            var rt = go.GetComponent<RectTransform>();
-            rt.anchorMin = new Vector2(0f, 1f);
-            rt.anchorMax = new Vector2(1f, 1f);
-            rt.pivot = new Vector2(0.5f, 1f);
-            rt.sizeDelta = new Vector2(0f, h);
-            rt.anchoredPosition = new Vector2(0f, y);
-            y -= h + gap;
-
-            var btn = go.GetComponent<Button>();
-            if (btn != null)
-                btn.onClick.AddListener(() => SetActionMode(mode));
-
-            return btn;
-        }
-
-        private Button BuildUnwiredActionButton(RectTransform parent,
-            ref float y, float h, float gap, string label)
-        {
-            var go = CreateTintedButton(parent, label, label);
-            if (go == null) return null;
-
-            var rt = go.GetComponent<RectTransform>();
-            rt.anchorMin = new Vector2(0f, 1f);
-            rt.anchorMax = new Vector2(1f, 1f);
-            rt.pivot = new Vector2(0.5f, 1f);
-            rt.sizeDelta = new Vector2(0f, h);
-            rt.anchoredPosition = new Vector2(0f, y);
-            y -= h + gap;
-
-            return go.GetComponent<Button>();
-        }
-
-        private static void DisableButtonTintOverlay(Button btn)
-        {
-            if (btn == null) return;
-            var tint = btn.transform.Find("Tint");
-            if (tint != null)
-                tint.gameObject.SetActive(false);
-        }
-
-        private void BuildPreview(RectTransform col, TMP_FontAsset font)
-        {
-            float topY = -2f;
-
-            var nameLabel = MakeText(col, "NameLabel", "Name",
-                font, 13f, LabelText, TextAlignmentOptions.MidlineLeft);
-            nameLabel.fontStyle = FontStyles.Bold;
-            PlaceTopStretch(nameLabel.GetComponent<RectTransform>(), ref topY, 18f);
-            topY -= 3f;
-            topY = BuildNameInput(col, font, topY);
-            topY -= 14f;
-
-            BuildLabeledBar(col, font, ref topY, "Health", GetHealthBarFillSprite(), HealthRed,
-                out _healthFill, out _healthText);
-            BuildLabeledBar(col, font, ref topY, "Stamina", GetStaminaBarFillSprite(), StaminaYellow,
-                out _staminaFill, out _staminaText);
-            BuildLabeledBar(col, font, ref topY, "Eitr", GetEitrBarFillSprite(), EitrBlue,
-                out _eitrFill, out _eitrText);
-            BuildLabeledBar(col, font, ref topY, "Weight", GetWeightBarFillSprite(), WeightOrange,
-                out _weightFill, out _weightText);
-            topY -= 4f;
-
-            _armorText = MakeText(col.transform, "ArmorText", "Armor: 0",
-                font, 11f, GoldColor, TextAlignmentOptions.Center);
-            PlaceTopStretch(_armorText.GetComponent<RectTransform>(), ref topY, 14f);
-
-            topY -= 8f;
-            BuildActionControls(col, font, ref topY);
-
             float bottomY = 6f;
             _foodSlotIcons = new Image[FoodSlotCount];
             _foodSlotCounts = new TextMeshProUGUI[FoodSlotCount];
@@ -878,7 +864,7 @@ namespace Companions
             float foodGap = 3f;
             float foodRowW = FoodSlotCount * foodSlotSz + (FoodSlotCount - 1) * foodGap;
 
-            var foodLabel = MakeText(col.transform, "FoodLabel", "Food",
+            var foodLabel = MakeText(parent.transform, "FoodLabel", "Food",
                 font, 11f, LabelText, TextAlignmentOptions.Center);
             var foodLabelRT = foodLabel.GetComponent<RectTransform>();
             foodLabelRT.anchorMin = new Vector2(0f, 0f);
@@ -888,8 +874,20 @@ namespace Companions
             foodLabelRT.anchoredPosition = new Vector2(0f, bottomY + foodSlotSz + 2f);
             foodLabel.fontStyle = FontStyles.Bold;
 
+            // Gold separator line between inventory grid and food section
+            var sepGO = new GameObject("FoodSeparator", typeof(RectTransform), typeof(Image));
+            sepGO.transform.SetParent(parent, false);
+            var sepRT = sepGO.GetComponent<RectTransform>();
+            sepRT.anchorMin = new Vector2(0.05f, 0f);
+            sepRT.anchorMax = new Vector2(0.95f, 0f);
+            sepRT.pivot = new Vector2(0.5f, 0f);
+            sepRT.sizeDelta = new Vector2(0f, 1f);
+            sepRT.anchoredPosition = new Vector2(0f, bottomY + foodSlotSz + 2f + 14f + 4f);
+            sepGO.GetComponent<Image>().color = GoldColor;
+            sepGO.GetComponent<Image>().raycastTarget = false;
+
             var foodRow = new GameObject("FoodSlots", typeof(RectTransform));
-            foodRow.transform.SetParent(col, false);
+            foodRow.transform.SetParent(parent, false);
             var foodRowRT = foodRow.GetComponent<RectTransform>();
             foodRowRT.anchorMin = new Vector2(0.5f, 0f);
             foodRowRT.anchorMax = new Vector2(0.5f, 0f);
@@ -956,18 +954,84 @@ namespace Companions
             }
         }
 
-        private void BuildLabeledBar(RectTransform parent, TMP_FontAsset font, ref float y,
-            string label, Sprite fillSprite, Color fillColor,
-            out Image fill, out TextMeshProUGUI text)
+        private Button BuildActionButton(RectTransform parent,
+            ref float y, float h, float gap, string label, int mode)
         {
-            var lbl = MakeText(parent.transform, label + "Label", label,
-                font, 11f, LabelText, TextAlignmentOptions.MidlineLeft);
-            lbl.fontStyle = FontStyles.Bold;
-            PlaceTopStretch(lbl.GetComponent<RectTransform>(), ref y, 8f);
-            BuildStatBar(parent, font, ref y, fillSprite, fillColor, out fill, out text);
+            var go = CreateTintedButton(parent, label, label);
+            if (go == null) return null;
+
+            var rt = go.GetComponent<RectTransform>();
+            rt.anchorMin = new Vector2(0f, 1f);
+            rt.anchorMax = new Vector2(1f, 1f);
+            rt.pivot = new Vector2(0.5f, 1f);
+            rt.sizeDelta = new Vector2(0f, h);
+            rt.anchoredPosition = new Vector2(0f, y);
+            y -= h + gap;
+
+            var btn = go.GetComponent<Button>();
+            if (btn != null)
+                btn.onClick.AddListener(() => SetActionMode(mode));
+
+            return btn;
         }
 
-        // ── Tab bar: positioned above left column, children of root ─────
+        private Button BuildUnwiredActionButton(RectTransform parent,
+            ref float y, float h, float gap, string label)
+        {
+            var go = CreateTintedButton(parent, label, label);
+            if (go == null) return null;
+
+            var rt = go.GetComponent<RectTransform>();
+            rt.anchorMin = new Vector2(0f, 1f);
+            rt.anchorMax = new Vector2(1f, 1f);
+            rt.pivot = new Vector2(0.5f, 1f);
+            rt.sizeDelta = new Vector2(0f, h);
+            rt.anchoredPosition = new Vector2(0f, y);
+            y -= h + gap;
+
+            return go.GetComponent<Button>();
+        }
+
+        private void BuildPreview(RectTransform col, TMP_FontAsset font)
+        {
+            float topY = -2f;
+
+            // ── Name section ──
+            var nameHeader = MakeText(col, "NameHeader", "Name",
+                font, 11f, GoldColor, TextAlignmentOptions.Center);
+            nameHeader.fontStyle = FontStyles.Bold;
+            PlaceTopStretch(nameHeader.GetComponent<RectTransform>(), ref topY, 14f);
+            topY -= 2f;
+            topY = BuildNameInput(col, font, topY);
+            topY -= 6f;
+
+            // ── Stats section ──
+            var statsHeader = MakeText(col, "StatsHeader", "Stats",
+                font, 11f, GoldColor, TextAlignmentOptions.Center);
+            statsHeader.fontStyle = FontStyles.Bold;
+            PlaceTopStretch(statsHeader.GetComponent<RectTransform>(), ref topY, 14f);
+            topY -= 2f;
+            BuildStatBar(col, font, ref topY, GetHealthBarFillSprite(), HealthRed,
+                out _healthFill, out _healthText);
+            topY -= 2f;
+            BuildStatBar(col, font, ref topY, GetStaminaBarFillSprite(), StaminaYellow,
+                out _staminaFill, out _staminaText);
+            topY -= 2f;
+            BuildStatBar(col, font, ref topY, GetArmorBarFillSprite(), ArmorGray,
+                out _armorFill, out _armorText);
+            topY -= 2f;
+            BuildStatBar(col, font, ref topY, GetWeightBarFillSprite(), WeightOrange,
+                out _weightFill, out _weightText);
+            topY -= 6f;
+
+            // ── Actions section ──
+            var actionsHeader = MakeText(col, "ActionsHeader", "Actions",
+                font, 11f, GoldColor, TextAlignmentOptions.Center);
+            actionsHeader.fontStyle = FontStyles.Bold;
+            PlaceTopStretch(actionsHeader.GetComponent<RectTransform>(), ref topY, 14f);
+            topY -= 2f;
+            BuildActionControls(col, font, ref topY);
+        }
 
         // ══════════════════════════════════════════════════════════════════════
         //  Inventory grid — click handlers
@@ -975,28 +1039,35 @@ namespace Companions
 
         private void OnSlotLeftClick(int slotIndex)
         {
+            CompanionsPlugin.Log.LogInfo($"[UI] OnSlotLeftClick — slotIndex={slotIndex}");
             if (!TryGetMainGridCoord(slotIndex, out int gx, out int gy)) return;
             HandleSlotLeftClick(gx, gy, consumableOnly: false);
         }
         private void OnSlotRightClick(int slotIndex)
         {
+            CompanionsPlugin.Log.LogInfo($"[UI] OnSlotRightClick — slotIndex={slotIndex}");
             if (!TryGetMainGridCoord(slotIndex, out int gx, out int gy)) return;
             HandleSlotRightClick(gx, gy);
         }
         private void OnFoodSlotLeftClick(int slotIndex)
         {
+            CompanionsPlugin.Log.LogInfo($"[UI] OnFoodSlotLeftClick — slotIndex={slotIndex}");
             if (slotIndex < 0 || slotIndex >= FoodSlotCount) return;
             HandleSlotLeftClick(slotIndex, 0, consumableOnly: true);
         }
         private void OnFoodSlotRightClick(int slotIndex)
         {
+            CompanionsPlugin.Log.LogInfo($"[UI] OnFoodSlotRightClick — slotIndex={slotIndex}");
             if (slotIndex < 0 || slotIndex >= FoodSlotCount) return;
             HandleSlotRightClick(slotIndex, 0);
         }
         private static bool IsConsumableItem(ItemDrop.ItemData item)
         {
             if (item == null || item.m_shared == null) return false;
-            return item.m_shared.m_itemType == ItemDrop.ItemData.ItemType.Consumable;
+            if (item.m_shared.m_itemType != ItemDrop.ItemData.ItemType.Consumable) return false;
+            return item.m_shared.m_food > 0f ||
+                   item.m_shared.m_foodStamina > 0f ||
+                   item.m_shared.m_foodEitr > 0f;
         }
         private bool TryGetMainGridCoord(int slotIndex, out int gx, out int gy)
         {
@@ -1010,22 +1081,46 @@ namespace Companions
         }
         private void HandleSlotLeftClick(int gx, int gy, bool consumableOnly)
         {
-            if (_companionHumanoid == null || InventoryGui.instance == null) return;
+            if (_companionHumanoid == null || InventoryGui.instance == null)
+            {
+                CompanionsPlugin.Log.LogWarning(
+                    $"[UI] HandleSlotLeftClick ABORT — humanoid={_companionHumanoid != null} " +
+                    $"invGui={InventoryGui.instance != null}");
+                return;
+            }
             var inv = _companionHumanoid.GetInventory();
-            if (inv == null) return;
+            if (inv == null)
+            {
+                CompanionsPlugin.Log.LogWarning("[UI] HandleSlotLeftClick ABORT — companion inventory is null");
+                return;
+            }
 
             var dragItem = _dragItemField?.GetValue(InventoryGui.instance) as ItemDrop.ItemData;
             var dragInv  = _dragInventoryField?.GetValue(InventoryGui.instance) as Inventory;
             int dragAmt  = (_dragAmountField != null) ? (int)_dragAmountField.GetValue(InventoryGui.instance) : 1;
             bool changed = false;
 
+            CompanionsPlugin.Log.LogInfo(
+                $"[UI] HandleSlotLeftClick — slot=({gx},{gy}) consumableOnly={consumableOnly} " +
+                $"dragItem=\"{dragItem?.m_shared?.m_name}\" dragInv={dragInv != null} dragAmt={dragAmt} " +
+                $"invItems={inv.GetAllItems().Count}");
+
+            // Food row = row 0, columns 0..2 — always enforce food-only
+            bool isFoodRow = gy == 0 && gx < FoodSlotCount;
+
             if (dragItem != null && dragInv != null)
             {
-                if (consumableOnly && !IsConsumableItem(dragItem))
+                if ((consumableOnly || isFoodRow) && !IsConsumableItem(dragItem))
                 {
+                    CompanionsPlugin.Log.LogInfo(
+                        $"[UI] Food slot REJECTED drag — \"{dragItem.m_shared?.m_name}\" " +
+                        $"type={dragItem.m_shared?.m_itemType} " +
+                        $"food={dragItem.m_shared?.m_food} stam={dragItem.m_shared?.m_foodStamina} " +
+                        $"eitr={dragItem.m_shared?.m_foodEitr} " +
+                        $"slot=({gx},{gy}) consumableOnly={consumableOnly} isFoodRow={isFoodRow}");
                     MessageHud.instance?.ShowMessage(
                         MessageHud.MessageType.Center,
-                        "Food slots only accept consumables.");
+                        "Food slots only accept food items.");
                     return;
                 }
 
@@ -1045,11 +1140,14 @@ namespace Companions
                 }
 
                 var targetItem = inv.GetItemAt(gx, gy);
-                if (consumableOnly && targetItem != null && !IsConsumableItem(targetItem))
+                if ((consumableOnly || isFoodRow) && targetItem != null && !IsConsumableItem(targetItem))
                 {
+                    CompanionsPlugin.Log.LogInfo(
+                        $"[UI] Food slot REJECTED swap — target \"{targetItem.m_shared?.m_name}\" " +
+                        $"is not food, slot=({gx},{gy})");
                     MessageHud.instance?.ShowMessage(
                         MessageHud.MessageType.Center,
-                        "Food slots only accept consumables.");
+                        "Food slots only accept food items.");
                     return;
                 }
 
@@ -1065,6 +1163,8 @@ namespace Companions
                 }
 
                 bool moved = DropItemToCompanion(inv, dragInv, dragItem, dragAmt, gx, gy);
+                CompanionsPlugin.Log.LogInfo(
+                    $"[UI] DropItemToCompanion result={moved} item=\"{dragItem.m_shared?.m_name}\" → slot=({gx},{gy})");
                 if (moved)
                 {
                     ClearDrag();
@@ -1075,7 +1175,11 @@ namespace Companions
             {
                 // Click item in companion inventory -> move to player inventory
                 var item = inv.GetItemAt(gx, gy);
-                if (item == null) return;
+                if (item == null)
+                {
+                    CompanionsPlugin.Log.LogInfo($"[UI] No item at companion slot ({gx},{gy}) — nothing to move");
+                    return;
+                }
                 if (Player.m_localPlayer != null)
                 {
                     var playerInv = Player.m_localPlayer.GetInventory();
@@ -1087,12 +1191,17 @@ namespace Companions
                         int beforeCount = inv.GetAllItems().Count;
                         int beforeStack = item.m_stack;
                         Vector2i beforePos = item.m_gridPos;
+                        CompanionsPlugin.Log.LogInfo(
+                            $"[UI] Moving \"{item.m_shared?.m_name}\" from companion({gx},{gy}) → player " +
+                            $"stack={item.m_stack} wasEquipped={wasEquipped}");
                         playerInv.MoveItemToThis(inv, item);
                         changed = !inv.ContainsItem(item) ||
                                   item.m_stack != beforeStack ||
                                   item.m_gridPos.x != beforePos.x ||
                                   item.m_gridPos.y != beforePos.y ||
                                   inv.GetAllItems().Count != beforeCount;
+                        CompanionsPlugin.Log.LogInfo(
+                            $"[UI] MoveItemToThis result: changed={changed}");
                     }
                 }
             }
@@ -1117,14 +1226,26 @@ namespace Companions
         private static bool DropItemToCompanion(Inventory targetInv, Inventory fromInv,
             ItemDrop.ItemData dragItem, int amount, int x, int y)
         {
-            if (targetInv == null || fromInv == null || dragItem == null) return false;
+            if (targetInv == null || fromInv == null || dragItem == null)
+            {
+                CompanionsPlugin.Log.LogWarning(
+                    $"[UI] DropItemToCompanion ABORT — targetInv={targetInv != null} " +
+                    $"fromInv={fromInv != null} dragItem={dragItem != null}");
+                return false;
+            }
             amount = Mathf.Clamp(amount, 1, dragItem.m_stack);
 
             var targetItem = targetInv.GetItemAt(x, y);
+            CompanionsPlugin.Log.LogInfo(
+                $"[UI] DropItemToCompanion — \"{dragItem.m_shared?.m_name}\" amt={amount} " +
+                $"→ slot=({x},{y}) targetSlotItem=\"{targetItem?.m_shared?.m_name}\" " +
+                $"fromInv={fromInv.GetName()} targetInv={targetInv.GetName()}");
+
             // Mirror vanilla InventoryGrid.DropItem semantics so swap interactions
             // behave like base inventory drag/drop.
             if (ShouldSwapForDrop(dragItem, targetItem, amount))
             {
+                CompanionsPlugin.Log.LogInfo("[UI] DropItemToCompanion — performing swap");
                 Vector2i oldPos = dragItem.m_gridPos;
                 fromInv.RemoveItem(dragItem);
                 fromInv.MoveItemToThis(targetInv, targetItem, targetItem.m_stack, oldPos.x, oldPos.y);
@@ -1132,7 +1253,9 @@ namespace Companions
                 return true;
             }
 
-            return targetInv.MoveItemToThis(fromInv, dragItem, amount, x, y);
+            bool result = targetInv.MoveItemToThis(fromInv, dragItem, amount, x, y);
+            CompanionsPlugin.Log.LogInfo($"[UI] DropItemToCompanion — MoveItemToThis result={result}");
+            return result;
         }
 
         private void OnCompanionInventoryMutated()
@@ -1147,7 +1270,14 @@ namespace Companions
             var inv = _companionHumanoid.GetInventory();
             if (inv == null) return;
             var item = inv.GetItemAt(gx, gy);
-            if (item == null) return;
+            if (item == null)
+            {
+                CompanionsPlugin.Log.LogInfo($"[UI] HandleSlotRightClick — no item at ({gx},{gy})");
+                return;
+            }
+            CompanionsPlugin.Log.LogInfo(
+                $"[UI] HandleSlotRightClick — \"{item.m_shared?.m_name}\" at ({gx},{gy}) " +
+                $"equipped={_companionHumanoid.IsItemEquiped(item)}");
 
             bool hadItem = inv.ContainsItem(item);
             int stackBefore = hadItem ? item.m_stack : 0;
@@ -1155,7 +1285,12 @@ namespace Companions
             bool changed = false;
 
             if (IsConsumableItem(item) && _companionFood != null)
+            {
                 changed = _companionFood.TryConsumeItem(item);
+                CompanionsPlugin.Log.LogInfo(
+                    $"[UI] Right-click food consume — \"{item.m_shared?.m_name}\" " +
+                    $"slot=({gx},{gy}) success={changed}");
+            }
 
             if (!changed)
             {
@@ -1175,6 +1310,7 @@ namespace Companions
         }
         private void ClearDrag()
         {
+            CompanionsPlugin.Log.LogInfo("[UI] ClearDrag called");
             if (InventoryGui.instance == null) return;
             _setupDragItem?.Invoke(InventoryGui.instance,
                 new object[] { null, null, 1 });
@@ -1188,6 +1324,19 @@ namespace Companions
         {
             if (mode < CompanionSetup.ModeFollow || mode > CompanionSetup.ModeStay)
                 mode = CompanionSetup.ModeFollow;
+
+            // Block gathering modes when companion is overweight
+            bool isGatherMode = mode >= CompanionSetup.ModeGatherWood
+                             && mode <= CompanionSetup.ModeGatherOre;
+            if (isGatherMode && _companionHarvest != null && _companionHarvest.IsOverweight())
+            {
+                CompanionsPlugin.Log.LogInfo(
+                    $"[UI] SetActionMode BLOCKED — companion is overweight, cannot gather");
+                MessageHud.instance?.ShowMessage(
+                    MessageHud.MessageType.Center,
+                    "Companion is too heavy to gather. Unload their inventory first.");
+                return;
+            }
 
             EnsureCompanionOwnership();
             int oldMode = _activeMode;
@@ -1367,14 +1516,12 @@ namespace Companions
                     _staminaText.text = $"Stamina: {Mathf.CeilToInt(cur)} / {Mathf.CeilToInt(max)}";
             }
 
-            if (_companionFood != null && _eitrFill != null)
+            if (_companion != null && _armorFill != null)
             {
-                float eitr = _companionFood.TotalEitrBonus;
-                float maxEitr = eitr; // Eitr has no base — just food bonus
-                float pct = maxEitr > 0f ? 1f : 0f;
-                _eitrFill.GetComponent<RectTransform>().anchorMax = new Vector2(pct, 1f);
-                if (_eitrText != null)
-                    _eitrText.text = $"Eitr: {Mathf.RoundToInt(eitr)}";
+                float armor = _companion.GetTotalArmor();
+                _armorFill.GetComponent<RectTransform>().anchorMax = new Vector2(1f, 1f);
+                if (_armorText != null)
+                    _armorText.text = $"Armor: {Mathf.RoundToInt(armor)}";
             }
 
             if (_companionHumanoid != null && _weightFill != null)
@@ -1391,11 +1538,6 @@ namespace Companions
                 }
             }
 
-            if (_companion != null && _armorText != null)
-            {
-                float armor = _companion.GetTotalArmor();
-                _armorText.text = $"Armor: {Mathf.RoundToInt(armor)}";
-            }
         }
 
         // ══════════════════════════════════════════════════════════════════════
@@ -1858,11 +2000,11 @@ namespace Companions
             _sliderBgSprite = null;
             if (_healthBarGradientSprite != null) { UnityEngine.Object.Destroy(_healthBarGradientSprite); _healthBarGradientSprite = null; }
             if (_staminaBarGradientSprite != null) { UnityEngine.Object.Destroy(_staminaBarGradientSprite); _staminaBarGradientSprite = null; }
-            if (_eitrBarGradientSprite != null) { UnityEngine.Object.Destroy(_eitrBarGradientSprite); _eitrBarGradientSprite = null; }
+            if (_armorBarGradientSprite != null) { UnityEngine.Object.Destroy(_armorBarGradientSprite); _armorBarGradientSprite = null; }
             if (_weightBarGradientSprite != null) { UnityEngine.Object.Destroy(_weightBarGradientSprite); _weightBarGradientSprite = null; }
             if (_healthBarGradientTex != null) { UnityEngine.Object.Destroy(_healthBarGradientTex); _healthBarGradientTex = null; }
             if (_staminaBarGradientTex != null) { UnityEngine.Object.Destroy(_staminaBarGradientTex); _staminaBarGradientTex = null; }
-            if (_eitrBarGradientTex != null) { UnityEngine.Object.Destroy(_eitrBarGradientTex); _eitrBarGradientTex = null; }
+            if (_armorBarGradientTex != null) { UnityEngine.Object.Destroy(_armorBarGradientTex); _armorBarGradientTex = null; }
             if (_weightBarGradientTex != null) { UnityEngine.Object.Destroy(_weightBarGradientTex); _weightBarGradientTex = null; }
         }
 

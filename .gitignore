@@ -1,7 +1,18 @@
+## Build output
 build/
 bin/
 obj/
+
+## IDE / editor
+.vs/
 *.user
 *.suo
-.vs/
+*.csproj.user
+
+## OS junk
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+## Debug
 *.pdb

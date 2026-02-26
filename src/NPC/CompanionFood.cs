@@ -24,6 +24,7 @@ namespace Companions
             public float  HealthBonus;
             public float  StaminaBonus;
             public float  EitrBonus;
+            public float  FoodRegen;
             public float  RemainingTime;
             public float  TotalTime;
 
@@ -42,10 +43,12 @@ namespace Companions
         private float _saveTimer;
         private float _consumeTimer;
         private float _remoteSyncTimer;
+        private float _foodRegenTimer;
 
         private const float SaveInterval         = 5f;
         private const float ConsumeCheckInterval = 1f;
         private const float RemoteSyncInterval   = 0.5f;
+        private const float FoodRegenInterval    = 10f;
 
         // ZDO keys — one per food slot
         private static readonly int[] FoodHashes = new int[MaxFoodSlots];
@@ -161,6 +164,11 @@ namespace Companions
                 f.RemainingTime -= dt;
                 if (f.RemainingTime <= 0f)
                 {
+                    CompanionsPlugin.Log.LogInfo(
+                        $"[Food] Slot {i} expired — \"{f.ItemName}\" " +
+                        $"(hp={f.HealthBonus:F0} stam={f.StaminaBonus:F0} " +
+                        $"eitr={f.EitrBonus:F0} regen={f.FoodRegen:F1}) " +
+                        $"companion=\"{_character?.m_name ?? "?"}\"");
                     _foods[i] = default;
                     anyExpired = true;
                 }
@@ -172,6 +180,26 @@ namespace Companions
 
             if (anyExpired || anyTicked)
                 ClampHealth();
+
+            // Passive food regen — vanilla heals every 10s based on sum of m_foodRegen
+            _foodRegenTimer += dt;
+            if (_foodRegenTimer >= FoodRegenInterval)
+            {
+                _foodRegenTimer = 0f;
+                float regen = 0f;
+                for (int i = 0; i < MaxFoodSlots; i++)
+                    if (_foods[i].IsActive) regen += _foods[i].FoodRegen;
+                if (regen > 0f && _character != null)
+                {
+                    float hpBefore = _character.GetHealth();
+                    _character.Heal(regen);
+                    float hpAfter = _character.GetHealth();
+                    CompanionsPlugin.Log.LogInfo(
+                        $"[Food] Regen tick — healed {regen:F1} HP " +
+                        $"({hpBefore:F1} → {hpAfter:F1} / {_character.GetMaxHealth():F1}) " +
+                        $"companion=\"{_character.m_name}\"");
+                }
+            }
 
             // Auto-consume from food slots
             _consumeTimer -= dt;
@@ -259,6 +287,7 @@ namespace Companions
                 HealthBonus    = item.m_shared.m_food,
                 StaminaBonus   = item.m_shared.m_foodStamina,
                 EitrBonus      = item.m_shared.m_foodEitr,
+                FoodRegen      = item.m_shared.m_foodRegen,
                 TotalTime      = burnTime,
                 RemainingTime  = burnTime
             };
@@ -277,6 +306,17 @@ namespace Companions
             float curHp  = _character.GetHealth();
             if (curHp < newMax)
                 _character.SetHealth(Mathf.Min(curHp + _foods[slot].HealthBonus, newMax));
+
+            float hpAfter = _character.GetHealth();
+            bool hasSE = item.m_shared.m_consumeStatusEffect != null;
+            CompanionsPlugin.Log.LogInfo(
+                $"[Food] Consumed \"{item.m_shared.m_name}\" → slot {slot} " +
+                $"hp={item.m_shared.m_food:F0} stam={item.m_shared.m_foodStamina:F0} " +
+                $"eitr={item.m_shared.m_foodEitr:F0} regen={item.m_shared.m_foodRegen:F1} " +
+                $"burnTime={burnTime:F0}s statusEffect={hasSE} " +
+                $"health {curHp:F1} → {hpAfter:F1} / {newMax:F1} " +
+                $"totalStamBonus={TotalStaminaBonus:F1} " +
+                $"companion=\"{_character?.m_name ?? "?"}\"");
 
             return true;
         }
@@ -413,7 +453,8 @@ namespace Companions
 
         // ── ZDO persistence ─────────────────────────────────────────────────
 
-        // Format (v2): "itemName|hp|stam|eitr|remaining|total|prefabName"
+        // Format (v3): "itemName|hp|stam|eitr|remaining|total|prefabName|regen"
+        // Legacy (v2): "itemName|hp|stam|eitr|remaining|total|prefabName"
         // Legacy (v1): "itemName|hp|stam|eitr|remaining|total"
         private string SerializeFood(int slot)
         {
@@ -426,7 +467,8 @@ namespace Companions
                 f.EitrBonus.ToString("F1", CultureInfo.InvariantCulture),
                 f.RemainingTime.ToString("F1", CultureInfo.InvariantCulture),
                 f.TotalTime.ToString("F1", CultureInfo.InvariantCulture),
-                f.ItemPrefabName ?? "");
+                f.ItemPrefabName ?? "",
+                f.FoodRegen.ToString("F1", CultureInfo.InvariantCulture));
         }
 
         private static FoodEffect DeserializeFood(string data)
@@ -446,6 +488,10 @@ namespace Companions
             if (!float.TryParse(parts[5], NumberStyles.Float, CultureInfo.InvariantCulture, out float total))
                 return default;
 
+            float regen = 0f;
+            if (parts.Length >= 8)
+                float.TryParse(parts[7], NumberStyles.Float, CultureInfo.InvariantCulture, out regen);
+
             return new FoodEffect
             {
                 ItemName       = parts[0],
@@ -453,6 +499,7 @@ namespace Companions
                 HealthBonus    = hp,
                 StaminaBonus   = stam,
                 EitrBonus      = eitr,
+                FoodRegen      = regen,
                 RemainingTime  = remaining,
                 TotalTime      = total
             };

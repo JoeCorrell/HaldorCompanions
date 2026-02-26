@@ -83,14 +83,6 @@ namespace Companions
                 }
             }
 
-            // Freeze when this companion's UI panel is open — player is managing inventory
-            var panel = CompanionInteractPanel.Instance;
-            if (panel != null && panel.IsVisible && panel.CurrentCompanion == this)
-            {
-                if (_ai != null) _ai.StopMoving();
-                return;
-            }
-
             // Ensure follow target stays set for follow/gather modes.
             // It can be lost on zone reload, player respawn, or after MonsterAI combat.
             if (_ai != null && _ai.GetFollowTarget() == null && Player.m_localPlayer != null)

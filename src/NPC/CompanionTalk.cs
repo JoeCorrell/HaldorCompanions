@@ -50,6 +50,13 @@ namespace Companions
             "My gear is worn.", "Need repairs.", "This won't hold much longer.",
             "My equipment is damaged.", "Better fix this soon."
         };
+        private static readonly string[] OverweightLines = {
+            "My back is hurting from all this weight!",
+            "I can't carry any more...",
+            "Too heavy! I need to drop some off.",
+            "My legs are about to give out!",
+            "I'm loaded down. Let's head back."
+        };
 
         // ── Lifecycle ──────────────────────────────────────────────────────
 
@@ -102,10 +109,16 @@ namespace Companions
 
         private void SayContextual()
         {
-            // Priority: combat > hungry > repair > gathering > following
+            // Priority: combat > overweight > hungry > repair > gathering > following
             if (HasEnemyNearby())
             {
                 SayRandom(CombatLines);
+                return;
+            }
+
+            if (IsOverweight())
+            {
+                SayRandom(OverweightLines);
                 return;
             }
 
@@ -143,6 +156,13 @@ namespace Companions
         {
             _talkInterval = Random.Range(MinInterval, MaxInterval);
             _talkTimer    = _talkInterval;
+        }
+
+        private bool IsOverweight()
+        {
+            if (_humanoid == null) return false;
+            var inv = _humanoid.GetInventory();
+            return inv != null && inv.GetTotalWeight() >= 298f;
         }
 
         private bool IsHungry()
