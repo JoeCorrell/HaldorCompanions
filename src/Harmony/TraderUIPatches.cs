@@ -324,8 +324,20 @@ namespace Companions
 
             static void Postfix(object __instance)
             {
-                if (_companionPanel?.Root != null)
+                CacheReflection();
+                if (_companionPanel?.Root == null || _activeTabField == null) return;
+
+                int activeTab = (int)_activeTabField.GetValue(__instance);
+                if (activeTab == CompanionTabIndex)
+                {
+                    // Another patch may call RefreshTabPanels while we're active.
+                    // Re-apply our visibility rules so the companion content doesn't disappear.
+                    ActivateCompanionTab(__instance);
+                }
+                else
+                {
                     _companionPanel.Root.SetActive(false);
+                }
             }
         }
 
@@ -389,7 +401,11 @@ namespace Companions
                 // Per-frame companion panel update
                 activeTab = (int)_activeTabField.GetValue(__instance);
                 if (activeTab == CompanionTabIndex)
+                {
+                    if (_companionPanel?.Root != null && !_companionPanel.Root.activeSelf)
+                        ActivateCompanionTab(__instance);
                     _companionPanel?.UpdatePerFrame();
+                }
             }
         }
 
@@ -404,10 +420,19 @@ namespace Companions
         private static void ActivateCompanionTab(object traderUI)
         {
             if (_activeTabField == null || _mainPanelField == null) return;
-            int currentTab = (int)_activeTabField.GetValue(traderUI);
-            if (currentTab == CompanionTabIndex) return;
 
-            _activeTabField.SetValue(traderUI, CompanionTabIndex);
+            if (_companionPanel?.Root == null)
+            {
+                CompanionsPlugin.Log.LogWarning("[TraderUIPatches] Companion panel missing during activation, attempting reinject.");
+                InjectCompanionTab(traderUI);
+                if (_companionPanel?.Root == null) return;
+            }
+
+            int currentTab = (int)_activeTabField.GetValue(traderUI);
+            bool tabChanged = currentTab != CompanionTabIndex;
+
+            if (tabChanged)
+                _activeTabField.SetValue(traderUI, CompanionTabIndex);
 
             // Clear search / category filters
             _searchFilterField?.SetValue(traderUI, "");
@@ -436,8 +461,9 @@ namespace Companions
             // Show companion panel
             if (_companionPanel?.Root != null)
             {
+                bool wasVisible = _companionPanel.Root.activeSelf;
                 _companionPanel.Root.SetActive(true);
-                _companionPanel.Refresh();
+                if (tabChanged || !wasVisible) _companionPanel.Refresh();
             }
 
             if (UnityEngine.EventSystems.EventSystem.current != null)

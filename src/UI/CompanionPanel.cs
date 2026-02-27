@@ -456,8 +456,9 @@ namespace Companions
             // Set content height
             contentRT.sizeDelta = new Vector2(0f, -y + 8f);
 
-            // Sync initial values
-            _current.SkinColor = Utils.ColorToVec3(Color.Lerp(SkinLight, SkinDark, _skinSlider.value));
+            // Sync initial values (fallback when vanilla split slider is unavailable)
+            float skinT = _skinSlider != null ? _skinSlider.value : 0.05f;
+            _current.SkinColor = Utils.ColorToVec3(Color.Lerp(SkinLight, SkinDark, skinT));
             UpdateHairColor();
 
             // Initial visual state
@@ -1236,15 +1237,37 @@ namespace Companions
         private static Slider MakeSlider(Transform parent, string name,
             float y, float sliderH, float initialValue, Action<float> onChange)
         {
+            GameObject go;
+            Slider slider;
+
             var srcSlider = InventoryGui.instance?.m_splitSlider;
-            if (srcSlider == null)
+            if (srcSlider != null)
             {
-                CompanionsPlugin.Log.LogWarning("[CompanionPanel] m_splitSlider not available");
-                return null;
+                go = UnityEngine.Object.Instantiate(srcSlider.gameObject, parent);
+                go.name = name;
+                go.SetActive(true);
+
+                // Strip layout constraints from the clone
+                var le = go.GetComponent<LayoutElement>();
+                if (le != null) UnityEngine.Object.Destroy(le);
+
+                slider = go.GetComponent<Slider>();
+                if (slider == null)
+                {
+                    CompanionsPlugin.Log.LogWarning("[CompanionPanel] Cloned split slider missing Slider component; using fallback slider.");
+                    UnityEngine.Object.Destroy(go);
+                    slider = CreateFallbackSlider(parent, name);
+                    go = slider != null ? slider.gameObject : null;
+                }
             }
-            var go = UnityEngine.Object.Instantiate(srcSlider.gameObject, parent);
-            go.name = name;
-            go.SetActive(true);
+            else
+            {
+                CompanionsPlugin.Log.LogWarning("[CompanionPanel] m_splitSlider not available, using fallback slider.");
+                slider = CreateFallbackSlider(parent, name);
+                go = slider != null ? slider.gameObject : null;
+            }
+
+            if (go == null || slider == null) return null;
 
             // Reposition to fit our layout
             var rt = go.GetComponent<RectTransform>();
@@ -1253,10 +1276,6 @@ namespace Companions
             rt.pivot            = new Vector2(0.5f, 1f);
             rt.sizeDelta        = new Vector2(-4f, sliderH);
             rt.anchoredPosition = new Vector2(0f, y);
-
-            // Strip layout constraints from the clone
-            var le = go.GetComponent<LayoutElement>();
-            if (le != null) UnityEngine.Object.Destroy(le);
 
             // Replace slider background with our custom texture and let it stretch.
             var sliderBgSprite = GetSliderBgSprite();
@@ -1291,7 +1310,6 @@ namespace Companions
             }
 
             // Rewire the slider for our 0-1 float range
-            var slider = go.GetComponent<Slider>();
             slider.onValueChanged.RemoveAllListeners();
             slider.transition = Selectable.Transition.None;
             slider.wholeNumbers = false;
@@ -1325,9 +1343,69 @@ namespace Companions
             tintGO.GetComponent<Image>().color         = BtnTint;
             tintGO.GetComponent<Image>().raycastTarget = false;
 
-            slider.value        = initialValue;
+            slider.value = initialValue;
             slider.onValueChanged.AddListener(v => onChange(v));
 
+            return slider;
+        }
+
+        private static Slider CreateFallbackSlider(Transform parent, string name)
+        {
+            var go = new GameObject(name, typeof(RectTransform), typeof(Image), typeof(Slider));
+            go.transform.SetParent(parent, false);
+            go.SetActive(true);
+
+            var bgImg = go.GetComponent<Image>();
+            if (bgImg != null)
+            {
+                bgImg.color = new Color(0.1f, 0.1f, 0.1f, 0.9f);
+                bgImg.raycastTarget = true;
+            }
+
+            var fillAreaGO = new GameObject("Fill Area", typeof(RectTransform));
+            fillAreaGO.transform.SetParent(go.transform, false);
+            var fillAreaRT = fillAreaGO.GetComponent<RectTransform>();
+            fillAreaRT.anchorMin = Vector2.zero;
+            fillAreaRT.anchorMax = Vector2.one;
+            fillAreaRT.offsetMin = new Vector2(8f, 4f);
+            fillAreaRT.offsetMax = new Vector2(-8f, -4f);
+
+            var fillGO = new GameObject("Fill", typeof(RectTransform), typeof(Image));
+            fillGO.transform.SetParent(fillAreaGO.transform, false);
+            var fillRT = fillGO.GetComponent<RectTransform>();
+            fillRT.anchorMin = new Vector2(0f, 0f);
+            fillRT.anchorMax = new Vector2(1f, 1f);
+            fillRT.pivot = new Vector2(0f, 0.5f);
+            fillRT.offsetMin = Vector2.zero;
+            fillRT.offsetMax = Vector2.zero;
+            var fillImg = fillGO.GetComponent<Image>();
+            fillImg.color = GoldColor;
+            fillImg.raycastTarget = false;
+
+            var handleAreaGO = new GameObject("Handle Slide Area", typeof(RectTransform));
+            handleAreaGO.transform.SetParent(go.transform, false);
+            var handleAreaRT = handleAreaGO.GetComponent<RectTransform>();
+            handleAreaRT.anchorMin = Vector2.zero;
+            handleAreaRT.anchorMax = Vector2.one;
+            handleAreaRT.offsetMin = new Vector2(8f, 0f);
+            handleAreaRT.offsetMax = new Vector2(-8f, 0f);
+
+            var handleGO = new GameObject("Handle", typeof(RectTransform), typeof(Image));
+            handleGO.transform.SetParent(handleAreaGO.transform, false);
+            var handleRT = handleGO.GetComponent<RectTransform>();
+            handleRT.anchorMin = new Vector2(0.5f, 0.5f);
+            handleRT.anchorMax = new Vector2(0.5f, 0.5f);
+            handleRT.sizeDelta = new Vector2(16f, 16f);
+            handleRT.anchoredPosition = Vector2.zero;
+            var handleImg = handleGO.GetComponent<Image>();
+            handleImg.color = Color.white;
+            handleImg.raycastTarget = true;
+
+            var slider = go.GetComponent<Slider>();
+            slider.fillRect = fillRT;
+            slider.handleRect = handleRT;
+            slider.targetGraphic = handleImg;
+            slider.direction = Slider.Direction.LeftToRight;
             return slider;
         }
     }

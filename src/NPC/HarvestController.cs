@@ -321,7 +321,7 @@ namespace Companions
             if (target == null) return;
 
             // Determine tool type from target components
-            int harvestMode = DetermineHarvestMode(target);
+            int harvestMode = DetermineHarvestModeStatic(target);
             if (harvestMode < 0)
             {
                 Log($"SetDirectedTarget REJECTED — can't determine tool for \"{target.name}\"");
@@ -370,7 +370,7 @@ namespace Companions
         /// Determines whether a target needs an axe (Wood) or pickaxe (Stone/Ore).
         /// Returns ModeGatherWood, ModeGatherStone, or -1 if not harvestable.
         /// </summary>
-        private static int DetermineHarvestMode(GameObject target)
+        internal static int DetermineHarvestModeStatic(GameObject target)
         {
             if (target.GetComponent<TreeBase>() != null) return CompanionSetup.ModeGatherWood;
             if (target.GetComponent<TreeLog>() != null) return CompanionSetup.ModeGatherWood;
@@ -1072,11 +1072,13 @@ namespace Companions
                 Log($"  ...and {candidateCount - 5} more candidates");
 
             // Type breakdown
+            string modeName = mode == CompanionSetup.ModeGatherWood ? "Wood"
+                            : mode == CompanionSetup.ModeGatherOre  ? "Ore" : "Stone";
             if (mode == CompanionSetup.ModeGatherWood)
-                Log($"  Breakdown: {treeBaseCount} TreeBase, {treeLogCount} TreeLog, {stumpCount} Stump " +
+                Log($"  Breakdown [{modeName}]: {treeBaseCount} TreeBase, {treeLogCount} TreeLog, {stumpCount} Stump " +
                     $"(total {candidateCount} unique targets)");
             else
-                Log($"  Breakdown: {rockCount} rocks (total {candidateCount} unique targets)");
+                Log($"  Breakdown [{modeName}]: {rockCount} deposits (total {candidateCount} unique targets)");
 
             if (best != null)
                 Log($"Best target: \"{best.name}\" dist={bestDist:F1}m " +
@@ -1105,15 +1107,31 @@ namespace Companions
                     return dest.gameObject;
                 }
             }
-            else // Stone or Ore
+            else if (mode == CompanionSetup.ModeGatherOre)
             {
+                // Ore mode — only MineRock/MineRock5 that drop actual ore (not just stone)
                 var rock5 = col.GetComponentInParent<MineRock5>();
-                if (rock5 != null) { type = "MineRock5"; return rock5.gameObject; }
+                if (rock5 != null && !DropsOnlyStone(rock5.m_dropItems))
+                { type = "MineRock5"; return rock5.gameObject; }
 
                 var rock = col.GetComponentInParent<MineRock>();
-                if (rock != null) { type = "MineRock"; return rock.gameObject; }
+                if (rock != null && !DropsOnlyStone(rock.m_dropItems))
+                { type = "MineRock"; return rock.gameObject; }
 
-                // Destructible rocks/ores: must respond to pickaxe AND be immune to chop
+                // Skip Destructible — ore deposits use MineRock/MineRock5
+            }
+            else // Stone
+            {
+                // Stone mode — Destructible rocks + any MineRock/MineRock5 that only drop stone
+                var rock5 = col.GetComponentInParent<MineRock5>();
+                if (rock5 != null && DropsOnlyStone(rock5.m_dropItems))
+                { type = "MineRock5"; return rock5.gameObject; }
+
+                var rock = col.GetComponentInParent<MineRock>();
+                if (rock != null && DropsOnlyStone(rock.m_dropItems))
+                { type = "MineRock"; return rock.gameObject; }
+
+                // Destructible rocks: must respond to pickaxe AND be immune to chop
                 // (wood-type destructibles like Beech_small2, stumps respond to chop — exclude them)
                 var dest = col.GetComponentInParent<Destructible>();
                 if (dest != null
@@ -1126,6 +1144,21 @@ namespace Companions
             }
 
             return null;
+        }
+
+        /// <summary>
+        /// Returns true if a DropTable only contains Stone drops (no ore).
+        /// Used to distinguish regular rock deposits from ore veins.
+        /// </summary>
+        private static bool DropsOnlyStone(DropTable table)
+        {
+            if (table == null || table.m_drops.Count == 0) return true;
+            foreach (var drop in table.m_drops)
+            {
+                if (drop.m_item == null) continue;
+                if (drop.m_item.name != "Stone") return false;
+            }
+            return true;
         }
 
         // ══════════════════════════════════════════════════════════════════════

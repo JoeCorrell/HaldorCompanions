@@ -71,6 +71,27 @@ namespace Companions
         private float m_timeSinceSensedTargetCreature;
         private float m_updateTargetTimer;
 
+        /// <summary>
+        /// When > 0, all AI movement is suppressed. Used to hold position
+        /// after snapping to a bed/cart so animation starts at correct spot.
+        /// </summary>
+        internal float FreezeTimer;
+
+        // ══════════════════════════════════════════════════════════════════════
+        //  Pending Cart Navigation
+        // ══════════════════════════════════════════════════════════════════════
+
+        internal Vagon PendingCartAttach;
+        internal Humanoid PendingCartHumanoid;
+        private float _pendingCartTimeout;
+
+        // ══════════════════════════════════════════════════════════════════════
+        //  Pending Move-to-Position
+        // ══════════════════════════════════════════════════════════════════════
+
+        internal Vector3? PendingMoveTarget;
+        private float _pendingMoveTimeout;
+
         // ══════════════════════════════════════════════════════════════════════
         //  Constants
         // ══════════════════════════════════════════════════════════════════════
@@ -110,6 +131,7 @@ namespace Companions
         private CombatController _combat;
         private RepairController _repair;
         private DoorHandler _doorHandler;
+        private CompanionRest _rest;
 
         // ══════════════════════════════════════════════════════════════════════
         //  Lifecycle
@@ -124,6 +146,7 @@ namespace Companions
             _combat = GetComponent<CombatController>();
             _repair = GetComponent<RepairController>();
             _doorHandler = GetComponent<DoorHandler>();
+            _rest = GetComponent<CompanionRest>();
 
             // Restore sleep state from ZDO
             ZDO zdo = m_nview.GetZDO();
@@ -203,6 +226,42 @@ namespace Companions
 
         internal void SetFormationSlot(int slot) { _formationSlot = slot; }
 
+        internal void SetPendingCart(Vagon vagon, Humanoid humanoid)
+        {
+            PendingCartAttach = vagon;
+            PendingCartHumanoid = humanoid;
+            _pendingCartTimeout = 20f;
+            SetFollowTarget(null);
+        }
+
+        internal void CancelPendingCart()
+        {
+            if (PendingCartAttach == null) return;
+            PendingCartAttach = null;
+            PendingCartHumanoid = null;
+            if (Player.m_localPlayer != null)
+                SetFollowTarget(Player.m_localPlayer.gameObject);
+        }
+
+        internal void SetMoveTarget(Vector3 pos)
+        {
+            CompanionsPlugin.Log.LogInfo(
+                $"[AI] SetMoveTarget — target={pos:F1} dist={Vector3.Distance(transform.position, pos):F1}");
+            PendingMoveTarget = pos;
+            _pendingMoveTimeout = 30f;
+            SetFollowTarget(null);
+        }
+
+        internal void CancelMoveTarget()
+        {
+            if (PendingMoveTarget == null) return;
+            CompanionsPlugin.Log.LogInfo(
+                $"[AI] CancelMoveTarget — was={PendingMoveTarget.Value:F1}");
+            PendingMoveTarget = null;
+            if (Player.m_localPlayer != null)
+                SetFollowTarget(Player.m_localPlayer.gameObject);
+        }
+
         // ══════════════════════════════════════════════════════════════════════
         //  Main AI Loop
         // ══════════════════════════════════════════════════════════════════════
@@ -216,6 +275,113 @@ namespace Companions
             UpdateSleep(dt);
             if (IsSleeping())
                 return true;
+
+            // Freeze timer — brief hold during cart attach or similar
+            if (FreezeTimer > 0f)
+            {
+                FreezeTimer -= dt;
+                if (FreezeTimer <= 0f)
+                    CompanionsPlugin.Log.LogInfo($"[AI] FreezeTimer expired — resuming movement");
+                return true;
+            }
+
+            // Resting (sitting/sleeping) — skip all movement so position stays
+            if (_rest != null && _rest.IsResting)
+                return true;
+
+            // Rest navigation — walking to a bed or fire
+            if (_rest != null && _rest.IsNavigating)
+            {
+                Vector3 navTarget = _rest.NavTarget;
+                float distToNav = Vector3.Distance(transform.position, navTarget);
+                if (distToNav < 2f)
+                {
+                    _rest.ArriveAtNavTarget();
+                }
+                else
+                {
+                    MoveTo(dt, navTarget, 1.5f, true);
+                }
+                return true;
+            }
+
+            // Cart navigation — walking to cart attach point
+            if (PendingCartAttach != null)
+            {
+                _pendingCartTimeout -= dt;
+                if (_pendingCartTimeout <= 0f || PendingCartAttach == null)
+                {
+                    CompanionsPlugin.Log.LogInfo("[AI] Cart navigation timed out — cancelling");
+                    CancelPendingCart();
+                }
+                else
+                {
+                    Vector3 attachWorldPos = PendingCartAttach.m_attachPoint.position
+                        - PendingCartAttach.m_attachOffset;
+                    attachWorldPos.y = transform.position.y;
+                    float distToAttach = Vector3.Distance(transform.position, attachWorldPos);
+
+                    if (distToAttach < 2f)
+                    {
+                        // Close enough — snap to exact attach position and interact
+                        // Sync both transform and Rigidbody to prevent physics override
+                        transform.position = attachWorldPos;
+                        var body = GetComponent<Rigidbody>();
+                        if (body != null)
+                        {
+                            body.position = attachWorldPos;
+                            body.velocity = Vector3.zero;
+                        }
+
+                        Vector3 toCart = PendingCartAttach.transform.position - transform.position;
+                        toCart.y = 0f;
+                        if (toCart.sqrMagnitude > 0.01f)
+                            transform.rotation = Quaternion.LookRotation(toCart.normalized);
+
+                        FreezeTimer = 1f;
+                        SetFollowTarget(PendingCartAttach.gameObject);
+                        PendingCartAttach.Interact(PendingCartHumanoid, false, false);
+
+                        CompanionsPlugin.Log.LogInfo(
+                            $"[AI] Cart navigation arrived — snapped to {attachWorldPos:F2}, calling Interact");
+
+                        PendingCartAttach = null;
+                        PendingCartHumanoid = null;
+                    }
+                    else
+                    {
+                        MoveTo(dt, attachWorldPos, 1f, true);
+                    }
+                }
+                return true;
+            }
+
+            // Move-to-position — walking to a player-directed ground point
+            if (PendingMoveTarget.HasValue)
+            {
+                _pendingMoveTimeout -= dt;
+                if (_pendingMoveTimeout <= 0f)
+                {
+                    CompanionsPlugin.Log.LogInfo("[AI] Move-to timed out — cancelling");
+                    CancelMoveTarget();
+                }
+                else
+                {
+                    float distToMove = Vector3.Distance(transform.position, PendingMoveTarget.Value);
+                    if (distToMove < 2f)
+                    {
+                        CompanionsPlugin.Log.LogInfo(
+                            $"[AI] Move-to arrived at {PendingMoveTarget.Value:F1} — resuming follow");
+                        CancelMoveTarget();
+                    }
+                    else
+                    {
+                        bool runToPoint = distToMove > 10f;
+                        MoveTo(dt, PendingMoveTarget.Value, 1f, runToPoint);
+                    }
+                }
+                return true;
+            }
 
             // Directed target lock countdown
             if (DirectedTargetLockTimer > 0f)
@@ -625,6 +791,13 @@ namespace Companions
                 return;
             }
 
+            // Close to target → vanilla follow (stops at ~3m, no formation jitter)
+            if (distToTarget < 5f)
+            {
+                Follow(target, dt);
+                return;
+            }
+
             // Compute formation offset relative to player's facing
             Vector3 playerFwd = target.transform.forward;
             Vector3 playerRight = target.transform.right;
@@ -642,8 +815,8 @@ namespace Companions
                 return;
             }
 
-            // Move to formation point
-            bool shouldRun = distToTarget > 6f;
+            // Move to formation point — only run when far from player
+            bool shouldRun = distToTarget > 10f;
             MoveTo(dt, formationPos, 1f, shouldRun);
         }
 

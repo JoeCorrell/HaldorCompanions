@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using HarmonyLib;
 using UnityEngine;
 
@@ -13,6 +14,7 @@ namespace Companions
     ///   Door             → open
     ///   Fireplace        → sit nearby
     ///   Bed              → go to bed
+    ///   Container        → deposit resources
     ///   Harvestable      → harvest (TreeBase, TreeLog, MineRock, MineRock5, Destructible)
     ///   Nothing          → cancel all directed commands
     /// </summary>
@@ -21,12 +23,58 @@ namespace Companions
     {
         private static float _cooldown;
 
+        // ── Speech pools ──────────────────────────────────────────────────────
+        private static readonly string[] AttackLines = {
+            "On it!", "Going in!", "I'll take them down!", "For Odin!"
+        };
+        private static readonly string[] CartPullLines = {
+            "I'll haul this.", "Got the cart!", "Let me pull."
+        };
+        private static readonly string[] CartReleasedLines = {
+            "Letting go.", "Cart's free.", "Released!"
+        };
+        private static readonly string[] DoorLines = {
+            "Getting the door.", "I'll get it.", "Door's open!"
+        };
+        private static readonly string[] SitLines = {
+            "Nice and warm.", "Good spot to rest.", "I'll sit here."
+        };
+        private static readonly string[] SleepLines = {
+            "Time for some rest.", "I could use some sleep.", "Wake me if you need me."
+        };
+        private static readonly string[] WakeLines = {
+            "I'm up!", "Already?", "Right, let's go."
+        };
+        private static readonly string[] DepositLines = {
+            "Dropping off my haul.", "Storing the goods.", "Lightening my load."
+        };
+        private static readonly string[] DepositEmptyLines = {
+            "I've got nothing to drop off.", "Already empty."
+        };
+        private static readonly string[] HarvestLines = {
+            "I'll get that.", "On it!", "Looks like good stuff."
+        };
+        private static readonly string[] CancelLines = {
+            "Standing by.", "Awaiting orders.", "Ready when you are."
+        };
+        private static readonly string[] MoveLines = {
+            "Heading over.", "On my way.", "Moving out."
+        };
+        private static readonly string[] RepairLines = {
+            "I'll fix my gear up.", "Time for repairs.", "This needs some work."
+        };
+        private static readonly string[] BoardLines = {
+            "Coming aboard!", "All aboard!", "I'll hop on."
+        };
+
         private static void Postfix(Player __instance)
         {
             if (__instance != Player.m_localPlayer) return;
             if (__instance.IsDead()) return;
             if (InventoryGui.IsVisible() || Minimap.IsOpen() || Menu.IsVisible()) return;
-            if (TextInput.IsVisible()) return;
+            if (TextInput.IsVisible() || Console.IsVisible() || StoreGui.IsVisible()) return;
+            if (Chat.instance != null && Chat.instance.HasFocus()) return;
+            if (Hud.IsPieceSelectionVisible()) return;
 
             _cooldown -= Time.deltaTime;
             if (_cooldown > 0f) return;
@@ -68,9 +116,11 @@ namespace Companions
             if (mainCam == null) return;
 
             Ray ray = new Ray(mainCam.transform.position, mainCam.transform.forward);
+            // Matches Player.m_interactMask + character_ghost/character_noenv
             int layerMask = LayerMask.GetMask(
                 "character", "character_net", "character_ghost", "character_noenv",
-                "Default", "piece", "piece_nonsolid", "static_solid", "terrain");
+                "Default", "Default_small", "piece", "piece_nonsolid",
+                "static_solid", "terrain", "vehicle", "item");
 
             RaycastHit[] hits = Physics.RaycastAll(ray, 50f, layerMask);
             if (hits.Length > 1)
@@ -88,6 +138,11 @@ namespace Companions
             {
                 var col = hits[i].collider;
                 if (col == null) continue;
+
+                CompanionsPlugin.Log.LogDebug(
+                    $"[Direct] Hit[{i}]: \"{col.gameObject.name}\" dist={hits[i].distance:F2} " +
+                    $"layer={LayerMask.LayerToName(col.gameObject.layer)} " +
+                    $"pos={hits[i].point:F2}");
 
                 // ── Enemy Character ─────────────────────────────────
                 var character = col.GetComponentInParent<Character>();
@@ -136,11 +191,45 @@ namespace Companions
                     return;
                 }
 
+                // ── CraftingStation (forge, workbench) ────────────
+                var station = col.GetComponentInParent<CraftingStation>();
+                if (station != null)
+                {
+                    DirectRepair(setups, localId, station);
+                    return;
+                }
+
+                // ── Ship (boat) ───────────────────────────────────
+                var ship = col.GetComponentInParent<Ship>();
+                if (ship != null)
+                {
+                    DirectBoard(setups, localId, ship);
+                    return;
+                }
+
+                // ── Container (chest) ──────────────────────────────
+                var container = col.GetComponentInParent<Container>();
+                if (container != null && container.GetComponent<CompanionSetup>() == null)
+                {
+                    DirectDeposit(setups, localId, container);
+                    return;
+                }
+
                 // ── Harvestable (tree, rock, ore) ───────────────────
                 var harvestGO = GetHarvestable(col);
                 if (harvestGO != null)
                 {
-                    DirectHarvest(setups, localId, harvestGO);
+                    DirectGatherMode(setups, localId, harvestGO);
+                    return;
+                }
+
+                // ── Ground / terrain — move to position or exit gather ──
+                int layer = col.gameObject.layer;
+                if (layer == LayerMask.NameToLayer("terrain") ||
+                    layer == LayerMask.NameToLayer("Default") ||
+                    layer == LayerMask.NameToLayer("static_solid"))
+                {
+                    DirectGround(setups, localId, hits[i].point);
                     return;
                 }
             }
@@ -156,151 +245,485 @@ namespace Companions
         private static void DirectAttack(CompanionSetup[] setups, string localId, Character enemy)
         {
             int directed = 0;
+            CompanionTalk firstTalk = null;
             foreach (var setup in setups)
             {
                 if (!IsOwned(setup, localId)) continue;
+                if (!setup.GetIsCommandable()) continue;
                 var ai = setup.GetComponent<CompanionAI>();
                 if (ai == null) continue;
                 if (setup.GetCombatStance() == CompanionSetup.StancePassive) continue;
 
+                CancelExistingActions(setup);
                 ai.m_targetCreature = enemy;
                 ai.SetAlerted(true);
                 ai.DirectedTargetLockTimer = 10f;
+                if (firstTalk == null) firstTalk = setup.GetComponent<CompanionTalk>();
                 directed++;
             }
 
-            MessageHud.instance?.ShowMessage(MessageHud.MessageType.Center,
-                $"Attack: {enemy.m_name}!");
+            SayRandom(firstTalk, AttackLines);
             CompanionsPlugin.Log.LogInfo(
                 $"[Direct] {directed} companion(s) → attack \"{enemy.m_name}\"");
         }
 
         private static void DirectCart(CompanionSetup[] setups, string localId, Vagon vagon)
         {
-            // Find closest owned companion to the cart
+            CompanionsPlugin.Log.LogInfo(
+                $"[Direct] DirectCart called — vagon=\"{vagon.name}\" " +
+                $"attachPoint={vagon.m_attachPoint.position:F2} " +
+                $"attachOffset={vagon.m_attachOffset:F2} " +
+                $"detachDist={vagon.m_detachDistance:F2}");
+
+            // Check if any owned companion is already attached — detach them
+            foreach (var setup in setups)
+            {
+                if (!IsOwned(setup, localId)) continue;
+                var character = setup.GetComponent<Character>();
+                bool attached = character != null && vagon.IsAttached(character);
+                CompanionsPlugin.Log.LogDebug(
+                    $"[Direct] Cart detach check: \"{character?.m_name}\" attached={attached}");
+                if (attached)
+                {
+                    var humanoid = setup.GetComponent<Humanoid>();
+                    if (humanoid != null)
+                    {
+                        vagon.Interact(humanoid, false, false);
+
+                        // Restore follow target to player
+                        var ai = setup.GetComponent<CompanionAI>();
+                        if (ai != null && Player.m_localPlayer != null)
+                            ai.SetFollowTarget(Player.m_localPlayer.gameObject);
+
+                        SayRandom(setup.GetComponent<CompanionTalk>(), CartReleasedLines);
+                        CompanionsPlugin.Log.LogInfo("[Direct] Companion → detach from cart");
+                    }
+                    return;
+                }
+            }
+
+            // Find closest commandable owned companion to the cart
             CompanionSetup closest = null;
             float closestDist = float.MaxValue;
 
             foreach (var setup in setups)
             {
                 if (!IsOwned(setup, localId)) continue;
+                if (!setup.GetIsCommandable()) continue;
                 float d = Vector3.Distance(setup.transform.position, vagon.transform.position);
                 if (d < closestDist) { closestDist = d; closest = setup; }
             }
 
-            if (closest == null) return;
+            if (closest == null)
+            {
+                CompanionsPlugin.Log.LogWarning("[Direct] DirectCart — no commandable companion found");
+                return;
+            }
 
-            var humanoid = closest.GetComponent<Humanoid>();
-            if (humanoid == null) return;
+            var closestHumanoid = closest.GetComponent<Humanoid>();
+            if (closestHumanoid == null) return;
 
-            // Vagon.Interact takes a Humanoid — toggles attach/detach
-            vagon.Interact(humanoid, false, false);
+            var closestAI = closest.GetComponent<CompanionAI>();
+            if (closestAI == null) return;
 
-            MessageHud.instance?.ShowMessage(MessageHud.MessageType.Center,
-                "Companion: Pull cart");
+            CancelExistingActions(closest);
+
+            // Compute attach position
+            Vector3 attachWorldPos = vagon.m_attachPoint.position
+                - vagon.m_attachOffset;
+            attachWorldPos.y = closest.transform.position.y;
+            float distToAttach = Vector3.Distance(closest.transform.position, attachWorldPos);
+
+            if (distToAttach < 3f)
+            {
+                // Already close — snap and interact immediately
+                // Sync both transform and Rigidbody to prevent physics override
+                closest.transform.position = attachWorldPos;
+                var body = closest.GetComponent<Rigidbody>();
+                if (body != null)
+                {
+                    body.position = attachWorldPos;
+                    body.velocity = Vector3.zero;
+                }
+
+                Vector3 toCart = vagon.transform.position - closest.transform.position;
+                toCart.y = 0f;
+                if (toCart.sqrMagnitude > 0.01f)
+                    closest.transform.rotation = Quaternion.LookRotation(toCart.normalized);
+
+                closestAI.FreezeTimer = 1f;
+                closestAI.SetFollowTarget(vagon.gameObject);
+                vagon.Interact(closestHumanoid, false, false);
+
+                CompanionsPlugin.Log.LogInfo(
+                    $"[Direct] Cart close snap — pos={closest.transform.position:F2}");
+            }
+            else
+            {
+                // Navigate to cart — companion walks there first
+                closestAI.SetPendingCart(vagon, closestHumanoid);
+                CompanionsPlugin.Log.LogInfo(
+                    $"[Direct] Cart navigation started — dist={distToAttach:F1}m");
+            }
+
+            SayRandom(closest.GetComponent<CompanionTalk>(), CartPullLines);
             CompanionsPlugin.Log.LogInfo(
-                $"[Direct] Companion → cart interact (dist={closestDist:F1}m)");
+                $"[Direct] Companion → cart attach (dist={closestDist:F1}m)");
         }
 
         private static void DirectDoor(CompanionSetup[] setups, string localId, Door door)
         {
             int directed = 0;
+            CompanionTalk firstTalk = null;
             foreach (var setup in setups)
             {
                 if (!IsOwned(setup, localId)) continue;
+                if (!setup.GetIsCommandable()) continue;
+
+                CancelExistingActions(setup);
                 var handler = setup.GetComponent<DoorHandler>();
                 if (handler == null) continue;
 
                 handler.DirectOpenDoor(door);
+                if (firstTalk == null) firstTalk = setup.GetComponent<CompanionTalk>();
                 directed++;
             }
 
-            MessageHud.instance?.ShowMessage(MessageHud.MessageType.Center,
-                "Companion: Open door");
+            SayRandom(firstTalk, DoorLines);
             CompanionsPlugin.Log.LogInfo(
                 $"[Direct] {directed} companion(s) → open door \"{door.m_name}\"");
         }
 
         private static void DirectSit(CompanionSetup[] setups, string localId, Fireplace fire)
         {
-            if (!fire.IsBurning())
-            {
-                MessageHud.instance?.ShowMessage(MessageHud.MessageType.Center,
-                    "Fire is not burning");
-                return;
-            }
+            if (!fire.IsBurning()) return;
 
             int directed = 0;
+            CompanionTalk firstTalk = null;
             foreach (var setup in setups)
             {
                 if (!IsOwned(setup, localId)) continue;
+                if (!setup.GetIsCommandable()) continue;
+
+                CancelExistingActions(setup, cancelRest: false);
                 var rest = setup.GetComponent<CompanionRest>();
                 if (rest == null) continue;
 
                 rest.DirectSit(fire.gameObject);
+                if (firstTalk == null) firstTalk = setup.GetComponent<CompanionTalk>();
                 directed++;
             }
 
-            MessageHud.instance?.ShowMessage(MessageHud.MessageType.Center,
-                "Companion: Rest here");
+            SayRandom(firstTalk, SitLines);
             CompanionsPlugin.Log.LogInfo(
                 $"[Direct] {directed} companion(s) → sit near fire");
         }
 
         private static void DirectSleep(CompanionSetup[] setups, string localId, Bed bed)
         {
-            int directed = 0;
+            CompanionsPlugin.Log.LogInfo(
+                $"[Direct] DirectSleep called — bed=\"{bed.name}\" " +
+                $"pos={bed.transform.position:F2} " +
+                $"spawnPoint={bed.m_spawnPoint?.position.ToString("F2") ?? "null"}");
+
+            int started = 0;
+            int wokeUp = 0;
+            CompanionTalk firstTalk = null;
             foreach (var setup in setups)
             {
                 if (!IsOwned(setup, localId)) continue;
+                if (!setup.GetIsCommandable()) continue;
+
+                CancelExistingActions(setup, cancelRest: false);
                 var rest = setup.GetComponent<CompanionRest>();
                 if (rest == null) continue;
 
+                bool wasSleeping = rest.IsResting || rest.IsNavigating;
+
                 rest.DirectSleep(bed);
-                directed++;
+
+                bool isSleeping = rest.IsResting || rest.IsNavigating;
+
+                if (!wasSleeping && isSleeping) started++;
+                else if (wasSleeping && !isSleeping) wokeUp++;
+
+                if (firstTalk == null) firstTalk = setup.GetComponent<CompanionTalk>();
             }
 
-            MessageHud.instance?.ShowMessage(MessageHud.MessageType.Center,
-                "Companion: Sleep");
+            if (wokeUp > 0)
+                SayRandom(firstTalk, WakeLines);
+            else if (started > 0)
+                SayRandom(firstTalk, SleepLines);
+            else
+                SayRandom(firstTalk, CancelLines);
             CompanionsPlugin.Log.LogInfo(
-                $"[Direct] {directed} companion(s) → sleep at bed");
+                $"[Direct] Sleep command — started={started}, wokeUp={wokeUp}");
         }
 
-        private static void DirectHarvest(CompanionSetup[] setups, string localId, GameObject target)
+        private static void DirectDeposit(CompanionSetup[] setups, string localId, Container chest)
         {
-            // Find closest owned companion
-            CompanionSetup closest = null;
-            float closestDist = float.MaxValue;
+            var chestInv = chest.GetInventory();
+            if (chestInv == null) return;
+
+            int totalDeposited = 0;
+            CompanionTalk firstTalk = null;
 
             foreach (var setup in setups)
             {
                 if (!IsOwned(setup, localId)) continue;
-                float d = Vector3.Distance(setup.transform.position, target.transform.position);
-                if (d < closestDist) { closestDist = d; closest = setup; }
+                if (!setup.GetIsCommandable()) continue;
+
+                CancelExistingActions(setup);
+
+                var humanoid = setup.GetComponent<Humanoid>();
+                if (humanoid == null) continue;
+                var compInv = humanoid.GetInventory();
+                if (compInv == null) continue;
+
+                if (firstTalk == null) firstTalk = setup.GetComponent<CompanionTalk>();
+
+                var toDeposit = new List<ItemDrop.ItemData>();
+                foreach (var item in compInv.GetAllItems())
+                {
+                    if (ShouldKeep(item, humanoid)) continue;
+                    toDeposit.Add(item);
+                }
+
+                foreach (var item in toDeposit)
+                {
+                    if (chestInv.AddItem(item))
+                    {
+                        compInv.RemoveItem(item);
+                        totalDeposited++;
+                    }
+                }
+
+                if (toDeposit.Count > 0) compInv.m_onChanged?.Invoke();
             }
 
-            if (closest == null) return;
+            if (totalDeposited > 0) chestInv.m_onChanged?.Invoke();
 
-            var harvest = closest.GetComponent<HarvestController>();
-            if (harvest == null) return;
-
-            harvest.SetDirectedTarget(target);
-
-            MessageHud.instance?.ShowMessage(MessageHud.MessageType.Center,
-                $"Harvest: {target.name}");
+            SayRandom(firstTalk, totalDeposited > 0 ? DepositLines : DepositEmptyLines);
             CompanionsPlugin.Log.LogInfo(
-                $"[Direct] Companion → harvest \"{target.name}\" (dist={closestDist:F1}m)");
+                $"[Direct] Deposited {totalDeposited} item(s) into \"{chest.m_name}\"");
+        }
+
+        private static void DirectRepair(CompanionSetup[] setups, string localId, CraftingStation station)
+        {
+            CompanionsPlugin.Log.LogInfo(
+                $"[Direct] DirectRepair called — station=\"{station.m_name}\" " +
+                $"level={station.GetLevel()} pos={station.transform.position:F1}");
+
+            CompanionTalk firstTalk = null;
+            int directed = 0;
+
+            foreach (var setup in setups)
+            {
+                if (!IsOwned(setup, localId)) continue;
+                if (!setup.GetIsCommandable()) continue;
+
+                CancelExistingActions(setup);
+
+                var repair = setup.GetComponent<RepairController>();
+                if (repair == null) continue;
+
+                repair.DirectRepairAt(station);
+                if (firstTalk == null) firstTalk = setup.GetComponent<CompanionTalk>();
+                directed++;
+            }
+
+            SayRandom(firstTalk, RepairLines);
+            CompanionsPlugin.Log.LogInfo(
+                $"[Direct] {directed} companion(s) → repair at \"{station.m_name}\"");
+        }
+
+        private static void DirectBoard(CompanionSetup[] setups, string localId, Ship ship)
+        {
+            CompanionsPlugin.Log.LogInfo(
+                $"[Direct] DirectBoard called — ship=\"{ship.name}\" " +
+                $"pos={ship.transform.position:F2} up={ship.transform.up:F2}");
+
+            CompanionTalk firstTalk = null;
+            int boarded = 0;
+
+            foreach (var setup in setups)
+            {
+                if (!IsOwned(setup, localId)) continue;
+                if (!setup.GetIsCommandable()) continue;
+
+                CancelExistingActions(setup);
+
+                var ai = setup.GetComponent<CompanionAI>();
+                if (ai == null) continue;
+
+                Vector3 oldPos = setup.transform.position;
+
+                // Teleport onto ship deck
+                Vector3 deckPos = ship.transform.position + ship.transform.up * 1.5f;
+                setup.transform.position = deckPos;
+                var body = setup.GetComponent<Rigidbody>();
+                if (body != null)
+                {
+                    body.position = deckPos;
+                    body.velocity = Vector3.zero;
+                }
+
+                // Follow the ship so they stay onboard
+                ai.SetFollowTarget(ship.gameObject);
+                ai.FreezeTimer = 1f;
+
+                var character = setup.GetComponent<Character>();
+                CompanionsPlugin.Log.LogInfo(
+                    $"[Direct] Board: \"{character?.m_name ?? "?"}\" " +
+                    $"teleported {oldPos:F1} → {deckPos:F1}");
+
+                if (firstTalk == null) firstTalk = setup.GetComponent<CompanionTalk>();
+                boarded++;
+            }
+
+            SayRandom(firstTalk, BoardLines);
+            CompanionsPlugin.Log.LogInfo($"[Direct] {boarded} companion(s) → board ship");
+        }
+
+        private static void DirectGatherMode(CompanionSetup[] setups, string localId, GameObject target)
+        {
+            int harvestMode = HarvestController.DetermineHarvestModeStatic(target);
+            if (harvestMode < 0)
+            {
+                CompanionsPlugin.Log.LogInfo(
+                    $"[Direct] DirectGatherMode — target \"{target.name}\" is not harvestable (mode=-1)");
+                return;
+            }
+
+            string modeName = harvestMode == CompanionSetup.ModeGatherWood ? "Wood"
+                            : harvestMode == CompanionSetup.ModeGatherStone ? "Stone" : "Ore";
+            CompanionsPlugin.Log.LogInfo(
+                $"[Direct] DirectGatherMode — target=\"{target.name}\" mode={modeName} pos={target.transform.position:F1}");
+
+            CompanionTalk firstTalk = null;
+            int directed = 0;
+
+            foreach (var setup in setups)
+            {
+                if (!IsOwned(setup, localId)) continue;
+                if (!setup.GetIsCommandable()) continue;
+
+                CancelExistingActions(setup);
+
+                var nview = setup.GetComponent<ZNetView>();
+                if (nview?.GetZDO() == null) continue;
+
+                // Set ZDO ActionMode to the matching gather mode
+                nview.GetZDO().Set(CompanionSetup.ActionModeHash, harvestMode);
+
+                // Direct the first companion to harvest this specific target immediately
+                var harvest = setup.GetComponent<HarvestController>();
+                if (harvest != null && directed == 0)
+                    harvest.SetDirectedTarget(target);
+
+                if (firstTalk == null) firstTalk = setup.GetComponent<CompanionTalk>();
+                directed++;
+            }
+
+            SayRandom(firstTalk, HarvestLines);
+            CompanionsPlugin.Log.LogInfo(
+                $"[Direct] {directed} companion(s) → gather mode {modeName}");
+        }
+
+        private static void DirectGround(CompanionSetup[] setups, string localId, Vector3 point)
+        {
+            CompanionsPlugin.Log.LogInfo($"[Direct] DirectGround called — point={point:F1}");
+
+            // Check if any owned companion is in gather mode
+            bool anyGathering = false;
+            foreach (var setup in setups)
+            {
+                if (!IsOwned(setup, localId)) continue;
+                if (!setup.GetIsCommandable()) continue;
+                var harvest = setup.GetComponent<HarvestController>();
+                if (harvest != null && harvest.IsInGatherMode) { anyGathering = true; break; }
+            }
+
+            if (anyGathering)
+            {
+                CompanionsPlugin.Log.LogInfo("[Direct] DirectGround — companion(s) in gather mode, exiting gather instead");
+                ExitGatherMode(setups, localId);
+                return;
+            }
+
+            // Move all commandable companions to the ground point
+            CompanionTalk firstTalk = null;
+            int directed = 0;
+
+            foreach (var setup in setups)
+            {
+                if (!IsOwned(setup, localId)) continue;
+                if (!setup.GetIsCommandable()) continue;
+
+                CancelExistingActions(setup);
+
+                var ai = setup.GetComponent<CompanionAI>();
+                if (ai == null) continue;
+
+                ai.SetMoveTarget(point);
+                if (firstTalk == null) firstTalk = setup.GetComponent<CompanionTalk>();
+                directed++;
+            }
+
+            SayRandom(firstTalk, MoveLines);
+            CompanionsPlugin.Log.LogInfo($"[Direct] {directed} companion(s) → move to {point:F1}");
+        }
+
+        private static void ExitGatherMode(CompanionSetup[] setups, string localId)
+        {
+            CompanionTalk firstTalk = null;
+            int exited = 0;
+
+            foreach (var setup in setups)
+            {
+                if (!IsOwned(setup, localId)) continue;
+                if (!setup.GetIsCommandable()) continue;
+
+                var nview = setup.GetComponent<ZNetView>();
+                if (nview?.GetZDO() == null) continue;
+
+                int oldMode = nview.GetZDO().GetInt(CompanionSetup.ActionModeHash, CompanionSetup.ModeFollow);
+                nview.GetZDO().Set(CompanionSetup.ActionModeHash, CompanionSetup.ModeFollow);
+
+                var character = setup.GetComponent<Character>();
+                CompanionsPlugin.Log.LogInfo(
+                    $"[Direct] ExitGather: \"{character?.m_name ?? "?"}\" mode {oldMode} → {CompanionSetup.ModeFollow}");
+
+                if (firstTalk == null) firstTalk = setup.GetComponent<CompanionTalk>();
+                exited++;
+            }
+
+            SayRandom(firstTalk, CancelLines);
+            CompanionsPlugin.Log.LogInfo($"[Direct] {exited} companion(s) exited gather mode → follow");
         }
 
         private static void CancelAll(CompanionSetup[] setups, string localId)
         {
+            CompanionTalk firstTalk = null;
             foreach (var setup in setups)
             {
                 if (!IsOwned(setup, localId)) continue;
 
+                if (firstTalk == null) firstTalk = setup.GetComponent<CompanionTalk>();
+
                 var ai = setup.GetComponent<CompanionAI>();
                 if (ai != null)
+                {
                     ai.DirectedTargetLockTimer = 0f;
+                    ai.CancelPendingCart();
+                    ai.CancelMoveTarget();
+
+                    // Restore follow target to player — handles ship disembark,
+                    // move-to leftovers, or any other state where follow was
+                    // pointed at something other than the player.
+                    if (Player.m_localPlayer != null)
+                        ai.SetFollowTarget(Player.m_localPlayer.gameObject);
+                }
 
                 var harvest = setup.GetComponent<HarvestController>();
                 if (harvest != null)
@@ -309,10 +732,13 @@ namespace Companions
                 var rest = setup.GetComponent<CompanionRest>();
                 if (rest != null)
                     rest.CancelDirected();
+
+                var repair = setup.GetComponent<RepairController>();
+                if (repair != null && repair.IsActive)
+                    repair.CancelDirected();
             }
 
-            MessageHud.instance?.ShowMessage(MessageHud.MessageType.Center,
-                "Companions: Free");
+            SayRandom(firstTalk, CancelLines);
             CompanionsPlugin.Log.LogInfo("[Direct] Cancelled all directed commands");
         }
 
@@ -320,11 +746,108 @@ namespace Companions
         //  Helpers
         // ═════════════════════════════════════════════════════════════════════
 
+        private static void SayRandom(CompanionTalk talk, string[] pool)
+        {
+            if (talk == null || pool == null || pool.Length == 0) return;
+            talk.Say(pool[Random.Range(0, pool.Length)]);
+        }
+
         private static bool IsOwned(CompanionSetup setup, string localId)
         {
             var nview = setup.GetComponent<ZNetView>();
             if (nview == null || nview.GetZDO() == null) return false;
             return nview.GetZDO().GetString(CompanionSetup.OwnerHash, "") == localId;
+        }
+
+        /// <summary>
+        /// Cancel all existing actions on a companion so a new command can take over.
+        /// Called at the start of each DirectXxx method to preempt sleep, sit,
+        /// cart navigation, move-to, etc.
+        /// </summary>
+        private static void CancelExistingActions(CompanionSetup setup, bool cancelRest = true)
+        {
+            var character = setup.GetComponent<Character>();
+            string name = character?.m_name ?? "?";
+
+            if (cancelRest)
+            {
+                var rest = setup.GetComponent<CompanionRest>();
+                if (rest != null && (rest.IsResting || rest.IsNavigating))
+                {
+                    CompanionsPlugin.Log.LogInfo(
+                        $"[Direct] CancelExisting \"{name}\": cancelling rest " +
+                        $"(resting={rest.IsResting} nav={rest.IsNavigating})");
+                    rest.CancelDirected();
+                }
+            }
+
+            var ai = setup.GetComponent<CompanionAI>();
+            if (ai != null)
+            {
+                if (ai.PendingCartAttach != null)
+                    CompanionsPlugin.Log.LogInfo($"[Direct] CancelExisting \"{name}\": cancelling cart nav");
+                ai.CancelPendingCart();
+
+                if (ai.PendingMoveTarget != null)
+                    CompanionsPlugin.Log.LogInfo($"[Direct] CancelExisting \"{name}\": cancelling move-to");
+                ai.CancelMoveTarget();
+
+                ai.DirectedTargetLockTimer = 0f;
+            }
+
+            var harvest = setup.GetComponent<HarvestController>();
+            if (harvest != null)
+                harvest.CancelDirectedTarget();
+
+            var repair = setup.GetComponent<RepairController>();
+            if (repair != null && repair.IsActive)
+            {
+                CompanionsPlugin.Log.LogInfo(
+                    $"[Direct] CancelExisting \"{name}\": cancelling active repair");
+                repair.CancelDirected();
+            }
+        }
+
+        /// <summary>
+        /// Returns true for items the companion should keep (not deposit).
+        /// Keeps: equipped items, food, weapons, armor, shields, utility.
+        /// Deposits: materials, misc, trophies, tools, etc.
+        /// </summary>
+        private static bool ShouldKeep(ItemDrop.ItemData item, Humanoid humanoid)
+        {
+            if (item == null || item.m_shared == null) return true;
+
+            // Keep anything currently equipped
+            if (humanoid.IsItemEquiped(item)) return true;
+
+            var t = item.m_shared.m_itemType;
+
+            // Keep food (consumables with food stats)
+            if (t == ItemDrop.ItemData.ItemType.Consumable &&
+                (item.m_shared.m_food > 0f || item.m_shared.m_foodStamina > 0f ||
+                 item.m_shared.m_foodEitr > 0f))
+                return true;
+
+            // Keep weapons (even unequipped backups)
+            if (t == ItemDrop.ItemData.ItemType.OneHandedWeapon ||
+                t == ItemDrop.ItemData.ItemType.TwoHandedWeapon ||
+                t == ItemDrop.ItemData.ItemType.TwoHandedWeaponLeft ||
+                t == ItemDrop.ItemData.ItemType.Bow ||
+                t == ItemDrop.ItemData.ItemType.Torch)
+                return true;
+
+            // Keep armor and shields
+            if (t == ItemDrop.ItemData.ItemType.Shield ||
+                t == ItemDrop.ItemData.ItemType.Helmet ||
+                t == ItemDrop.ItemData.ItemType.Chest ||
+                t == ItemDrop.ItemData.ItemType.Legs ||
+                t == ItemDrop.ItemData.ItemType.Hands ||
+                t == ItemDrop.ItemData.ItemType.Shoulder ||
+                t == ItemDrop.ItemData.ItemType.Utility)
+                return true;
+
+            // Deposit everything else (Material, Misc, Trophy, Tool, etc.)
+            return false;
         }
 
         /// <summary>

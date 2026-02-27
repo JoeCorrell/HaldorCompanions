@@ -110,6 +110,7 @@ namespace Companions
         private Button          _stayBtn;
         private Button          _setHomeBtn;
         private Button          _autoPickupBtn;
+        private Button          _commandableBtn;
         private int             _activeMode;
 
         // ── Stance buttons ──────────────────────────────────────────────────
@@ -260,6 +261,7 @@ namespace Companions
             RefreshStanceButtons();
             RefreshModeText();
             RefreshAutoPickupButton();
+            RefreshCommandableButton();
             _invRefreshTimer = 0f;
 
             SwitchTab(0); // Always open on Actions tab
@@ -588,6 +590,12 @@ namespace Companions
                 _autoPickupBtn.onClick.RemoveAllListeners();
                 _autoPickupBtn.onClick.AddListener(ToggleAutoPickup);
             }
+            _commandableBtn = BuildActionButton(parent, ref y, btnH, btnGap, "Command: ON", -1);
+            if (_commandableBtn != null)
+            {
+                _commandableBtn.onClick.RemoveAllListeners();
+                _commandableBtn.onClick.AddListener(ToggleCommandable);
+            }
 
             // ── Combat Stance section ──
             y -= 6f;
@@ -622,7 +630,7 @@ namespace Companions
             // Tab buttons intentionally excluded so LB/RB handle tab switching, not up/down.
             var btns = new Button[] {
                 _followBtn, _gatherWoodBtn, _gatherStoneBtn, _gatherOreBtn,
-                _stayBtn, _setHomeBtn, _autoPickupBtn,
+                _stayBtn, _setHomeBtn, _autoPickupBtn, _commandableBtn,
                 _balancedBtn, _aggressiveBtn, _defensiveBtn, _passiveBtn
             };
             for (int i = 0; i < btns.Length; i++)
@@ -1471,6 +1479,26 @@ namespace Companions
             var txt = _autoPickupBtn.GetComponentInChildren<TMP_Text>(true);
             if (txt != null) txt.text = on ? "Auto Pickup: ON" : "Auto Pickup: OFF";
             SetBtnHighlight(_autoPickupBtn, on);
+        }
+
+        // ── Commandable toggle ────────────────────────────────────────────
+
+        private void ToggleCommandable()
+        {
+            if (_companion == null) return;
+            EnsureCompanionOwnership();
+            bool current = _companion.GetIsCommandable();
+            _companion.SetIsCommandable(!current);
+            RefreshCommandableButton();
+        }
+
+        private void RefreshCommandableButton()
+        {
+            if (_commandableBtn == null) return;
+            bool on = _companion != null && _companion.GetIsCommandable();
+            var txt = _commandableBtn.GetComponentInChildren<TMP_Text>(true);
+            if (txt != null) txt.text = on ? "Command: ON" : "Command: OFF";
+            SetBtnHighlight(_commandableBtn, on);
         }
 
         // ══════════════════════════════════════════════════════════════════════

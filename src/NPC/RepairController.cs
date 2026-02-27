@@ -328,6 +328,49 @@ namespace Companions
 
         // ── Helpers ─────────────────────────────────────────────────────────
 
+        /// <summary>
+        /// Directed repair: immediately start walking to the given station.
+        /// Builds repair queue from all worn items that station can fix.
+        /// </summary>
+        public void DirectRepairAt(CraftingStation station)
+        {
+            if (station == null) return;
+            if (_phase != RepairPhase.Idle) Abort("new directed repair");
+
+            var inv = _humanoid?.GetInventory();
+            if (inv == null) return;
+
+            _tempWorn.Clear();
+            inv.GetWornItems(_tempWorn);
+            if (_tempWorn.Count == 0)
+            {
+                Log("DirectRepairAt — no worn items");
+                return;
+            }
+
+            _repairQueue.Clear();
+            for (int i = 0; i < _tempWorn.Count; i++)
+            {
+                if (CanRepairAt(station, _tempWorn[i]))
+                    _repairQueue.Add(_tempWorn[i]);
+            }
+
+            if (_repairQueue.Count == 0)
+            {
+                Log($"DirectRepairAt — no items repairable at \"{station.m_name}\"");
+                return;
+            }
+
+            _targetStation = station;
+            _stuckTimer = 0f;
+            _stuckCheckTimer = 0f;
+            _stuckCheckPos = transform.position;
+            _phase = RepairPhase.MovingToStation;
+            _lastScanFailed = false;
+
+            Log($"DirectRepairAt — {_repairQueue.Count} items to repair at \"{station.m_name}\"");
+        }
+
         private void FinishRepair()
         {
             if (_zanim != null) _zanim.SetInt("crafting", 0);
@@ -337,6 +380,16 @@ namespace Companions
             _repairQueue.Clear();
             _phase = RepairPhase.Idle;
             _scanTimer = 1f; // quick rescan for remaining items at other stations
+        }
+
+        /// <summary>
+        /// Public cancel — called by CancelExistingActions / CancelAll
+        /// when a new directed command preempts an active repair.
+        /// </summary>
+        public void CancelDirected()
+        {
+            if (_phase == RepairPhase.Idle) return;
+            Abort("cancelled by new command");
         }
 
         private void Abort(string reason)

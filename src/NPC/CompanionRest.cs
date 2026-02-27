@@ -21,6 +21,11 @@ namespace Companions
         private float _healTimer;
         private GameObject _fireTarget;
 
+        // Navigation state — companion walks to target before snapping into position
+        private bool    _navigating;
+        private Vector3 _navTarget;
+        private float   _navTimeout;
+
         private const float CheckInterval = 1f;
         private const float HealRate      = 2f;     // hp per second while resting
         private const float HealInterval  = 0.5f;
@@ -44,6 +49,12 @@ namespace Companions
         {
             if (_nview == null || !_nview.IsOwner()) return;
             if (_character == null || _character.IsDead()) return;
+
+            if (_navigating)
+            {
+                UpdateNavigation();
+                return;
+            }
 
             if (_isSleeping)
             {
@@ -115,68 +126,213 @@ namespace Companions
         private bool _isSleeping;   // true when lying down at a bed
         private Bed  _bedTarget;
 
-        /// <summary>Direct the companion to sit near a fire (from hotkey).</summary>
+        /// <summary>True when the companion is sitting or sleeping (organic or directed).</summary>
+        public bool IsResting => _isSitting || _isSleeping;
+
+        /// <summary>True when navigating to a bed or fire before resting.</summary>
+        public bool IsNavigating => _navigating;
+
+        /// <summary>The position the companion is walking toward.</summary>
+        public Vector3 NavTarget => _navTarget;
+
+        /// <summary>True when the companion is in a directed sit or sleep.</summary>
+        public bool IsDirectedResting => _isDirected && (_isSitting || _isSleeping);
+
+        /// <summary>Direct the companion to sit near a fire (from hotkey). Toggles off if already sitting.</summary>
         public void DirectSit(GameObject fire)
         {
             if (fire == null) return;
-            if (_isSitting || _isSleeping) StopAll();
-
-            _isDirected = true;
-            StartSitting(fire);
-        }
-
-        /// <summary>Direct the companion to sleep at a bed (from hotkey).</summary>
-        public void DirectSleep(Bed bed)
-        {
-            if (bed == null) return;
-            if (_isSitting || _isSleeping) StopAll();
-
-            _isDirected = true;
-            _isSleeping = true;
-            _bedTarget  = bed;
 
             CompanionsPlugin.Log.LogInfo(
-                $"[Rest] DirectSleep — lying down at bed \"{bed.name}\"");
+                $"[Rest] DirectSit called — sitting={_isSitting}, sleeping={_isSleeping}, " +
+                $"directed={_isDirected}, navigating={_navigating}, fire=\"{fire.name}\"");
 
-            // Stop movement and move to bed
-            if (_ai != null) _ai.SetFollowTarget(null);
-
-            // Position at the bed's spawn point
-            var spawnPoint = bed.GetComponent<Bed>()?.m_spawnPoint;
-            if (spawnPoint != null)
+            // Toggle off if already sitting (directed) or navigating
+            if ((_isSitting || _navigating) && _isDirected)
             {
-                transform.position = spawnPoint.position;
-                transform.rotation = spawnPoint.rotation;
+                CompanionsPlugin.Log.LogInfo("[Rest] DirectSit TOGGLE OFF — calling StopAll");
+                StopAll();
+                return;
+            }
+
+            if (_isSitting || _isSleeping || _navigating) StopAll();
+
+            _isDirected = true;
+            _fireTarget = fire;
+
+            float dist = Vector3.Distance(transform.position, fire.transform.position);
+            if (dist < 3f)
+            {
+                // Already close — sit immediately
+                StartSitting(fire);
             }
             else
             {
-                transform.position = bed.transform.position;
-                Vector3 dir = bed.transform.forward;
-                dir.y = 0f;
-                if (dir.sqrMagnitude > 0.01f)
-                    transform.rotation = Quaternion.LookRotation(dir);
+                // Navigate to fire first
+                _navigating = true;
+                _navTarget = fire.transform.position;
+                _navTimeout = 15f;
+                if (_ai != null) _ai.SetFollowTarget(null);
+                CompanionsPlugin.Log.LogInfo(
+                    $"[Rest] Navigating to fire — dist={dist:F1}m, timeout=15s");
+            }
+        }
+
+        /// <summary>Direct the companion to sleep at a bed (from hotkey). Toggles off if already sleeping.</summary>
+        public void DirectSleep(Bed bed)
+        {
+            if (bed == null) return;
+
+            CompanionsPlugin.Log.LogInfo(
+                $"[Rest] DirectSleep called — sleeping={_isSleeping}, sitting={_isSitting}, " +
+                $"directed={_isDirected}, navigating={_navigating}, bed=\"{bed.name}\" myPos={transform.position:F2}");
+
+            // Toggle off if already sleeping or navigating
+            if ((_isSleeping || _navigating) && _isDirected)
+            {
+                CompanionsPlugin.Log.LogInfo("[Rest] DirectSleep TOGGLE OFF — calling StopAll");
+                StopAll();
+                return;
             }
 
-            // Play sleep/bed animation
-            if (_zanim != null) _zanim.SetTrigger("attach_bed");
+            if (_isSitting || _isSleeping || _navigating) StopAll();
 
-            // Set inBed on ZDO so companion doesn't block player sleep
-            if (_nview != null && _nview.GetZDO() != null)
-                _nview.GetZDO().Set(ZDOVars.s_inBed, true);
+            _isDirected = true;
+            _bedTarget  = bed;
+            _healTimer  = 0f;
 
-            // Enable resting regen
-            if (_stamina != null) _stamina.IsResting = true;
+            // Compute bed position
+            Vector3 bedPos = bed.transform.position;
+            if (bed.m_spawnPoint != null)
+                bedPos = bed.m_spawnPoint.position;
+
+            float dist = Vector3.Distance(transform.position, bedPos);
+            if (dist < 3f)
+            {
+                // Already close — snap into bed immediately
+                FinalizeSleep();
+            }
+            else
+            {
+                // Navigate to bed first
+                _navigating = true;
+                _navTarget = bedPos;
+                _navTimeout = 15f;
+                if (_ai != null) _ai.SetFollowTarget(null);
+                CompanionsPlugin.Log.LogInfo(
+                    $"[Rest] Navigating to bed — dist={dist:F1}m, timeout=15s");
+            }
         }
 
         /// <summary>Cancel any directed sit or sleep.</summary>
         public void CancelDirected()
         {
-            if (!_isDirected) return;
+            if (!_isDirected && !_isSitting && !_isSleeping && !_navigating) return;
             StopAll();
+        }
+
+        /// <summary>Called by CompanionAI when the companion arrives at the navigation target.</summary>
+        public void ArriveAtNavTarget()
+        {
+            if (!_navigating) return;
+            _navigating = false;
+
+            CompanionsPlugin.Log.LogInfo(
+                $"[Rest] Arrived at nav target — bed={(_bedTarget != null)}, fire={(_fireTarget != null)}");
+
+            if (_bedTarget != null)
+                FinalizeSleep();
+            else if (_fireTarget != null)
+                StartSitting(_fireTarget);
+        }
+
+        private void UpdateNavigation()
+        {
+            _navTimeout -= Time.deltaTime;
+
+            // Timeout — give up navigating
+            if (_navTimeout <= 0f)
+            {
+                CompanionsPlugin.Log.LogInfo("[Rest] Navigation timed out — cancelling");
+                CancelNavigation();
+                return;
+            }
+
+            // Target destroyed while navigating
+            if (_bedTarget == null && _fireTarget == null)
+            {
+                CompanionsPlugin.Log.LogInfo("[Rest] Navigation target destroyed — cancelling");
+                CancelNavigation();
+                return;
+            }
+
+            // Actual movement is handled by CompanionAI.UpdateAI
+        }
+
+        private void CancelNavigation()
+        {
+            _navigating = false;
+            _isDirected = false;
+            _bedTarget = null;
+            _fireTarget = null;
+
+            // Restore follow target
+            if (_ai == null) return;
+            int mode = _nview?.GetZDO()?.GetInt(
+                CompanionSetup.ActionModeHash, CompanionSetup.ModeFollow)
+                ?? CompanionSetup.ModeFollow;
+            if (mode == CompanionSetup.ModeStay)
+            {
+                _ai.SetFollowTarget(null);
+                _ai.SetPatrolPoint();
+            }
+            else if (Player.m_localPlayer != null)
+            {
+                _ai.SetFollowTarget(Player.m_localPlayer.gameObject);
+            }
+        }
+
+        private void FinalizeSleep()
+        {
+            _isSleeping = true;
+
+            // Character.AttachStart is a no-op on non-Player characters (empty virtual).
+            // Implement the bed attach manually: position, animation, rigidbody, ZDO.
+            Transform attachPoint = _bedTarget.m_spawnPoint != null
+                ? _bedTarget.m_spawnPoint : _bedTarget.transform;
+
+            // Position at bed
+            transform.position = attachPoint.position;
+            transform.rotation = attachPoint.rotation;
+
+            // Freeze rigidbody — prevent physics from pushing companion off bed
+            var body = GetComponent<Rigidbody>();
+            if (body != null)
+            {
+                body.position = attachPoint.position;
+                body.velocity = Vector3.zero;
+                body.useGravity = false;
+            }
+
+            // Bed animation
+            if (_zanim != null) _zanim.SetBool("attach_bed", true);
+
+            // ZDO inBed flag
+            if (_nview?.GetZDO() != null) _nview.GetZDO().Set(ZDOVars.s_inBed, true);
+
+            // Enable resting regen
+            if (_stamina != null) _stamina.IsResting = true;
+
+            CompanionsPlugin.Log.LogInfo(
+                $"[Rest] FinalizeSleep — positioned at {attachPoint.position:F2}");
         }
 
         private void StopAll()
         {
+            CompanionsPlugin.Log.LogInfo(
+                $"[Rest] StopAll — sitting={_isSitting}, sleeping={_isSleeping}, " +
+                $"directed={_isDirected}, navigating={_navigating}, pos={transform.position:F2}");
+            _navigating = false;
             if (_isSitting) StopSitting();
             if (_isSleeping) StopSleeping();
             _isDirected = false;
@@ -189,12 +345,23 @@ namespace Companions
 
             CompanionsPlugin.Log.LogInfo("[Rest] Stopped sleeping — resuming normal behavior");
 
-            if (_zanim != null) _zanim.SetTrigger("emote_stop");
-            if (_stamina != null) _stamina.IsResting = false;
+            // Character.AttachStop is a no-op on non-Player characters (empty virtual).
+            // Manually reverse the attach: animation, rigidbody, ZDO, position offset.
+            if (_zanim != null) _zanim.SetBool("attach_bed", false);
+            if (_nview?.GetZDO() != null) _nview.GetZDO().Set(ZDOVars.s_inBed, false);
 
-            // Clear inBed ZDO
-            if (_nview != null && _nview.GetZDO() != null)
-                _nview.GetZDO().Set(ZDOVars.s_inBed, false);
+            // Re-enable gravity so the companion can walk
+            var body = GetComponent<Rigidbody>();
+            if (body != null)
+            {
+                body.useGravity = true;
+                body.velocity = Vector3.zero;
+            }
+
+            // Nudge upward to prevent clipping into bed geometry
+            transform.position += new Vector3(0f, 0.5f, 0f);
+
+            if (_stamina != null) _stamina.IsResting = false;
 
             if (_ai == null) return;
             int mode = _nview?.GetZDO()?.GetInt(
@@ -220,10 +387,15 @@ namespace Companions
             _healTimer   = 0f;
 
             CompanionsPlugin.Log.LogInfo(
-                $"[Rest] Sitting near fire \"{fire.name}\" — starting heal + stamina regen");
+                $"[Rest] Sitting near fire \"{fire.name}\" — starting heal + stamina regen " +
+                $"pos={transform.position:F2}");
 
             // Stop movement and face the fire
-            if (_ai != null) _ai.SetFollowTarget(null);
+            if (_ai != null)
+            {
+                _ai.SetFollowTarget(null);
+                _ai.FreezeTimer = 0.5f;
+            }
 
             Vector3 dir = fire.transform.position - transform.position;
             dir.y = 0f;
@@ -303,6 +475,7 @@ namespace Companions
             // Enemy appeared — wake up
             if (HasEnemyNearby())
             {
+                CompanionsPlugin.Log.LogInfo("[Rest] UpdateSleeping — enemy nearby, waking up!");
                 StopSleeping();
                 _isDirected = false;
                 return;
@@ -311,6 +484,7 @@ namespace Companions
             // Bed destroyed
             if (_bedTarget == null || !_bedTarget)
             {
+                CompanionsPlugin.Log.LogInfo("[Rest] UpdateSleeping — bed destroyed/null, waking up!");
                 StopSleeping();
                 _isDirected = false;
                 return;
@@ -336,8 +510,14 @@ namespace Companions
 
             CompanionsPlugin.Log.LogInfo("[Rest] Stopped sitting — resuming normal behavior");
 
-            // Stop sit animation
-            if (_zanim != null) _zanim.SetTrigger("emote_stop");
+            // Stop sit animation — use both trigger and bool clear to handle
+            // all animator state paths. Trigger alone may not fire if the
+            // animator didn't consume the previous sit trigger.
+            if (_zanim != null)
+            {
+                _zanim.SetTrigger("emote_stop");
+                _zanim.SetBool("emote_sit", false);
+            }
 
             // Disable resting bonus
             if (_stamina != null) _stamina.IsResting = false;

@@ -23,6 +23,7 @@ namespace Companions
         internal static readonly int AutoPickupHash = StringExtensionMethods.GetStableHashCode("HC_AutoPickup");
         internal static readonly int CombatStanceHash = StringExtensionMethods.GetStableHashCode("HC_CombatStance");
         internal static readonly int FormationSlotHash = StringExtensionMethods.GetStableHashCode("HC_FormationSlot");
+        internal static readonly int IsCommandableHash = StringExtensionMethods.GetStableHashCode("HC_IsCommandable");
         private  static readonly int StarterGearHash = StringExtensionMethods.GetStableHashCode("HC_StarterGear");
         internal const int ModeFollow      = 0;
         internal const int ModeGatherWood  = 1;
@@ -155,19 +156,21 @@ namespace Companions
 
                 int mode = zdo.GetInt(ActionModeHash, ModeFollow);
 
-                // ** CONFLICT CHECK ** — If HarvestController is actively moving
-                // to a resource, it intentionally sets followTarget=null.
+                // ** CONFLICT CHECKS ** — Various systems intentionally set follow=null.
                 // Do NOT restore it or we'll create a tug-of-war.
                 var harvest = GetComponent<HarvestController>();
                 if (harvest != null && harvest.IsActive)
-                {
-                    // HarvestController is driving movement — don't fight it
-                    return;
-                }
+                    return; // HarvestController is driving movement
+
+                var rest = GetComponent<CompanionRest>();
+                if (rest != null && (rest.IsNavigating || rest.IsResting))
+                    return; // CompanionRest is navigating to a bed/fire or resting
+
+                if (_ai.PendingCartAttach != null || _ai.PendingMoveTarget != null)
+                    return; // Navigating to a directed position
 
                 // Follow and gather modes: companion should follow player when no
-                // harvest waypoint is active. HarvestController overrides with waypoint
-                // when it enters Moving state, but during Idle the companion follows player.
+                // directed navigation is active.
                 if (mode == ModeFollow ||
                     (mode >= ModeGatherWood && mode <= ModeGatherOre))
                 {
@@ -774,6 +777,22 @@ namespace Companions
             var zdo = _nview?.GetZDO();
             if (zdo == null) return;
             zdo.Set(CombatStanceHash, stance);
+        }
+
+        // ── Commandable accessor ─────────────────────────────────────────
+
+        internal bool GetIsCommandable()
+        {
+            var zdo = _nview?.GetZDO();
+            if (zdo == null) return true;
+            return zdo.GetInt(IsCommandableHash, 1) != 0;
+        }
+
+        internal void SetIsCommandable(bool value)
+        {
+            var zdo = _nview?.GetZDO();
+            if (zdo == null) return;
+            zdo.Set(IsCommandableHash, value ? 1 : 0);
         }
 
         /// <summary>
