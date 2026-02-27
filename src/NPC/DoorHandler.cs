@@ -3,8 +3,11 @@ using UnityEngine;
 namespace Companions
 {
     /// <summary>
-    /// Detects nearby closed doors when the companion is stuck, opens them,
-    /// walks through, then closes them behind. Works with vanilla Door component.
+    /// Detects nearby doors and opens/closes them for the companion.
+    /// Two detection modes:
+    ///   1. Stuck detection — companion vel≈0 near a closed door → open it
+    ///   2. Proactive detection — companion is moving but distance to player isn't
+    ///      decreasing (circling a building) → find nearest door to the player
     /// </summary>
     public class DoorHandler : MonoBehaviour
     {
@@ -12,24 +15,40 @@ namespace Companions
 
         // ── Tuning ──────────────────────────────────────────────────────────
         private const float ScanInterval      = 0.5f;
-        private const float ScanRadius        = 5.0f;   // wider scan to catch doors reliably
+        private const float ScanRadius        = 5.0f;   // stuck-mode scan radius
         private const float StuckThreshold    = 1.0f;   // faster stuck detection (was 1.5)
         private const float StuckMoveDist     = 0.2f;   // more sensitive movement check (was 0.3)
         private const float StuckCheckInterval = 0.5f;   // check twice per second (was 1.0)
         private const float FollowDistMin     = 4.0f;   // engage when 4m+ from target (was 5)
-        private const float InteractDist      = 2.0f;   // interact range (was 1.5)
-        private const float OpenWaitTime      = 1.2f;   // wait for door animation (was 1.0)
+        private const float InteractDist      = 2.0f;   // interact range
+        private const float OpenWaitTime      = 1.2f;   // wait for door animation
         private const float CloseDistance      = 3.5f;   // close door when this far past it
         private const float PassTimeout       = 8.0f;   // safety timeout in PassingThrough
         private const float ProximityCheck    = 2.5f;   // don't close if player/companion near
-        private const float ApproachTimeout   = 5.0f;   // give up approaching if takes too long
+        private const float ApproachTimeout   = 10.0f;  // give up approaching if takes too long
         private const float HeartbeatInterval = 2.0f;
 
+        // ── Proactive detection tuning ─────────────────────────────────────
+        private const float ProactiveCheckInterval = 1.0f;  // measure progress every 1s
+        private const float ProactiveStagnationTime = 3.0f; // trigger after 3s of no progress
+        private const float ProactiveScanRadius   = 15.0f;  // wider scan for proactive mode
+        private const float MinProactiveSpeed     = 0.5f;   // must be actively moving
+        private const float MinProgressRate       = 0.3f;   // must close 0.3m per check to count
+
+        /// <summary>True when DoorHandler needs exclusive movement control.
+        /// Covers Approaching, WaitingForOpen, and PassingThrough. The navmesh is
+        /// static and doesn't update for open doors, so pathfinding-based Follow()
+        /// can't move through doorways — DoorHandler drives movement directly via
+        /// MoveTowards instead.</summary>
+        public bool IsActive => _phase != Phase.Idle && _phase != Phase.Closing;
+
         // ── Components ──────────────────────────────────────────────────────
-        private MonsterAI      _ai;
-        private Humanoid       _humanoid;
-        private CompanionSetup _setup;
-        private ZNetView       _nview;
+        private CompanionAI       _ai;
+        private Humanoid          _humanoid;
+        private CompanionSetup    _setup;
+        private ZNetView          _nview;
+        private HarvestController _harvest;
+        private RepairController  _repair;
 
         // ── State ───────────────────────────────────────────────────────────
         private Phase   _phase;
@@ -44,8 +63,16 @@ namespace Companions
         private float   _approachTimer;
         private float   _heartbeatTimer;
         private int     _scanAttempts;      // how many scans found no doors
+        private float   _cooldownTimer;     // prevents re-detecting same door immediately after closing
+        private const float PostCloseCooldown = 4f;
 
-        private static readonly Collider[] _scanBuffer = new Collider[32];
+        // ── Proactive detection state ──────────────────────────────────────
+        private float   _proactiveCheckTimer;      // interval between progress checks
+        private float   _proactiveStagnationTimer;  // accumulated time with no progress
+        private float   _lastFollowDist;            // distance to player at last check
+        private bool    _lastFollowDistValid;       // first check has no baseline
+
+        private readonly Collider[] _proximityBuffer = new Collider[16];
 
         // ══════════════════════════════════════════════════════════════════════
         //  Lifecycle
@@ -53,10 +80,12 @@ namespace Companions
 
         private void Awake()
         {
-            _ai       = GetComponent<MonsterAI>();
+            _ai       = GetComponent<CompanionAI>();
             _humanoid = GetComponent<Humanoid>();
             _setup    = GetComponent<CompanionSetup>();
             _nview    = GetComponent<ZNetView>();
+            _harvest  = GetComponent<HarvestController>();
+            _repair   = GetComponent<RepairController>();
             CompanionsPlugin.Log.LogInfo("[DoorHandler] Initialized — door handling active");
         }
 
@@ -99,23 +128,140 @@ namespace Companions
         }
 
         // ══════════════════════════════════════════════════════════════════════
-        //  Phase: Idle — detect when stuck near a closed door
+        //  Public API — directed door interaction from hotkey
+        // ══════════════════════════════════════════════════════════════════════
+
+        /// <summary>
+        /// Direct the companion to open a specific door (from hotkey command).
+        /// Skips stuck/proactive detection and goes straight to Approaching.
+        /// </summary>
+        public void DirectOpenDoor(Door door)
+        {
+            if (door == null) return;
+            if (!IsValidClosedDoor(door))
+            {
+                CompanionsPlugin.Log.LogInfo(
+                    $"[DoorHandler] DirectOpenDoor — door \"{door.m_name}\" is not a valid closed door");
+                return;
+            }
+
+            _targetDoor = door;
+            _doorPos = door.transform.position;
+            _phase = Phase.Approaching;
+            _approachTimer = 0f;
+            _stuckTimer = 0f;
+            _cooldownTimer = 0f;
+            ResetProactive();
+            CompanionsPlugin.Log.LogInfo(
+                $"[DoorHandler] DirectOpenDoor — approaching \"{door.m_name}\" " +
+                $"dist={Vector3.Distance(transform.position, _doorPos):F1}m");
+        }
+
+        // ══════════════════════════════════════════════════════════════════════
+        //  Phase: Idle — detect doors via stuck detection OR proactive detection
         // ══════════════════════════════════════════════════════════════════════
 
         private void UpdateIdle(float dt)
         {
-            var followTarget = _ai.GetFollowTarget();
-            if (followTarget == null) return;
-
-            float distToTarget = Vector3.Distance(transform.position, followTarget.transform.position);
-            if (distToTarget < FollowDistMin)
+            // Cooldown after completing a door cycle — prevents re-detecting the
+            // same door immediately after closing it, before the companion has
+            // had time to move away.
+            if (_cooldownTimer > 0f)
             {
+                _cooldownTimer -= dt;
                 _stuckTimer = 0f;
-                _scanAttempts = 0;
+                ResetProactive();
                 return;
             }
 
-            // Periodic stuck check — has companion barely moved?
+            // When a controller is actively working at a station (repairing, harvesting
+            // an attack), the companion is intentionally stationary. Don't let stuck
+            // detection accumulate — otherwise DoorHandler fires the instant the
+            // controller finishes and hijacks the companion before the next repair scan.
+            // Exception: repair MovingToStation — companion IS trying to move and
+            // might genuinely be stuck behind a door.
+            bool controllerStationary =
+                (_harvest != null && _harvest.IsActive && !_harvest.IsMoving) ||
+                (_repair  != null && _repair.IsActive  && _repair.Phase != RepairController.RepairPhase.MovingToStation);
+
+            if (controllerStationary)
+            {
+                _stuckTimer = 0f;
+                _stuckCheckTimer = 0f;
+                ResetProactive();
+                return;
+            }
+
+            // The companion needs a reason to be moving for stuck detection to matter.
+            // In follow mode: must be 4m+ from player (otherwise it's resting normally).
+            // In harvest/repair mode: the controller is trying to reach a target, so
+            // being stuck (vel~0) for any reason — including a blocked door — matters.
+            bool controllerMoving = (_harvest != null && _harvest.IsActive) ||
+                                    (_repair  != null && _repair.IsActive);
+
+            GameObject followTarget = null;
+            float distToTarget = 0f;
+
+            if (!controllerMoving)
+            {
+                followTarget = _ai?.GetFollowTarget();
+                if (followTarget == null) return;
+
+                distToTarget = Vector3.Distance(transform.position, followTarget.transform.position);
+                if (distToTarget < FollowDistMin)
+                {
+                    _stuckTimer = 0f;
+                    _scanAttempts = 0;
+                    ResetProactive();
+                    return;
+                }
+            }
+
+            // ── Proactive door detection ──
+            // Detects when companion is actively moving (following navmesh around a
+            // building) but not actually getting closer to the player. After 3s of
+            // stagnation, scan a wide radius for doors scored by proximity to the player.
+            if (!controllerMoving && followTarget != null)
+            {
+                var vel = _humanoid?.GetVelocity() ?? Vector3.zero;
+                float horizSpeed = new Vector3(vel.x, 0f, vel.z).magnitude;
+
+                if (horizSpeed > MinProactiveSpeed)
+                {
+                    _proactiveCheckTimer += dt;
+                    if (_proactiveCheckTimer >= ProactiveCheckInterval)
+                    {
+                        _proactiveCheckTimer = 0f;
+
+                        if (_lastFollowDistValid)
+                        {
+                            float progress = _lastFollowDist - distToTarget;
+                            if (progress < MinProgressRate)
+                                _proactiveStagnationTimer += ProactiveCheckInterval;
+                            else
+                                _proactiveStagnationTimer = Mathf.Max(0f,
+                                    _proactiveStagnationTimer - ProactiveCheckInterval);
+                        }
+
+                        _lastFollowDist = distToTarget;
+                        _lastFollowDistValid = true;
+                    }
+
+                    if (_proactiveStagnationTimer >= ProactiveStagnationTime)
+                    {
+                        ResetProactive();
+                        ScanForDoorProactive(followTarget.transform.position);
+                        return;
+                    }
+                }
+            }
+            else if (!controllerMoving)
+            {
+                ResetProactive();
+            }
+
+            // ── Stuck detection (original fallback) ──
+            // Companion vel≈0 for 1s near a door → scan close radius.
             _stuckCheckTimer += dt;
             if (_stuckCheckTimer >= StuckCheckInterval)
             {
@@ -139,28 +285,35 @@ namespace Companions
             ScanForDoor();
         }
 
+        private void ResetProactive()
+        {
+            _proactiveCheckTimer = 0f;
+            _proactiveStagnationTimer = 0f;
+            _lastFollowDistValid = false;
+        }
+
         private void ScanForDoor()
         {
-            int count = Physics.OverlapSphereNonAlloc(transform.position, ScanRadius, _scanBuffer);
+            // Search Door components directly instead of OverlapSphere.
+            // Inside buildings the collider buffer was saturated by wall/floor/beam
+            // colliders (32+) and door colliders were never reached.
+            var allDoors = Object.FindObjectsByType<Door>(FindObjectsSortMode.None);
             Door closest = null;
             float closestDist = float.MaxValue;
             int doorsSeen = 0;
             int doorsValid = 0;
 
-            for (int i = 0; i < count; i++)
+            foreach (var door in allDoors)
             {
-                var col = _scanBuffer[i];
-                if (col == null) continue;
-
-                var door = col.GetComponent<Door>();
-                if (door == null) door = col.GetComponentInParent<Door>();
                 if (door == null) continue;
+
+                float dist = Vector3.Distance(transform.position, door.transform.position);
+                if (dist > ScanRadius) continue;
 
                 doorsSeen++;
 
                 if (!IsValidClosedDoor(door))
                 {
-                    // Log why door was rejected (first few scans)
                     if (_scanAttempts < 3)
                     {
                         var dnv = door.GetComponent<ZNetView>();
@@ -175,7 +328,6 @@ namespace Companions
                 }
 
                 doorsValid++;
-                float dist = Vector3.Distance(transform.position, door.transform.position);
                 if (dist < closestDist)
                 {
                     closestDist = dist;
@@ -194,20 +346,80 @@ namespace Companions
                 _stuckTimer = 0f;
                 CompanionsPlugin.Log.LogInfo(
                     $"[DoorHandler] Found closed door \"{closest.m_name}\" at dist={closestDist:F1}m " +
-                    $"pos={_doorPos:F1} — approaching (scanned {count} colliders, " +
-                    $"{doorsSeen} doors, {doorsValid} valid)");
+                    $"pos={_doorPos:F1} — approaching " +
+                    $"({doorsSeen} doors nearby, {doorsValid} valid)");
             }
             else if (_scanAttempts <= 3 || _scanAttempts % 10 == 0)
             {
                 CompanionsPlugin.Log.LogInfo(
                     $"[DoorHandler] Scan #{_scanAttempts} — no valid doors " +
-                    $"(scanned {count} colliders, {doorsSeen} doors, {doorsValid} valid) " +
+                    $"({doorsSeen} doors nearby, {doorsValid} valid) " +
                     $"stuck={_stuckTimer:F1}s pos={transform.position:F1}");
             }
         }
 
         // ══════════════════════════════════════════════════════════════════════
-        //  Phase: Approaching — walk directly toward door
+        //  Proactive scan — find the best door when circling a building
+        //  Scores doors by proximity to the player (the building entrance is
+        //  likely near the player) with a small penalty for companion distance.
+        // ══════════════════════════════════════════════════════════════════════
+
+        private void ScanForDoorProactive(Vector3 playerPos)
+        {
+            var allDoors = Object.FindObjectsByType<Door>(FindObjectsSortMode.None);
+            Door best = null;
+            float bestScore = float.MaxValue;
+            float bestDistToMe = 0f;
+            float bestDistToPlayer = 0f;
+            int doorsSeen = 0;
+
+            foreach (var door in allDoors)
+            {
+                if (door == null) continue;
+
+                float distToMe = Vector3.Distance(transform.position, door.transform.position);
+                if (distToMe > ProactiveScanRadius) continue;
+
+                doorsSeen++;
+
+                if (!IsValidClosedDoor(door)) continue;
+
+                // Score: primarily by closeness to player, secondarily by closeness to companion.
+                // The door the player used is likely the closest door to them.
+                float distToPlayer = Vector3.Distance(playerPos, door.transform.position);
+                float score = distToPlayer + distToMe * 0.3f;
+
+                if (score < bestScore)
+                {
+                    bestScore = score;
+                    best = door;
+                    bestDistToMe = distToMe;
+                    bestDistToPlayer = distToPlayer;
+                }
+            }
+
+            if (best != null)
+            {
+                _targetDoor = best;
+                _doorPos = best.transform.position;
+                _phase = Phase.Approaching;
+                _approachTimer = 0f;
+                _stuckTimer = 0f;
+                CompanionsPlugin.Log.LogInfo(
+                    $"[DoorHandler] PROACTIVE — found door \"{best.m_name}\" " +
+                    $"dist={bestDistToMe:F1}m playerDist={bestDistToPlayer:F1}m " +
+                    $"score={bestScore:F1} ({doorsSeen} doors nearby) — approaching");
+            }
+            else
+            {
+                CompanionsPlugin.Log.LogInfo(
+                    $"[DoorHandler] PROACTIVE scan — no valid doors within {ProactiveScanRadius}m " +
+                    $"({doorsSeen} doors seen)");
+            }
+        }
+
+        // ══════════════════════════════════════════════════════════════════════
+        //  Phase: Approaching — walk toward door (pathfinding when far, direct when close)
         // ══════════════════════════════════════════════════════════════════════
 
         private void UpdateApproaching(float dt)
@@ -226,11 +438,20 @@ namespace Companions
 
             float dist = Vector3.Distance(transform.position, _doorPos);
 
-            // Direct movement toward door (bypasses blocked navmesh)
-            Vector3 dir = (_doorPos - transform.position);
-            dir.y = 0f;
-            if (dir.sqrMagnitude > 0.001f)
-                _ai.MoveTowards(dir.normalized, true);
+            if (dist > InteractDist * 2.5f)
+            {
+                // Far from door — use pathfinding to navigate around building corners.
+                // The door is on the building exterior, so the navmesh path to it is valid.
+                _ai.MoveToPoint(dt, _doorPos, InteractDist, true);
+            }
+            else
+            {
+                // Close to door — direct movement (bypasses navmesh issues near doorways)
+                Vector3 dir = (_doorPos - transform.position);
+                dir.y = 0f;
+                if (dir.sqrMagnitude > 0.001f)
+                    _ai.MoveTowards(dir.normalized, true);
+            }
 
             if (dist < InteractDist)
             {
@@ -289,7 +510,10 @@ namespace Companions
         }
 
         // ══════════════════════════════════════════════════════════════════════
-        //  Phase: PassingThrough — let MonsterAI pathfind through open doorway
+        //  Phase: PassingThrough — push companion through the open doorway
+        //  The navmesh is static and doesn't update for open doors, so
+        //  pathfinding-based Follow/MoveTo can't navigate through. We use
+        //  MoveTowards (direct push) to bypass the navmesh entirely.
         // ══════════════════════════════════════════════════════════════════════
 
         private void UpdatePassingThrough(float dt)
@@ -304,7 +528,24 @@ namespace Companions
                 _phase = Phase.Closing;
                 CompanionsPlugin.Log.LogInfo(
                     $"[DoorHandler] Past door (dist={distFromDoor:F1}m, timer={_passTimer:F1}s) — closing");
+                return;
             }
+
+            // Push through doorway — aim toward follow target if available,
+            // otherwise push away from the door (through to the other side).
+            var followTarget = _ai.GetFollowTarget();
+            Vector3 pushDir;
+            if (followTarget != null)
+            {
+                pushDir = followTarget.transform.position - transform.position;
+            }
+            else
+            {
+                pushDir = transform.position - _doorPos;
+            }
+            pushDir.y = 0f;
+            if (pushDir.sqrMagnitude > 0.01f)
+                _ai.PushDirection(pushDir.normalized, true);
         }
 
         // ══════════════════════════════════════════════════════════════════════
@@ -323,7 +564,7 @@ namespace Companions
             if (IsAnyoneNearDoor())
             {
                 CompanionsPlugin.Log.LogInfo("[DoorHandler] Someone near door — skipping close");
-                ResetToIdle();
+                ResetToIdle(withCooldown: true);
                 return;
             }
 
@@ -339,7 +580,7 @@ namespace Companions
                 }
             }
 
-            ResetToIdle();
+            ResetToIdle(withCooldown: true);
         }
 
         // ══════════════════════════════════════════════════════════════════════
@@ -377,10 +618,10 @@ namespace Companions
             }
 
             // Check other companions (but not ourselves)
-            int count = Physics.OverlapSphereNonAlloc(_doorPos, ProximityCheck, _scanBuffer);
+            int count = Physics.OverlapSphereNonAlloc(_doorPos, ProximityCheck, _proximityBuffer);
             for (int i = 0; i < count; i++)
             {
-                var col = _scanBuffer[i];
+                var col = _proximityBuffer[i];
                 if (col == null) continue;
                 if (col.gameObject == gameObject) continue;
                 if (col.GetComponent<CompanionSetup>() != null) return true;
@@ -400,7 +641,7 @@ namespace Companions
             return true;
         }
 
-        private void ResetToIdle()
+        private void ResetToIdle(bool withCooldown = false)
         {
             _phase = Phase.Idle;
             _targetDoor = null;
@@ -409,6 +650,9 @@ namespace Companions
             _passTimer = 0f;
             _approachTimer = 0f;
             _scanAttempts = 0;
+            ResetProactive();
+            if (withCooldown)
+                _cooldownTimer = PostCloseCooldown;
         }
     }
 }

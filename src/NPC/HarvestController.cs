@@ -17,10 +17,11 @@ namespace Companions
 
         // ── Components ──────────────────────────────────────────────────────
         private ZNetView       _nview;
-        private MonsterAI      _ai;
+        private CompanionAI    _ai;
         private Humanoid       _humanoid;
         private Character      _character;
         private CompanionSetup _setup;
+        private DoorHandler    _doorHandler;
 
         // ── State ───────────────────────────────────────────────────────────
         private HarvestState _state = State_Idle;
@@ -34,6 +35,11 @@ namespace Companions
         private int          _totalAttempts;   // total attack attempts (success + failure) on current target
         private float        _selfDefenseLogTimer;
         private bool         _wasInSelfDefense;  // true last frame when combat target was present
+
+        // ── Directed harvest (one-shot from hotkey, works outside gather mode) ─
+        private GameObject   _directedTarget;
+        private int          _directedMode;       // ModeGatherWood or ModeGatherStone
+        private bool         _isDirectedHarvest;
 
         // ── Blacklist — tracks unreachable targets to prevent infinite stuck loops ──
         private readonly Dictionary<int, float> _blacklist = new Dictionary<int, float>();
@@ -51,12 +57,12 @@ namespace Companions
         private const float AttackRetry    = 0.25f;
         private const float MoveTimeout    = 12f;
         private const float ArrivalSlack   = 0.5f;
-        private const int   WhiffRetryMax  = 8;    // abandon after this many SUCCESSFUL swings without destroy
-        private const int   TotalAttemptMax = 16;  // abandon after this many total attempts (incl. failures)
+        private const int   WhiffRetryMax  = 20;   // abandon after this many SUCCESSFUL swings without destroy
+        private const int   TotalAttemptMax = 30;  // abandon after this many total attempts (incl. failures)
 
         // Drop collection config
         private const float DropScanRadius  = 8f;   // radius around destroy pos to look for drops
-        private const float DropPickupRange = 3.0f;  // must be >= MonsterAI.Follow() stop distance (~3m)
+        private const float DropPickupRange = 3.0f;  // must be >= BaseAI.Follow() stop distance (~3m)
         private const float DropTimeout     = 10f;   // max time in CollectingDrops before giving up
         private const float DropScanDelay   = 0.5f;  // brief delay after destroy before scanning (drops need time to spawn)
 
@@ -92,6 +98,9 @@ namespace Companions
         /// <summary>True when actively moving to or attacking a resource.</summary>
         public bool IsActive => _state != State_Idle;
 
+        /// <summary>True when navigating to a resource target (not yet attacking/collecting).</summary>
+        internal bool IsMoving => _state == State_Moving;
+
         /// <summary>Current harvest state name for external diagnostics.</summary>
         internal string CurrentStateName => _state.ToString();
 
@@ -102,10 +111,11 @@ namespace Companions
         private void Awake()
         {
             _nview     = GetComponent<ZNetView>();
-            _ai        = GetComponent<MonsterAI>();
+            _ai        = GetComponent<CompanionAI>();
             _humanoid  = GetComponent<Humanoid>();
             _character = GetComponent<Character>();
-            _setup     = GetComponent<CompanionSetup>();
+            _setup       = GetComponent<CompanionSetup>();
+            _doorHandler = GetComponent<DoorHandler>();
 
             // Build a per-companion tag: "[Harvest#1234]" using instance ID
             int id = GetInstanceID();
@@ -135,13 +145,13 @@ namespace Companions
             bool gatherMode = mode >= CompanionSetup.ModeGatherWood
                            && mode <= CompanionSetup.ModeGatherOre;
 
-            if (!gatherMode)
+            if (!gatherMode && !_isDirectedHarvest)
             {
                 if (IsInGatherMode) ExitGatherMode();
                 return;
             }
 
-            if (!IsInGatherMode) EnterGatherMode();
+            if (gatherMode && !IsInGatherMode) EnterGatherMode();
 
             // Weight check — stop gathering if overweight
             if (IsOverweight())
@@ -183,20 +193,20 @@ namespace Companions
             // SelfDefenseRange so the two systems agree.
             if (_ai != null && _character != null)
             {
-                var creature = ReflectionHelper.GetTargetCreature(_ai);
+                var creature = _ai.m_targetCreature;
 
                 // Detect dead enemies that IsDead() hasn't caught yet (hp=0, m_dead not set)
                 if (creature != null && !creature.IsDead() && creature.GetHealth() <= 0f)
                 {
                     Log($"DEAD ENEMY detected by health guard — \"{creature.m_name}\" " +
                         $"isDead=False hp={creature.GetHealth():F0} — clearing target");
-                    ReflectionHelper.ClearAllTargets(_ai);
+                    _ai.ClearTargets();
                     creature = null; // fall through to resume harvest
                 }
 
                 if (creature != null && !creature.IsDead() && creature.GetHealth() > 0f)
                 {
-                    // MonsterAI has a target — let combat handle it, pause harvest
+                    // CompanionAI has a target — let combat handle it, pause harvest
                     float enemyDist = Vector3.Distance(transform.position, creature.transform.position);
                     if (enemyDist < 10f)
                     {
@@ -217,7 +227,7 @@ namespace Companions
                         // Enemy is far away — clear and continue gathering
                         Log($"Clearing distant combat target \"{creature.m_name}\" " +
                             $"dist={enemyDist:F1}m — too far for self-defense");
-                        ReflectionHelper.ClearAllTargets(_ai);
+                        _ai.ClearTargets();
                     }
                 }
 
@@ -227,9 +237,9 @@ namespace Companions
                     _wasInSelfDefense = false;
 
                     // Clear alert state — m_alerted persists after enemies die and causes
-                    // MonsterAI.UpdateAI to override movement with alert-scanning behavior,
+                    // CompanionAI.UpdateAI to override movement with alert-scanning behavior,
                     // preventing the companion from reaching harvest targets.
-                    ReflectionHelper.SetAlerted(_ai, false);
+                    _ai.SetAlerted(false);
 
                     var rightItem = ReflectionHelper.GetRightItem(_humanoid);
                     Log($"SELF-DEFENSE ended — resuming harvest state={_state} " +
@@ -238,11 +248,11 @@ namespace Companions
                 }
 
                 // Also clear static targets that might have been set
-                var staticT = ReflectionHelper.GetTargetStatic(_ai);
+                var staticT = _ai.m_targetStatic;
                 if (staticT != null)
                 {
                     Log($"Clearing static combat target \"{staticT.name}\"");
-                    ReflectionHelper.TrySetTargetStatic(_ai, null);
+                    _ai.m_targetStatic = null;
                 }
             }
 
@@ -265,7 +275,7 @@ namespace Companions
             var followTarget = _ai?.GetFollowTarget();
             var rightItem = ReflectionHelper.GetRightItem(_humanoid);
             var leftItem  = ReflectionHelper.GetLeftItem(_humanoid);
-            var creature  = _ai != null ? ReflectionHelper.GetTargetCreature(_ai) : null;
+            var creature  = _ai != null ? _ai.m_targetCreature : null;
 
             bool inAttack = _character is Humanoid h ? h.InAttack() : false;
 
@@ -297,7 +307,89 @@ namespace Companions
             int mode = GetMode();
             Log($"NotifyActionModeChanged — new mode={mode} " +
                 $"(wasGather={IsInGatherMode}, state={_state})");
+            CancelDirectedTarget();
             ResetToIdle();
+        }
+
+        /// <summary>
+        /// Direct the companion to harvest a specific target (one-shot from hotkey).
+        /// Works regardless of current action mode — companion will harvest the
+        /// target, collect drops, then return to its previous behavior.
+        /// </summary>
+        public void SetDirectedTarget(GameObject target)
+        {
+            if (target == null) return;
+
+            // Determine tool type from target components
+            int harvestMode = DetermineHarvestMode(target);
+            if (harvestMode < 0)
+            {
+                Log($"SetDirectedTarget REJECTED — can't determine tool for \"{target.name}\"");
+                return;
+            }
+
+            _directedTarget = target;
+            _directedMode = harvestMode;
+            _isDirectedHarvest = true;
+
+            // Force into Moving state toward this target
+            _target = target;
+            _targetType = ClassifyTargetType(target, harvestMode);
+            _state = State_Moving;
+            _moveTimer = 0f;
+            _swingCount = 0;
+            _totalAttempts = 0;
+            _scanTimer = ScanInterval; // don't auto-scan while directed
+
+            // Equip the right tool
+            var tool = FindBestTool(harvestMode);
+            if (tool != null)
+                EquipTool(tool);
+
+            Log($"SetDirectedTarget — \"{target.name}\" type={_targetType} " +
+                $"mode={harvestMode} tool=\"{tool?.m_shared?.m_name ?? "NONE"}\"");
+        }
+
+        /// <summary>Cancel any directed harvest in progress.</summary>
+        public void CancelDirectedTarget()
+        {
+            if (!_isDirectedHarvest) return;
+
+            Log("CancelDirectedTarget — clearing directed harvest");
+            _directedTarget = null;
+            _isDirectedHarvest = false;
+
+            if (!IsInGatherMode)
+            {
+                ResetToIdle();
+                RestoreLoadout();
+            }
+        }
+
+        /// <summary>
+        /// Determines whether a target needs an axe (Wood) or pickaxe (Stone/Ore).
+        /// Returns ModeGatherWood, ModeGatherStone, or -1 if not harvestable.
+        /// </summary>
+        private static int DetermineHarvestMode(GameObject target)
+        {
+            if (target.GetComponent<TreeBase>() != null) return CompanionSetup.ModeGatherWood;
+            if (target.GetComponent<TreeLog>() != null) return CompanionSetup.ModeGatherWood;
+
+            var dest = target.GetComponent<Destructible>();
+            if (dest != null && target.name.IndexOf("stub", System.StringComparison.OrdinalIgnoreCase) >= 0)
+                return CompanionSetup.ModeGatherWood;
+
+            if (target.GetComponent<MineRock5>() != null) return CompanionSetup.ModeGatherStone;
+            if (target.GetComponent<MineRock>() != null) return CompanionSetup.ModeGatherStone;
+
+            if (dest != null && dest.m_damages.m_pickaxe != HitData.DamageModifier.Immune
+                && dest.m_damages.m_chop == HitData.DamageModifier.Immune)
+                return CompanionSetup.ModeGatherStone;
+
+            if (dest != null && dest.m_damages.m_chop != HitData.DamageModifier.Immune)
+                return CompanionSetup.ModeGatherWood;
+
+            return -1;
         }
 
         // ══════════════════════════════════════════════════════════════════════
@@ -348,6 +440,15 @@ namespace Companions
             _swingCount    = 0;
             _totalAttempts = 0;
             _scanTimer     = 0f;
+
+            // If this was a directed harvest, clean up and restore loadout
+            if (_isDirectedHarvest)
+            {
+                _isDirectedHarvest = false;
+                _directedTarget = null;
+                RestoreLoadout();
+                Log($"ResetToIdle (directed harvest complete) — restored loadout");
+            }
 
             // Restore follow target so companion follows player between targets
             if (_ai != null && Player.m_localPlayer != null)
@@ -420,15 +521,14 @@ namespace Companions
             _totalAttempts = 0;
             EquipTool(tool);
 
-            // Set follow target to the harvest resource — MonsterAI.Follow() will
-            // drive movement naturally using pathfinding + correct speed.
-            // Previously we set follow=null, but that caused MonsterAI to idle
-            // and call StopMoving() every frame, fighting our MoveTo calls.
+            // Clear follow target — HarvestController owns movement exclusively
+            // during Moving/Attacking/CollectingDrops via MoveToPoint/MoveTowards.
+            // CompanionAI.UpdateAI skips Follow() when harvest IsActive, so null
+            // follow won't trigger IdleMovement's StopMoving().
             if (_ai != null)
             {
-                _ai.SetFollowTarget(_target);
-                Log($"Set follow target to resource \"{_target.name}\" — " +
-                    "MonsterAI.Follow() will drive movement");
+                _ai.SetFollowTarget(null);
+                Log($"Target set: \"{_target.name}\" — HarvestController driving movement");
             }
 
             _moveTimer = 0f;
@@ -437,11 +537,17 @@ namespace Companions
         }
 
         // ══════════════════════════════════════════════════════════════════════
-        //  Moving — MonsterAI.Follow() drives pathfinding, we reinforce + check arrival
+        //  Moving — BaseAI.Follow() drives pathfinding, we reinforce + check arrival
         // ══════════════════════════════════════════════════════════════════════
 
         private void UpdateMoving()
         {
+            // DoorHandler is actively opening a door — pause movement so we don't
+            // fight its MoveTowards with our MoveToPoint. Also pause the stuck
+            // timer since the delay is the door handler's fault, not ours.
+            if (_doorHandler != null && _doorHandler.IsActive)
+                return;
+
             if (!IsTargetValid(_target))
             {
                 Log("Target gone while moving — waiting 1.5s then rescanning");
@@ -473,23 +579,35 @@ namespace Companions
             Vector3 targetPos = _target.transform.position;
             float distToTarget = Vector3.Distance(transform.position, targetPos);
 
-            // MonsterAI.Follow() handles long-range pathfinding (> 4m).
-            // For the final approach (< 4m), use MoveTowards for direct movement
-            // that bypasses navmesh — Follow() stops issuing move commands at ~3m,
-            // leaving the companion stranded just outside attack range.
-            bool moveResult;
-            if (distToTarget < 4f)
+            // Use MoveToPoint (pathfinding) for all distances. This handles
+            // slopes and terrain obstacles that MoveTowards can't climb.
+            // CompanionAI.UpdateAI skips Follow() when harvest is active,
+            // so there's no dual-control jitter.
+            float moveGoal = IsLowTarget() ? range * 0.3f : range * 0.5f;
+            bool moveResult = _ai.MoveToPoint(dt, targetPos, moveGoal, true);
+
+            // Pathfinding failed at close range — fall back to direct push.
+            // This handles cases where the navmesh has gaps near the target.
+            if (!moveResult && distToTarget < 4f)
             {
                 Vector3 dir = (targetPos - transform.position);
                 dir.y = 0f;
                 if (dir.sqrMagnitude > 0.01f)
                     _ai.MoveTowards(dir.normalized, true);
-                moveResult = true;
             }
-            else
+            // Pathfinding "completed" but we haven't actually arrived — height
+            // differences or navmesh edges cause MoveTo to return true while the
+            // companion is still out of weapon range with zero velocity.
+            else if (moveResult && distToTarget > moveGoal + 0.5f)
             {
-                float moveGoal = IsLowTarget() ? range * 0.5f : range;
-                moveResult = ReflectionHelper.TryMoveTo(_ai, dt, targetPos, moveGoal, true);
+                var vel = _character?.GetVelocity() ?? Vector3.zero;
+                if (vel.magnitude < 0.3f)
+                {
+                    Vector3 dir = (targetPos - transform.position);
+                    dir.y = 0f;
+                    if (dir.sqrMagnitude > 0.01f)
+                        _ai.MoveTowards(dir.normalized, true);
+                }
             }
 
             // Periodic movement logging (every 1s to avoid spam)
@@ -512,14 +630,15 @@ namespace Companions
             }
 
             // Check if we've arrived — transition to Attacking once within weapon range.
-            // The LateUpdate shuffle-closer continues pushing toward the target for
-            // accurate hits, so we don't need a tight threshold here. Using full range
-            // avoids terrain/height issues where the companion can't physically close
-            // the last fraction of a meter (e.g. stump on a slight hill).
+            // Use horizontal distance as an alternative — height differences on slopes
+            // inflate 3D distance even when the companion is horizontally close enough
+            // to swing (weapon hit detection is 3D collision-based, not distance-gated).
             distToTarget = Vector3.Distance(transform.position, targetPos);
+            Vector3 toTarget = targetPos - transform.position;
+            float horizDist = new Vector3(toTarget.x, 0f, toTarget.z).magnitude;
             bool isLow = IsLowTarget();
             float arrivalDist = isLow ? range : range + ArrivalSlack;
-            if (distToTarget <= arrivalDist)
+            if (distToTarget <= arrivalDist || horizDist <= arrivalDist)
             {
                 if (_ai != null) _ai.StopMoving();
                 FaceTarget();
@@ -532,10 +651,10 @@ namespace Companions
         }
 
         /// <summary>
-        /// LateUpdate runs AFTER all Update calls, including MonsterAI.UpdateAI.
+        /// LateUpdate runs AFTER all Update calls, including CompanionAI.UpdateAI.
         /// We force run speed here so it overrides Follow()'s walk decision
         /// for distances under 10m. Also shuffles the companion closer during
-        /// Attacking state — MonsterAI.Follow() stops at ~3m but small targets
+        /// Attacking state — BaseAI.Follow() stops at ~3m but small targets
         /// (stumps) need the companion within actual weapon range to land hits.
         /// </summary>
         private void LateUpdate()
@@ -558,7 +677,7 @@ namespace Companions
                 float shuffleThreshold = needsCloser ? range * 0.5f : range * 0.8f;
                 float shuffleGoal     = needsCloser ? range * 0.2f : range * 0.5f;
                 if (dist > shuffleThreshold)
-                    ReflectionHelper.TryMoveTo(_ai, Time.deltaTime, _target.transform.position, shuffleGoal, false);
+                    _ai.MoveToPoint( Time.deltaTime, _target.transform.position, shuffleGoal, false);
             }
         }
 
@@ -593,7 +712,6 @@ namespace Companions
             {
                 Log($"Drifted too far from target: dist={dist:F1}m " +
                     $"(range={range:F1} + 1.5) — returning to Moving state");
-                if (_ai != null) _ai.SetFollowTarget(_target);
                 _moveTimer = 0f;
                 _moveLogTimer = 0f;
                 _state = State_Moving;
@@ -748,7 +866,7 @@ namespace Companions
                     else
                     {
                         // Still moving toward drop — MoveTo reinforcement
-                        ReflectionHelper.TryMoveTo(_ai, dt, _currentDrop.transform.position, DropPickupRange * 0.5f, true);
+                        _ai.MoveToPoint( dt, _currentDrop.transform.position, DropPickupRange * 0.5f, true);
                         // Log approach progress every 2s
                         _moveLogTimer -= dt;
                         if (_moveLogTimer <= 0f)
@@ -776,9 +894,9 @@ namespace Companions
             _currentDrop = nextDrop;
             float dist = Vector3.Distance(transform.position, nextDrop.transform.position);
 
-            // Set follow target so MonsterAI.Follow() drives pathfinding
-            if (_ai != null)
-                _ai.SetFollowTarget(nextDrop);
+            // HarvestController drives movement to drops via MoveToPoint.
+            // No need to set follow target — CompanionAI skips Follow()
+            // when harvest IsActive.
 
             var itemDrop = nextDrop.GetComponent<ItemDrop>();
             string itemName = itemDrop?.m_itemData?.m_shared?.m_name ?? "?";
@@ -1183,6 +1301,10 @@ namespace Companions
 
         private int GetMode()
         {
+            // Directed harvest overrides the ZDO mode
+            if (_isDirectedHarvest)
+                return _directedMode;
+
             var zdo = _nview?.GetZDO();
             return zdo?.GetInt(CompanionSetup.ActionModeHash, CompanionSetup.ModeFollow)
                 ?? CompanionSetup.ModeFollow;

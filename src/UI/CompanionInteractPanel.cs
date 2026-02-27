@@ -25,8 +25,8 @@ namespace Companions
         public CompanionSetup CurrentCompanion => _companion;
 
         // ── Layout constants ─────────────────────────────────────────────────
-        private const float PanelW       = 260f;
-        private const float PanelH       = 349f;
+        private const float PanelW       = 400f;
+        private const float PanelH       = 400f;
         private const float UiScale      = 1.25f;
         private const float OuterPad     = 6f;
         private const float TabBarH      = 28f;
@@ -96,7 +96,7 @@ namespace Companions
         private CompanionFood    _companionFood;
         private Humanoid         _companionHumanoid;
         private ZNetView         _companionNview;
-        private MonsterAI        _companionAI;
+        private CompanionAI      _companionAI;
         private HarvestController   _companionHarvest;
 
         // ── UI elements ──────────────────────────────────────────────────────
@@ -111,6 +111,13 @@ namespace Companions
         private Button          _setHomeBtn;
         private Button          _autoPickupBtn;
         private int             _activeMode;
+
+        // ── Stance buttons ──────────────────────────────────────────────────
+        private Button _balancedBtn;
+        private Button _aggressiveBtn;
+        private Button _defensiveBtn;
+        private Button _passiveBtn;
+        private int    _activeStance;
 
         private bool _built;
         private bool _visible;
@@ -178,6 +185,14 @@ namespace Companions
                     RefreshActionButtons();
                     RefreshModeText();
                 }
+
+                int zdoStance = _companionNview.GetZDO().GetInt(
+                    CompanionSetup.CombatStanceHash, CompanionSetup.StanceBalanced);
+                if (zdoStance != _activeStance)
+                {
+                    _activeStance = zdoStance;
+                    RefreshStanceButtons();
+                }
             }
 
             // Gamepad: LB/RB cycle tabs, same keys vanilla uses for InventoryGui tab cycling
@@ -205,7 +220,7 @@ namespace Companions
             _companionFood     = companion.GetComponent<CompanionFood>();
             _companionHumanoid = companion.GetComponent<Humanoid>();
             _companionNview    = companion.GetComponent<ZNetView>();
-            _companionAI       = companion.GetComponent<MonsterAI>();
+            _companionAI       = companion.GetComponent<CompanionAI>();
             _companionHarvest  = companion.GetComponent<HarvestController>();
 
             CompanionsPlugin.Log.LogInfo(
@@ -240,7 +255,9 @@ namespace Companions
             if (_activeMode < CompanionSetup.ModeFollow || _activeMode > CompanionSetup.ModeStay)
                 _activeMode = CompanionSetup.ModeFollow;
 
+            _activeStance = _companion.GetCombatStance();
             RefreshActionButtons();
+            RefreshStanceButtons();
             RefreshModeText();
             RefreshAutoPickupButton();
             _invRefreshTimer = 0f;
@@ -563,6 +580,8 @@ namespace Companions
             _gatherOreBtn = BuildActionButton(parent, ref y, btnH, btnGap, "Gather Ore", CompanionSetup.ModeGatherOre);
             _stayBtn = BuildActionButton(parent, ref y, btnH, btnGap, "Stay Home", CompanionSetup.ModeStay);
             _setHomeBtn = BuildUnwiredActionButton(parent, ref y, btnH, btnGap, "Set Home");
+            if (_setHomeBtn != null)
+                _setHomeBtn.onClick.AddListener(OnSetHomeClicked);
             _autoPickupBtn = BuildActionButton(parent, ref y, btnH, btnGap, "Auto Pickup: OFF", -1);
             if (_autoPickupBtn != null)
             {
@@ -570,11 +589,41 @@ namespace Companions
                 _autoPickupBtn.onClick.AddListener(ToggleAutoPickup);
             }
 
+            // ── Combat Stance section ──
+            y -= 6f;
+            var stanceHeader = MakeText(parent, "StanceHeader", "Combat Stance",
+                font, 10f, GoldColor, TextAlignmentOptions.Center);
+            stanceHeader.fontStyle = FontStyles.Bold;
+            PlaceTopStretch(stanceHeader.GetComponent<RectTransform>(), ref y, 14f);
+            y -= 2f;
+
+            // 4 horizontal stance buttons
+            float stanceBtnH = 24f;
+            float stanceGap = 2f;
+            float totalW = parent.rect.width > 0 ? parent.rect.width : (PanelW - OuterPad * 2f - 4f);
+            float stanceBtnW = (totalW - stanceGap * 3f) / 4f;
+
+            var stanceRow = new GameObject("StanceRow", typeof(RectTransform));
+            stanceRow.transform.SetParent(parent, false);
+            var stanceRowRT = stanceRow.GetComponent<RectTransform>();
+            stanceRowRT.anchorMin = new Vector2(0f, 1f);
+            stanceRowRT.anchorMax = new Vector2(1f, 1f);
+            stanceRowRT.pivot = new Vector2(0.5f, 1f);
+            stanceRowRT.sizeDelta = new Vector2(0f, stanceBtnH);
+            stanceRowRT.anchoredPosition = new Vector2(0f, y);
+            y -= stanceBtnH + 2f;
+
+            _balancedBtn   = BuildStanceButton(stanceRow.transform, "BAL", 0, stanceBtnW, stanceBtnH, stanceGap, CompanionSetup.StanceBalanced);
+            _aggressiveBtn = BuildStanceButton(stanceRow.transform, "AGG", 1, stanceBtnW, stanceBtnH, stanceGap, CompanionSetup.StanceAggressive);
+            _defensiveBtn  = BuildStanceButton(stanceRow.transform, "DEF", 2, stanceBtnW, stanceBtnH, stanceGap, CompanionSetup.StanceDefensive);
+            _passiveBtn    = BuildStanceButton(stanceRow.transform, "PAS", 3, stanceBtnW, stanceBtnH, stanceGap, CompanionSetup.StancePassive);
+
             // Set up explicit gamepad navigation — d-pad / left stick cycles through buttons vertically.
             // Tab buttons intentionally excluded so LB/RB handle tab switching, not up/down.
             var btns = new Button[] {
                 _followBtn, _gatherWoodBtn, _gatherStoneBtn, _gatherOreBtn,
-                _stayBtn, _setHomeBtn, _autoPickupBtn
+                _stayBtn, _setHomeBtn, _autoPickupBtn,
+                _balancedBtn, _aggressiveBtn, _defensiveBtn, _passiveBtn
             };
             for (int i = 0; i < btns.Length; i++)
             {
@@ -1313,6 +1362,18 @@ namespace Companions
             }
         }
 
+        private void OnSetHomeClicked()
+        {
+            if (_companionAI == null || _companion == null) return;
+            EnsureCompanionOwnership();
+            _companionAI.SetPatrolPoint();
+            MessageHud.instance?.ShowMessage(
+                MessageHud.MessageType.Center,
+                "Home point set.");
+            CompanionsPlugin.Log.LogInfo(
+                $"[UI] Set home point at {_companion.transform.position}");
+        }
+
         private void RefreshActionButtons()
         {
             SetBtnHighlight(_followBtn,      _activeMode == CompanionSetup.ModeFollow);
@@ -1320,6 +1381,48 @@ namespace Companions
             SetBtnHighlight(_gatherStoneBtn, _activeMode == CompanionSetup.ModeGatherStone);
             SetBtnHighlight(_gatherOreBtn,   _activeMode == CompanionSetup.ModeGatherOre);
             SetBtnHighlight(_stayBtn,        _activeMode == CompanionSetup.ModeStay);
+        }
+
+        // ── Combat Stance UI ─────────────────────────────────────────────────
+
+        private Button BuildStanceButton(Transform parent, string label, int index,
+            float btnW, float btnH, float gap, int stanceValue)
+        {
+            var go = CreateTintedButton(parent, $"Stance_{label}", label);
+            if (go == null) return null;
+
+            var rt = go.GetComponent<RectTransform>();
+            rt.anchorMin = new Vector2(0f, 0f);
+            rt.anchorMax = new Vector2(0f, 1f);
+            rt.pivot = new Vector2(0f, 0.5f);
+            rt.sizeDelta = new Vector2(btnW, 0f);
+            rt.anchoredPosition = new Vector2(index * (btnW + gap), 0f);
+
+            var btn = go.GetComponent<Button>();
+            if (btn != null)
+                btn.onClick.AddListener(() => SetCombatStance(stanceValue));
+            return btn;
+        }
+
+        private void SetCombatStance(int stance)
+        {
+            if (stance < CompanionSetup.StanceBalanced || stance > CompanionSetup.StancePassive)
+                stance = CompanionSetup.StanceBalanced;
+
+            _activeStance = stance;
+            _companion?.SetCombatStance(stance);
+            RefreshStanceButtons();
+
+            string[] names = { "Balanced", "Aggressive", "Defensive", "Passive" };
+            CompanionsPlugin.Log.LogInfo($"[UI] SetCombatStance → {names[stance]}");
+        }
+
+        private void RefreshStanceButtons()
+        {
+            SetBtnHighlight(_balancedBtn,   _activeStance == CompanionSetup.StanceBalanced);
+            SetBtnHighlight(_aggressiveBtn, _activeStance == CompanionSetup.StanceAggressive);
+            SetBtnHighlight(_defensiveBtn,  _activeStance == CompanionSetup.StanceDefensive);
+            SetBtnHighlight(_passiveBtn,    _activeStance == CompanionSetup.StancePassive);
         }
 
         private void SetBtnHighlight(Button btn, bool active)

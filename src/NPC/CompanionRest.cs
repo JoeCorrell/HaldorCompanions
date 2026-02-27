@@ -12,7 +12,7 @@ namespace Companions
     {
         private ZNetView         _nview;
         private Character        _character;
-        private MonsterAI        _ai;
+        private CompanionAI      _ai;
         private CompanionStamina _stamina;
         private ZSyncAnimation   _zanim;
 
@@ -35,7 +35,7 @@ namespace Companions
         {
             _nview     = GetComponent<ZNetView>();
             _character = GetComponent<Character>();
-            _ai        = GetComponent<MonsterAI>();
+            _ai        = GetComponent<CompanionAI>();
             _stamina   = GetComponent<CompanionStamina>();
             _zanim     = GetComponent<ZSyncAnimation>();
         }
@@ -44,6 +44,12 @@ namespace Companions
         {
             if (_nview == null || !_nview.IsOwner()) return;
             if (_character == null || _character.IsDead()) return;
+
+            if (_isSleeping)
+            {
+                UpdateSleeping();
+                return;
+            }
 
             if (_isSitting)
             {
@@ -61,6 +67,10 @@ namespace Companions
         private void OnDestroy()
         {
             if (_stamina != null) _stamina.IsResting = false;
+
+            // Clear inBed ZDO if sleeping when destroyed
+            if (_isSleeping && _nview != null && _nview.GetZDO() != null)
+                _nview.GetZDO().Set(ZDOVars.s_inBed, false);
         }
 
         // ── Sit detection ──────────────────────────────────────────────────
@@ -99,6 +109,110 @@ namespace Companions
             StartSitting(fire);
         }
 
+        // ── Public API — directed from hotkey ─────────────────────────────
+
+        private bool _isDirected;   // true when sitting/sleeping was triggered by hotkey
+        private bool _isSleeping;   // true when lying down at a bed
+        private Bed  _bedTarget;
+
+        /// <summary>Direct the companion to sit near a fire (from hotkey).</summary>
+        public void DirectSit(GameObject fire)
+        {
+            if (fire == null) return;
+            if (_isSitting || _isSleeping) StopAll();
+
+            _isDirected = true;
+            StartSitting(fire);
+        }
+
+        /// <summary>Direct the companion to sleep at a bed (from hotkey).</summary>
+        public void DirectSleep(Bed bed)
+        {
+            if (bed == null) return;
+            if (_isSitting || _isSleeping) StopAll();
+
+            _isDirected = true;
+            _isSleeping = true;
+            _bedTarget  = bed;
+
+            CompanionsPlugin.Log.LogInfo(
+                $"[Rest] DirectSleep — lying down at bed \"{bed.name}\"");
+
+            // Stop movement and move to bed
+            if (_ai != null) _ai.SetFollowTarget(null);
+
+            // Position at the bed's spawn point
+            var spawnPoint = bed.GetComponent<Bed>()?.m_spawnPoint;
+            if (spawnPoint != null)
+            {
+                transform.position = spawnPoint.position;
+                transform.rotation = spawnPoint.rotation;
+            }
+            else
+            {
+                transform.position = bed.transform.position;
+                Vector3 dir = bed.transform.forward;
+                dir.y = 0f;
+                if (dir.sqrMagnitude > 0.01f)
+                    transform.rotation = Quaternion.LookRotation(dir);
+            }
+
+            // Play sleep/bed animation
+            if (_zanim != null) _zanim.SetTrigger("attach_bed");
+
+            // Set inBed on ZDO so companion doesn't block player sleep
+            if (_nview != null && _nview.GetZDO() != null)
+                _nview.GetZDO().Set(ZDOVars.s_inBed, true);
+
+            // Enable resting regen
+            if (_stamina != null) _stamina.IsResting = true;
+        }
+
+        /// <summary>Cancel any directed sit or sleep.</summary>
+        public void CancelDirected()
+        {
+            if (!_isDirected) return;
+            StopAll();
+        }
+
+        private void StopAll()
+        {
+            if (_isSitting) StopSitting();
+            if (_isSleeping) StopSleeping();
+            _isDirected = false;
+        }
+
+        private void StopSleeping()
+        {
+            _isSleeping = false;
+            _bedTarget  = null;
+
+            CompanionsPlugin.Log.LogInfo("[Rest] Stopped sleeping — resuming normal behavior");
+
+            if (_zanim != null) _zanim.SetTrigger("emote_stop");
+            if (_stamina != null) _stamina.IsResting = false;
+
+            // Clear inBed ZDO
+            if (_nview != null && _nview.GetZDO() != null)
+                _nview.GetZDO().Set(ZDOVars.s_inBed, false);
+
+            if (_ai == null) return;
+            int mode = _nview?.GetZDO()?.GetInt(
+                CompanionSetup.ActionModeHash, CompanionSetup.ModeFollow)
+                ?? CompanionSetup.ModeFollow;
+            if (mode == CompanionSetup.ModeStay)
+            {
+                _ai.SetFollowTarget(null);
+                _ai.SetPatrolPoint();
+            }
+            else if (Player.m_localPlayer != null)
+            {
+                _ai.SetFollowTarget(Player.m_localPlayer.gameObject);
+            }
+        }
+
+        // ── Core sitting logic ──────────────────────────────────────────────
+
         private void StartSitting(GameObject fire)
         {
             _isSitting   = true;
@@ -125,34 +239,9 @@ namespace Companions
 
         private void UpdateSitting()
         {
-            // Check if we should stop
             bool shouldStop = false;
 
-            var player = Player.m_localPlayer;
-            if (player == null) { shouldStop = true; }
-            else
-            {
-                int mode = _nview?.GetZDO()?.GetInt(
-                    CompanionSetup.ActionModeHash, CompanionSetup.ModeFollow)
-                    ?? CompanionSetup.ModeFollow;
-                if (mode != CompanionSetup.ModeFollow)
-                    shouldStop = true;
-
-                // Player stopped sitting (static members)
-                if (Player.LastEmote == null ||
-                    !Player.LastEmote.Equals("sit", StringComparison.OrdinalIgnoreCase) ||
-                    (DateTime.Now - Player.LastEmoteTime).TotalSeconds > 30.0)
-                    shouldStop = true;
-
-                // Player moved away
-                if (!shouldStop)
-                {
-                    float dist = Vector3.Distance(transform.position, player.transform.position);
-                    if (dist > PlayerRange * 1.5f) shouldStop = true;
-                }
-            }
-
-            // Fire went out or destroyed
+            // Fire went out or destroyed — always check
             if (_fireTarget == null || !_fireTarget) shouldStop = true;
             else
             {
@@ -160,8 +249,36 @@ namespace Companions
                 if (fp != null && !fp.IsBurning()) shouldStop = true;
             }
 
-            // Enemy appeared
+            // Enemy appeared — always check
             if (HasEnemyNearby()) shouldStop = true;
+
+            // Organic sits (not directed) also check player state
+            if (!_isDirected && !shouldStop)
+            {
+                var player = Player.m_localPlayer;
+                if (player == null) { shouldStop = true; }
+                else
+                {
+                    int mode = _nview?.GetZDO()?.GetInt(
+                        CompanionSetup.ActionModeHash, CompanionSetup.ModeFollow)
+                        ?? CompanionSetup.ModeFollow;
+                    if (mode != CompanionSetup.ModeFollow)
+                        shouldStop = true;
+
+                    // Player stopped sitting
+                    if (Player.LastEmote == null ||
+                        !Player.LastEmote.Equals("sit", StringComparison.OrdinalIgnoreCase) ||
+                        (DateTime.Now - Player.LastEmoteTime).TotalSeconds > 30.0)
+                        shouldStop = true;
+
+                    // Player moved away
+                    if (!shouldStop)
+                    {
+                        float dist = Vector3.Distance(transform.position, player.transform.position);
+                        if (dist > PlayerRange * 1.5f) shouldStop = true;
+                    }
+                }
+            }
 
             if (shouldStop)
             {
@@ -181,10 +298,41 @@ namespace Companions
             }
         }
 
+        private void UpdateSleeping()
+        {
+            // Enemy appeared — wake up
+            if (HasEnemyNearby())
+            {
+                StopSleeping();
+                _isDirected = false;
+                return;
+            }
+
+            // Bed destroyed
+            if (_bedTarget == null || !_bedTarget)
+            {
+                StopSleeping();
+                _isDirected = false;
+                return;
+            }
+
+            // Heal while sleeping (same rate as sitting)
+            _healTimer -= Time.deltaTime;
+            if (_healTimer <= 0f)
+            {
+                _healTimer = HealInterval;
+                float maxHp = _character.GetMaxHealth();
+                float curHp = _character.GetHealth();
+                if (curHp < maxHp)
+                    _character.Heal(HealRate * HealInterval, true);
+            }
+        }
+
         private void StopSitting()
         {
-            _isSitting  = false;
-            _fireTarget = null;
+            _isSitting   = false;
+            _fireTarget  = null;
+            _isDirected  = false;
 
             CompanionsPlugin.Log.LogInfo("[Rest] Stopped sitting — resuming normal behavior");
 

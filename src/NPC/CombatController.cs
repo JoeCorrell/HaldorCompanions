@@ -38,11 +38,11 @@ namespace Companions
         private const float ProjectileDetectRange = 20f;  // detect incoming arrows/spells within this range
         private const float ProjectileScanInterval = 0.25f; // scan frequency for projectiles
         private const float BlockGrace           = 0.3f;  // hold block after last threat clears
-        private const float BlockMaxHold        = 0.5f;  // max time to hold block before forced counter
+        private const float BlockSafetyCap     = 3.0f;  // safety cap: force counter after 3s continuous block
         private const float CounterWindowDuration = 0.8f; // post-parry attack window (no blocking allowed)
 
         // ── Components ──────────────────────────────────────────────────────
-        private MonsterAI        _ai;
+        private CompanionAI      _ai;
         private Humanoid         _humanoid;
         private Character        _character;
         private CompanionSetup   _setup;
@@ -74,10 +74,15 @@ namespace Companions
 
         // ── Blocking / parry state ─────────────────────────────────────────
         /// <summary>
-        /// When true, MonsterAI.DoAttack is suppressed via Harmony patch.
+        /// When true, CompanionAI.DoAttack is suppressed.
         /// Set when the companion should be blocking instead of attacking.
+        /// Delegates to CompanionAI.SuppressAttack directly.
         /// </summary>
-        internal bool SuppressAttack { get; private set; }
+        private bool SuppressAttack
+        {
+            get => _ai != null && _ai.SuppressAttack;
+            set { if (_ai != null) _ai.SuppressAttack = value; }
+        }
 
         private readonly HashSet<int> _activeAttackers = new HashSet<int>();
         private float _blockGraceTimer;
@@ -87,6 +92,15 @@ namespace Companions
         private bool  _lastProjectileThreat;
         private bool  _wasBlocking;         // track transitions for counter-attack window
 
+        // ── Dodge state ──────────────────────────────────────────────────────
+        private float _dodgeCooldown;
+        private float _dodgeDuration;
+        private Vector3 _dodgeDirection;
+        private bool _isDodging;
+        private const float DodgeCooldownTime = 2.5f;
+        private const float DodgeDurationTime = 0.3f;
+        private const float DodgeStaminaCost  = 15f;
+
         // Per-phase periodic logging timers
         private float _rangedLogTimer;    // log bow draw progress
         private float _retreatLogTimer;   // log retreat status
@@ -95,7 +109,7 @@ namespace Companions
 
         private void Awake()
         {
-            _ai       = GetComponent<MonsterAI>();
+            _ai       = GetComponent<CompanionAI>();
             _humanoid = GetComponent<Humanoid>();
             _character = GetComponent<Character>();
             _setup    = GetComponent<CompanionSetup>();
@@ -127,6 +141,25 @@ namespace Companions
             _powerAttackTimer = Mathf.Max(0f, _powerAttackTimer - dt);
             _bowFireCooldown = Mathf.Max(0f, _bowFireCooldown - dt);
             _abandonCooldown = Mathf.Max(0f, _abandonCooldown - dt);
+            _dodgeCooldown = Mathf.Max(0f, _dodgeCooldown - dt);
+
+            // Read combat stance
+            int stance = _setup != null ? _setup.GetCombatStance() : CompanionSetup.StanceBalanced;
+
+            // Active dodge — supersedes all other combat logic
+            if (_isDodging)
+            {
+                _dodgeDuration -= dt;
+                if (_dodgeDuration <= 0f)
+                {
+                    _isDodging = false;
+                }
+                else
+                {
+                    _ai.PushDirection(_dodgeDirection, true);
+                    return;
+                }
+            }
 
             // Mode check — in gather modes, only allow self-defense combat
             int mode = _nview.GetZDO().GetInt(CompanionSetup.ActionModeHash,
@@ -137,7 +170,7 @@ namespace Companions
             if (isGatherMode)
             {
                 // In gather mode: only engage if a nearby enemy is actively targeting us
-                Character gatherTarget = ReflectionHelper.GetTargetCreature(_ai);
+                Character gatherTarget = _ai.m_targetCreature;
                 bool nearbyThreat = gatherTarget != null && !gatherTarget.IsDead()
                     && gatherTarget.GetHealth() > 0f
                     && Vector3.Distance(transform.position, gatherTarget.transform.position) < 10f;
@@ -172,8 +205,8 @@ namespace Companions
             var panel = CompanionInteractPanel.Instance;
             if (panel != null && panel.IsVisible && panel.CurrentCompanion == _setup) return;
 
-            // Get current target from MonsterAI
-            Character target = ReflectionHelper.GetTargetCreature(_ai);
+            // Get current target from CompanionAI
+            Character target = _ai.m_targetCreature;
 
             // ── Heartbeat logging (less frequent when idle) ──
             _heartbeatTimer -= dt;
@@ -240,7 +273,7 @@ namespace Companions
                         $"target=\"{target.m_name}\" dist={Vector3.Distance(transform.position, target.transform.position):F1} " +
                         $"inAttack={_character.InAttack()} — clearing target");
                     AbandonTarget(target);
-                    ReflectionHelper.ClearAllTargets(_ai);
+                    _ai.ClearTargets();
                     ExitCombat("stuck timeout");
                     _stuckTimer = 0f;
                     return;
@@ -252,9 +285,21 @@ namespace Companions
             }
             _lastStuckPos = transform.position;
 
-            // ── Retreat check (highest priority) ──
+            // ── Retreat check (highest priority, stance-aware thresholds) ──
             float healthPct = _character.GetHealthPercentage();
             float staminaPct = _stamina != null ? _stamina.GetStaminaPercentage() : 1f;
+
+            // Stance-modified retreat thresholds
+            float retreatHpPct, retreatStamPct;
+            switch (stance)
+            {
+                case CompanionSetup.StanceAggressive:
+                    retreatHpPct = 0.15f; retreatStamPct = 0.05f; break;
+                case CompanionSetup.StanceDefensive:
+                    retreatHpPct = 0.45f; retreatStamPct = 0.25f; break;
+                default:
+                    retreatHpPct = HealthRetreatPct; retreatStamPct = StaminaRetreatPct; break;
+            }
 
             if (_phase == CombatPhase.Retreat)
             {
@@ -266,16 +311,16 @@ namespace Companions
                 }
                 else
                 {
-                    UpdateRetreat(target, dt);
+                    UpdateRetreat(target, dt, stance);
                     return;
                 }
             }
-            else if (healthPct < HealthRetreatPct || staminaPct < StaminaRetreatPct)
+            else if (healthPct < retreatHpPct || staminaPct < retreatStamPct)
             {
                 TransitionTo(CombatPhase.Retreat);
                 CompanionsPlugin.Log.LogInfo(
-                    $"[Combat] Entering RETREAT — hp={healthPct:P0} stam={staminaPct:P0}");
-                UpdateRetreat(target, dt);
+                    $"[Combat] Entering RETREAT — hp={healthPct:P0} stam={staminaPct:P0} stance={stance}");
+                UpdateRetreat(target, dt, stance);
                 return;
             }
 
@@ -294,7 +339,7 @@ namespace Companions
                     CompanionsPlugin.Log.LogInfo(
                         $"[Combat] Skipping abandoned target \"{target.m_name}\" — cooldown={_abandonCooldown:F0}s remaining");
                 }
-                ReflectionHelper.ClearAllTargets(_ai);
+                _ai.ClearTargets();
                 if (_phase != CombatPhase.Idle) ExitCombat("target on abandon cooldown");
                 return;
             }
@@ -316,7 +361,7 @@ namespace Companions
                     CompanionsPlugin.Log.LogInfo(
                         $"[Combat] Ignoring fleeing animal \"{target.m_name}\" — no bow+arrows");
                     AbandonTarget(target);
-                    ReflectionHelper.ClearAllTargets(_ai);
+                    _ai.ClearTargets();
                     if (_phase != CombatPhase.Idle) ExitCombat("no bow for animal");
                 }
                 return;
@@ -334,7 +379,7 @@ namespace Companions
                     RestoreMeleeLoadout();
                     TransitionTo(CombatPhase.Melee);
                     EnsureShieldEquipped();
-                    UpdateMelee(target, dt);
+                    UpdateMelee(target, dt, stance);
                 }
                 else
                 {
@@ -360,7 +405,7 @@ namespace Companions
                         TransitionTo(CombatPhase.Melee);
                         EnsureShieldEquipped();
                     }
-                    UpdateMelee(target, dt);
+                    UpdateMelee(target, dt, stance);
                 }
             }
         }
@@ -466,7 +511,7 @@ namespace Companions
         //  Melee Combat — defensive-first: block threats, then counter-attack
         // ════════════════════════════════════════════════════════════════════
 
-        private void UpdateMelee(Character target, float dt)
+        private void UpdateMelee(Character target, float dt, int stance)
         {
             float dist = Vector3.Distance(transform.position, target.transform.position);
             var weapon = _humanoid.GetCurrentWeapon();
@@ -475,6 +520,8 @@ namespace Companions
             // ── 1. Threat assessment — scan for enemies winding up attacks + projectiles ──
             bool anyMeleeThreats = false;
             bool newThreatDetected = false;
+            Character closestAttacker = null;
+            float closestAttackerDist = float.MaxValue;
 
             foreach (Character c in Character.GetAllCharacters())
             {
@@ -486,6 +533,11 @@ namespace Companions
                 if (c.InAttack())
                 {
                     anyMeleeThreats = true;
+                    if (d < closestAttackerDist)
+                    {
+                        closestAttacker = c;
+                        closestAttackerDist = d;
+                    }
                     int cid = c.GetInstanceID();
                     if (!_activeAttackers.Contains(cid))
                     {
@@ -503,6 +555,47 @@ namespace Companions
                 }
             }
 
+            // ── 1b. Dodge check — before block decision ──
+            if (_dodgeCooldown <= 0f && !_isDodging && !_character.InAttack() &&
+                !ReflectionHelper.GetBlocking(_character) &&
+                stance != CompanionSetup.StanceAggressive &&
+                closestAttacker != null)
+            {
+                // Check if attacker is facing us
+                Vector3 attackerToUs = (transform.position - closestAttacker.transform.position).normalized;
+                float facingDot = Vector3.Dot(closestAttacker.transform.forward, attackerToUs);
+                bool hasStamina = _stamina == null || _stamina.GetStaminaPercentage() > 0.1f;
+
+                if (facingDot > 0.5f && hasStamina)
+                {
+                    // Perpendicular dodge direction
+                    Vector3 perp = Vector3.Cross(closestAttacker.transform.forward, Vector3.up).normalized;
+
+                    // Pick side: toward player if possible
+                    var followObj = _ai.GetFollowTarget();
+                    if (followObj != null)
+                    {
+                        Vector3 toPlayer = (followObj.transform.position - transform.position).normalized;
+                        if (Vector3.Dot(toPlayer, -perp) > Vector3.Dot(toPlayer, perp))
+                            perp = -perp;
+                    }
+
+                    _dodgeDirection = perp;
+                    _isDodging = true;
+                    _dodgeDuration = DodgeDurationTime;
+                    float cooldown = stance == CompanionSetup.StanceDefensive
+                        ? DodgeCooldownTime * 0.6f
+                        : DodgeCooldownTime;
+                    _dodgeCooldown = cooldown;
+                    _stamina?.UseStamina(DodgeStaminaCost);
+
+                    CompanionsPlugin.Log.LogInfo(
+                        $"[Combat] DODGE — attacker=\"{closestAttacker.m_name}\" " +
+                        $"dist={closestAttackerDist:F1} cd={cooldown:F1}s");
+                    return; // skip block/attack this frame
+                }
+            }
+
             // Remove stale attacker IDs (enemies no longer InAttack)
             if (_activeAttackers.Count > 0)
                 _activeAttackers.RemoveWhere(id => !IsEnemyStillAttacking(id));
@@ -513,42 +606,79 @@ namespace Companions
             bool anyThreats = anyMeleeThreats || projectileThreat;
 
             // ── 2. Block decision ──
-            // During the counter-attack window the companion MUST swing, not block.
-            // This prevents permanent blocking when surrounded by many enemies where
-            // at least one is always InAttack().
+            // Hold shield while attackers are actively swinging (InAttack).
+            // Drop shield AFTER they finish + grace period → enter counter window.
+            // This ensures the shield is up when the hit lands so BlockAttack fires.
             bool hasShield = HasBlocker();
             bool inCounterWindow = _counterWindow > 0f;
 
-            if (anyThreats)
+            // Grace timer: keep blocking briefly after last attacker finishes swing
+            if (anyMeleeThreats || projectileThreat)
                 _blockGraceTimer = BlockGrace;
             else
                 _blockGraceTimer = Mathf.Max(0f, _blockGraceTimer - dt);
 
-            bool wantBlock = hasShield && (anyThreats || _blockGraceTimer > 0f);
+            // We want to block if threats active OR grace period still running
+            bool wantBlock = hasShield && (anyMeleeThreats || projectileThreat || _blockGraceTimer > 0f);
 
-            // Force-end block after BlockMaxHold to create a parry→swing rhythm.
-            // The hold timer is long enough for the parry hit to register, then the
-            // companion drops block and swings during the counter window.
+            // Safety cap: if blocking for > 3s continuously, handle it.
+            // When threats are still active, DON'T drop shield — just reset the
+            // hold timer and parry window so the companion keeps blocking through
+            // chained enemy attacks. Only force a counter-attack window when no
+            // threats remain (edge case: grace timer keeping block alive too long).
             if (_wasBlocking)
             {
                 _blockHoldTimer += dt;
-                if (_blockHoldTimer >= BlockMaxHold)
+                if (_blockHoldTimer >= BlockSafetyCap)
                 {
-                    // Force transition to counter-attack
-                    ReflectionHelper.TrySetBlocking(_character, false);
-                    _wasBlocking = false;
-                    _blockHoldTimer = 0f;
-                    _activeAttackers.Clear();
-                    SuppressAttack = false;
-                    _counterWindow = CounterWindowDuration;
-                    inCounterWindow = true;
+                    if (anyMeleeThreats || projectileThreat)
+                    {
+                        // Threats still active — keep blocking, reset timers for
+                        // fresh parry window. Dropping shield here caused the
+                        // companion to counter-attack while enemies were mid-swing.
+                        _blockHoldTimer = 0f;
+                        ReflectionHelper.TrySetBlockTimer(_humanoid, 0f);
+                        CompanionsPlugin.Log.LogInfo(
+                            $"[Combat] Block SAFETY RESET ({BlockSafetyCap:F1}s) — threats still active, " +
+                            $"continuing to block (threats={_activeAttackers.Count})");
+                    }
+                    else
+                    {
+                        // No threats — safe to counter-attack
+                        ReflectionHelper.TrySetBlocking(_character, false);
+                        _wasBlocking = false;
+                        _blockHoldTimer = 0f;
+                        _activeAttackers.Clear();
+                        SuppressAttack = false;
+                        _counterWindow = CounterWindowDuration;
+                        inCounterWindow = true;
 
-                    CompanionsPlugin.Log.LogInfo(
-                        $"[Combat] Block MAX HOLD ({BlockMaxHold:F1}s) — forced counter-attack window");
+                        CompanionsPlugin.Log.LogInfo(
+                            $"[Combat] Block SAFETY CAP ({BlockSafetyCap:F1}s) — no threats, counter-attack window");
+                    }
                 }
             }
 
+            // Natural block end: threats cleared AND grace expired → counter window
+            if (_wasBlocking && !wantBlock)
+            {
+                ReflectionHelper.TrySetBlocking(_character, false);
+                _wasBlocking = false;
+                _blockHoldTimer = 0f;
+                _activeAttackers.Clear();
+                SuppressAttack = false;
+                _counterWindow = CounterWindowDuration;
+                inCounterWindow = true;
+
+                CompanionsPlugin.Log.LogInfo(
+                    $"[Combat] Block ended (threats cleared) — entering {CounterWindowDuration:F1}s counter window");
+            }
+
             bool shouldBlock = wantBlock && !inCounterWindow;
+
+            // Aggressive: never block
+            if (stance == CompanionSetup.StanceAggressive)
+                shouldBlock = false;
 
             if (shouldBlock)
             {
@@ -556,22 +686,37 @@ namespace Companions
 
                 if (!_character.InAttack())
                 {
+                    bool wasAlreadyBlocking = _wasBlocking;
                     ReflectionHelper.TrySetBlocking(_character, true);
                     _wasBlocking = true;
 
                     // Reset block timer for fresh parry window when a new attacker appears
                     if (newThreatDetected)
+                    {
                         ReflectionHelper.TrySetBlockTimer(_humanoid, 0f);
+                        CompanionsPlugin.Log.LogInfo(
+                            $"[Combat] BLOCK — new threat detected, parry timer reset " +
+                            $"(hold={_blockHoldTimer:F2}s threats={_activeAttackers.Count})");
+                    }
+                    else if (!wasAlreadyBlocking)
+                    {
+                        ReflectionHelper.TrySetBlockTimer(_humanoid, 0f);
+                        CompanionsPlugin.Log.LogInfo(
+                            $"[Combat] BLOCK RAISED — shield up, parry timer reset " +
+                            $"(threats={_activeAttackers.Count})");
+                    }
                 }
 
                 return; // Don't proceed to attack logic while blocking
             }
 
-            // ── 3. Not blocking — clear block state ──
+            // ── 3. Not blocking — clear block state (safety fallback) ──
             SuppressAttack = false;
 
             if (_wasBlocking)
             {
+                // Safety: should have been cleared above, but handle edge cases
+                // (e.g., shield broke mid-block)
                 ReflectionHelper.TrySetBlocking(_character, false);
                 _wasBlocking = false;
                 _blockHoldTimer = 0f;
@@ -579,12 +724,45 @@ namespace Companions
                 _counterWindow = CounterWindowDuration;
 
                 CompanionsPlugin.Log.LogInfo(
-                    $"[Combat] Block ended — entering {CounterWindowDuration:F1}s counter-attack window");
+                    $"[Combat] Block ended (fallback) — entering {CounterWindowDuration:F1}s counter-attack window");
             }
 
             // ── 4. Counter-attack window — post-parry, companion swings freely ──
             if (_counterWindow > 0f)
             {
+                // Threats reappeared during counter window → cancel and re-block
+                // immediately instead of attacking into enemy swings.
+                if (wantBlock && !_character.InAttack())
+                {
+                    _counterWindow = 0f;
+                    SuppressAttack = true;
+                    ReflectionHelper.TrySetBlocking(_character, true);
+                    _wasBlocking = true;
+                    _blockHoldTimer = 0f;
+                    ReflectionHelper.TrySetBlockTimer(_humanoid, 0f);
+                    CompanionsPlugin.Log.LogInfo(
+                        $"[Combat] Counter window CANCELLED — threats reappeared, re-blocking " +
+                        $"(threats={_activeAttackers.Count})");
+                    return;
+                }
+
+                // Close the gap after parry pushback — MoveTowards at full run speed
+                // bypasses blocking move-speed penalty and pathfinding delay.
+                if (dist > weaponRange && !_character.InAttack())
+                {
+                    Vector3 dir = (target.transform.position - transform.position);
+                    dir.y = 0f;
+                    if (dir.sqrMagnitude > 0.01f)
+                        _ai.PushDirection(dir.normalized, true);
+
+                    // Don't burn counter timer while chasing a staggered target —
+                    // give the companion time to close the gap and deliver the hit.
+                    if (target.IsStaggering())
+                    {
+                        _counterWindow = Mathf.Max(_counterWindow, CounterWindowDuration * 0.5f);
+                    }
+                }
+
                 _counterWindow -= dt;
 
                 if (target.IsStaggering() && dist <= weaponRange + 0.5f &&
@@ -601,10 +779,10 @@ namespace Companions
                             $"dist={dist:F1} range={weaponRange:F1}");
                     }
                 }
-                // Normal attacks are handled by MonsterAI.DoAttack (SuppressAttack=false)
+                // Normal attacks are handled by CompanionAI.DoAttack (SuppressAttack=false)
             }
 
-            // ── 5. Normal attacks handled by MonsterAI.DoAttack (SuppressAttack=false) ──
+            // ── 5. Normal attacks handled by CompanionAI.DoAttack (SuppressAttack=false) ──
             // Also fire power attacks on staggered targets outside counter window
             if (_counterWindow <= 0f && target.IsStaggering() && dist <= weaponRange + 0.5f &&
                 _powerAttackTimer <= 0f && _attackCooldownTimer <= 0f)
@@ -612,7 +790,9 @@ namespace Companions
                 if (weapon != null && weapon.HaveSecondaryAttack())
                 {
                     _humanoid.StartAttack(target, true);
-                    _powerAttackTimer = PowerAttackCooldown;
+                    float paCooldown = stance == CompanionSetup.StanceAggressive
+                        ? PowerAttackCooldown * 0.5f : PowerAttackCooldown;
+                    _powerAttackTimer = paCooldown;
                     _attackCooldownTimer = AttackCooldown;
                     CompanionsPlugin.Log.LogInfo(
                         $"[Combat] POWER ATTACK on staggered \"{target.m_name}\" " +
@@ -701,7 +881,7 @@ namespace Companions
 
         // ════════════════════════════════════════════════════════════════════
         //  Ranged Combat — manual draw timer + fire (vanilla ChargeStart
-        //  doesn't work for player bows on MonsterAI creatures)
+        //  doesn't work for player bows on AI creatures)
         // ════════════════════════════════════════════════════════════════════
 
         private void UpdateRanged(Character target, float dt)
@@ -714,7 +894,7 @@ namespace Companions
                 CompanionsPlugin.Log.LogInfo(
                     $"[Combat] Target \"{target.m_name}\" out of bow range ({dist:F1} > {BowMaxRange}) — abandoning");
                 AbandonTarget(target);
-                ReflectionHelper.ClearAllTargets(_ai);
+                _ai.ClearTargets();
                 ExitCombat("target out of bow range");
                 return;
             }
@@ -725,17 +905,17 @@ namespace Companions
             // Aim directly at target center mass.
             // Velocity lead is intentionally omitted: draw% on NPC-wielded player bows
             // is unknown, so arrow speed is unpredictable — lead only worsens accuracy.
-            // More importantly, a lead-offset aimPoint diverges from where vanilla MonsterAI
+            // More importantly, a lead-offset aimPoint diverges from where vanilla BaseAI
             // rotates to face the target, causing IsLookingAt to always return false.
             Vector3 aimPoint = target.GetCenterPoint();
 
             // Face target and stop to aim
-            ReflectionHelper.LookAt(_ai, aimPoint);
+            _ai.LookAtPoint( aimPoint);
             _ai.StopMoving();
 
             // 30° tolerance — generous enough for NPC rotation lag while still
             // ensuring the shot is in roughly the right direction.
-            bool onTarget = ReflectionHelper.IsLookingAt(_ai, aimPoint, 30f);
+            bool onTarget = _ai.IsLookingAtPoint( aimPoint, 30f);
 
             // Draw timer — only accumulates while facing target
             if (onTarget && _bowFireCooldown <= 0f)
@@ -781,14 +961,33 @@ namespace Companions
         //  Retreat + Consumables
         // ════════════════════════════════════════════════════════════════════
 
-        private void UpdateRetreat(Character target, float dt)
+        private void UpdateRetreat(Character target, float dt, int stance)
         {
             _retreatTimer += dt;
 
-            // Flee away from target
-            Vector3 awayDir = (transform.position - target.transform.position).normalized;
-            Vector3 fleePoint = transform.position + awayDir * RetreatDistance;
-            ReflectionHelper.TryMoveTo(_ai, dt, fleePoint, 2f, true);
+            // Smart retreat — blend toward player instead of random direction
+            Vector3 myPos = transform.position;
+            Vector3 targetPos = target.transform.position;
+            Vector3 awayDir = (myPos - targetPos).normalized;
+
+            var player = Player.m_localPlayer;
+            if (player != null)
+            {
+                Vector3 toPlayer = (player.transform.position - myPos).normalized;
+                float enemyToPlayer = Vector3.Distance(targetPos, player.transform.position);
+                float dotCheck = Vector3.Dot(toPlayer, awayDir);
+
+                // Only blend toward player if player isn't behind the enemy
+                // and enemy isn't too close to the player
+                if (dotCheck > -0.5f && enemyToPlayer > 5f)
+                {
+                    float playerWeight = stance == CompanionSetup.StanceDefensive ? 0.85f : 0.7f;
+                    awayDir = (toPlayer * playerWeight + awayDir * (1f - playerWeight)).normalized;
+                }
+            }
+
+            Vector3 fleePoint = myPos + awayDir * RetreatDistance;
+            _ai.MoveToPoint( dt, fleePoint, 2f, true);
 
             // Periodic retreat log
             _retreatLogTimer -= dt;
@@ -833,7 +1032,7 @@ namespace Companions
             {
                 CompanionsPlugin.Log.LogWarning(
                     $"[Combat] Retreat timeout ({_retreatTimer:F1}s) — disengaging from \"{target.m_name}\"");
-                ReflectionHelper.ClearAllTargets(_ai);
+                _ai.ClearTargets();
                 ExitCombat("retreat timeout");
                 _retreatTimer = 0f;
             }
@@ -944,12 +1143,12 @@ namespace Companions
             // Clear any lingering target reference — dead enemies can hold m_targetCreature
             // after IsDead() becomes true, keeping CombatController and HarvestController
             // stuck in self-defense until the ZDO is removed.
-            ReflectionHelper.ClearAllTargets(_ai);
+            _ai.ClearTargets();
 
             // Clear alert state — m_alerted persists after enemies die and causes
-            // MonsterAI.UpdateAI to override movement with alert-scanning behavior,
+            // CompanionAI.UpdateAI to override movement with alert-scanning behavior,
             // preventing the companion from reaching harvest targets.
-            ReflectionHelper.SetAlerted(_ai, false);
+            _ai.SetAlerted(false);
 
             // Stop charging if active
             if (_ai.IsCharging())
@@ -974,6 +1173,8 @@ namespace Companions
             _wasBlocking = false;
             if (ReflectionHelper.GetBlocking(_character))
                 ReflectionHelper.TrySetBlocking(_character, false);
+
+            _isDodging = false;
 
             TransitionTo(CombatPhase.Idle);
             _stuckTimer = 0f;
@@ -1061,6 +1262,7 @@ namespace Companions
             CompanionsPlugin.Log.LogInfo($"[Combat] Phase: {_phase} → {newPhase}");
             _phase = newPhase;
             if (newPhase != CombatPhase.Retreat) _retreatTimer = 0f;
+            _isDodging = false;
 
             // Clear blocking when leaving melee for any other phase
             if (newPhase != CombatPhase.Melee)

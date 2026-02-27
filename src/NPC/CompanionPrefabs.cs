@@ -51,9 +51,9 @@ namespace Companions
             var humanoid = go.AddComponent<Humanoid>();
             SetupHumanoid(humanoid, zNetScene, def);
 
-            // MonsterAI — companion-tuned (follows player, attacks enemies)
-            var ai = go.AddComponent<MonsterAI>();
-            SetupMonsterAI(ai);
+            // CompanionAI — custom BaseAI subclass (follows player, attacks enemies)
+            var ai = go.AddComponent<CompanionAI>();
+            SetupCompanionAI(ai);
 
             // ZNetView
             var nview = go.GetComponent<ZNetView>();
@@ -178,61 +178,42 @@ namespace Companions
             };
         }
 
-        private static void SetupMonsterAI(MonsterAI ai)
+        private static void SetupCompanionAI(CompanionAI ai)
         {
-            CompanionsPlugin.Log.LogInfo("[CompanionPrefabs] Setting up MonsterAI...");
-            var b = (BaseAI)ai;
+            CompanionsPlugin.Log.LogInfo("[CompanionPrefabs] Setting up CompanionAI...");
 
-            b.m_viewRange            = 30f;
-            b.m_viewAngle            = 90f;
-            b.m_hearRange            = 9999f;
-            b.m_mistVision           = true;
-            b.m_alertedEffects       = new EffectList();
-            b.m_idleSound            = new EffectList();
-            b.m_idleSoundInterval    = 10f;
-            b.m_idleSoundChance      = 0f;
+            // BaseAI perception
+            ai.m_viewRange            = 30f;
+            ai.m_viewAngle            = 90f;
+            ai.m_hearRange            = 9999f;
+            ai.m_mistVision           = true;
+            ai.m_alertedEffects       = new EffectList();
+            ai.m_idleSound            = new EffectList();
+            ai.m_idleSoundInterval    = 10f;
+            ai.m_idleSoundChance      = 0f;
 
             // Pathfinding — m_moveMinAngle=10 lets companion start moving while
             // still turning (was 90f which froze movement until fully rotated).
             // m_jumpInterval=0 matches vanilla — no creature auto-jumps.
-            b.m_pathAgentType        = Pathfinding.AgentType.Humanoid;
-            b.m_moveMinAngle         = 10f;
-            b.m_smoothMovement       = true;
-            b.m_serpentMovement      = false;
-            b.m_jumpInterval         = 0f;
-            b.m_randomCircleInterval = 2f;
-            b.m_randomMoveInterval   = 9999f;
-            b.m_randomMoveRange      = 0f;
-            b.m_avoidFire            = false;
-            b.m_afraidOfFire         = false;
-            b.m_avoidWater           = true;   // vanilla default — humanoids avoid water
-            b.m_aggravatable         = false;
-
-            // MonsterAI — match vanilla defaults where possible so native AI works well.
-            // Fulings use all defaults (set in Unity editor, not code). The key is to
-            // NOT override values that vanilla handles correctly on its own.
-            ai.m_alertRange                        = 9999f; // vanilla default — always alert for companions
-            ai.m_fleeIfHurtWhenTargetCantBeReached = true;  // vanilla default — flee gets unstuck
-            ai.m_fleeIfNotAlerted                  = false;
-            ai.m_fleeIfLowHealth                   = 0f;
-            ai.m_circulateWhileCharging            = true;
-            ai.m_enableHuntPlayer                  = false;
-            ai.m_attackPlayerObjects               = false;
-            ai.m_privateAreaTriggerTreshold        = 1;
-            ai.m_interceptTimeMax                  = 2f;
-            ai.m_interceptTimeMin                  = 0f;
-            ai.m_maxChaseDistance                  = 0f;    // vanilla default 0 = unlimited chase
-            ai.m_minAttackInterval                 = 0f;    // vanilla default 0 = weapon controls timing
-            ai.m_circleTargetInterval              = 0f;    // vanilla default 0 = no pause between circles
-            ai.m_circleTargetDuration              = 5f;    // vanilla default
-            ai.m_circleTargetDistance              = 10f;   // vanilla default
+            ai.m_pathAgentType        = Pathfinding.AgentType.Humanoid;
+            ai.m_moveMinAngle         = 10f;
+            ai.m_smoothMovement       = true;
+            ai.m_serpentMovement      = false;
+            ai.m_jumpInterval         = 0f;
+            ai.m_randomCircleInterval = 2f;
+            ai.m_randomMoveInterval   = 9999f;
+            ai.m_randomMoveRange      = 0f;
+            ai.m_avoidFire            = false;
+            ai.m_afraidOfFire         = false;
+            ai.m_avoidWater           = true;   // vanilla default — humanoids avoid water
+            ai.m_aggravatable         = false;
 
             CompanionsPlugin.Log.LogInfo(
-                $"[CompanionPrefabs] MonsterAI configured: pathAgent=Humanoid " +
-                $"moveMinAngle={b.m_moveMinAngle} smoothMove={b.m_smoothMovement} " +
-                $"viewRange={b.m_viewRange} hearRange={b.m_hearRange} " +
-                $"randomMoveInterval={b.m_randomMoveInterval} " +
-                $"randomMoveRange={b.m_randomMoveRange}");
+                $"[CompanionPrefabs] CompanionAI configured: pathAgent=Humanoid " +
+                $"moveMinAngle={ai.m_moveMinAngle} smoothMove={ai.m_smoothMovement} " +
+                $"viewRange={ai.m_viewRange} hearRange={ai.m_hearRange} " +
+                $"randomMoveInterval={ai.m_randomMoveInterval} " +
+                $"randomMoveRange={ai.m_randomMoveRange}");
         }
 
         private static EffectList.EffectData[] BuildEffects(ZNetScene scene, params string[] names)

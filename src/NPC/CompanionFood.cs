@@ -33,22 +33,29 @@ namespace Companions
 
         private FoodEffect[] _foods = new FoodEffect[MaxFoodSlots];
 
-        private ZNetView       _nview;
-        private Humanoid       _humanoid;
-        private Character      _character;
-        private SEMan          _seman;
-        private ZSyncAnimation _zanim;
-        private bool           _initialized;
+        private ZNetView        _nview;
+        private Humanoid        _humanoid;
+        private Character       _character;
+        private SEMan           _seman;
+        private ZSyncAnimation  _zanim;
+        private CompanionStamina _stamina;
+        private bool            _initialized;
 
         private float _saveTimer;
         private float _consumeTimer;
         private float _remoteSyncTimer;
         private float _foodRegenTimer;
+        private float _meadCheckTimer;
+        private float _meadCooldownTimer;
 
         private const float SaveInterval         = 5f;
         private const float ConsumeCheckInterval = 1f;
         private const float RemoteSyncInterval   = 0.5f;
         private const float FoodRegenInterval    = 10f;
+        private const float MeadCheckInterval    = 2f;
+        private const float MeadCooldown         = 10f;
+        private const float HealthMeadThreshold  = 0.5f;   // use when HP < 50%
+        private const float StaminaMeadThreshold = 0.25f;  // use when stamina < 25%
 
         // ZDO keys — one per food slot
         private static readonly int[] FoodHashes = new int[MaxFoodSlots];
@@ -118,6 +125,7 @@ namespace Companions
             _character = GetComponent<Character>();
             _seman     = _character != null ? _character.GetSEMan() : null;
             _zanim     = GetComponent<ZSyncAnimation>();
+            _stamina   = GetComponent<CompanionStamina>();
         }
 
         private void Start()
@@ -207,6 +215,15 @@ namespace Companions
             {
                 _consumeTimer = ConsumeCheckInterval;
                 TryAutoConsume();
+            }
+
+            // Auto-consume meads when health or stamina is low
+            if (_meadCooldownTimer > 0f) _meadCooldownTimer -= dt;
+            _meadCheckTimer -= dt;
+            if (_meadCheckTimer <= 0f)
+            {
+                _meadCheckTimer = MeadCheckInterval;
+                TryConsumeMead();
             }
 
             // Periodic ZDO save
@@ -449,6 +466,144 @@ namespace Companions
             }
 
             return null;
+        }
+
+        // ── Mead / potion auto-consume ────────────────────────────────────
+
+        private enum MeadKind { Unknown, Health, Stamina }
+
+        private void TryConsumeMead()
+        {
+            if (_humanoid == null || _character == null) return;
+            if (_meadCooldownTimer > 0f) return;
+
+            // Don't consume during attack/dodge/stagger — animation conflict
+            if (_humanoid.InAttack() || _humanoid.InDodge() || _character.IsStaggering()) return;
+
+            var inv = _humanoid.GetInventory();
+            if (inv == null) return;
+            if (_seman == null) _seman = _character.GetSEMan();
+
+            float hpPct = _character.GetMaxHealth() > 0f
+                ? _character.GetHealth() / _character.GetMaxHealth()
+                : 1f;
+
+            float stamPct = _stamina != null ? _stamina.GetStaminaPercentage() : 1f;
+
+            // Health takes priority
+            if (hpPct < HealthMeadThreshold)
+            {
+                var mead = FindMead(inv, MeadKind.Health);
+                if (mead != null && ConsumeMead(inv, mead, MeadKind.Health))
+                    return;
+            }
+
+            // Then stamina
+            if (stamPct < StaminaMeadThreshold)
+            {
+                var mead = FindMead(inv, MeadKind.Stamina);
+                if (mead != null && ConsumeMead(inv, mead, MeadKind.Stamina))
+                    return;
+            }
+        }
+
+        private ItemDrop.ItemData FindMead(Inventory inv, MeadKind wanted)
+        {
+            List<ItemDrop.ItemData> all = inv.GetAllItemsInGridOrder();
+            for (int i = 0; i < all.Count; i++)
+            {
+                var item = all[i];
+                if (!IsMeadItem(item)) continue;
+                if (ClassifyMead(item) != wanted) continue;
+
+                // Check status effect not already active
+                var se = item.m_shared.m_consumeStatusEffect;
+                if (se != null && _seman != null)
+                {
+                    if (_seman.HaveStatusEffect(se.NameHash())) continue;
+                    if (_seman.HaveStatusEffectCategory(se.m_category)) continue;
+                }
+
+                return item;
+            }
+            return null;
+        }
+
+        private bool ConsumeMead(Inventory inv, ItemDrop.ItemData item, MeadKind kind)
+        {
+            if (inv == null || item == null) return false;
+
+            string itemName = item.m_shared?.m_name ?? "?";
+            string prefabName = item.m_dropPrefab != null ? item.m_dropPrefab.name : "?";
+
+            // Apply status effect
+            var se = item.m_shared.m_consumeStatusEffect;
+            if (se != null && _seman != null)
+                _seman.AddStatusEffect(se, true);
+
+            // For stamina meads, manually restore CompanionStamina since
+            // SE_Stats.m_staminaUpFront calls Player.AddStamina (no-op on NPCs).
+            if (kind == MeadKind.Stamina && _stamina != null && se is SE_Stats stats)
+            {
+                if (stats.m_staminaUpFront > 0f)
+                    _stamina.Restore(stats.m_staminaUpFront);
+            }
+
+            // Play eat/drink animation
+            if (_zanim != null) _zanim.SetTrigger("eat");
+
+            // Remove one from inventory
+            inv.RemoveOneItem(item);
+
+            float hpPct = _character.GetMaxHealth() > 0f
+                ? _character.GetHealth() / _character.GetMaxHealth() * 100f
+                : 0f;
+            float stamPct = _stamina != null ? _stamina.GetStaminaPercentage() * 100f : 0f;
+
+            CompanionsPlugin.Log.LogInfo(
+                $"[Food] MEAD consumed \"{itemName}\" (prefab={prefabName}) kind={kind} " +
+                $"hp={hpPct:F0}% stam={stamPct:F0}% " +
+                $"hasSE={se != null} companion=\"{_character?.m_name ?? "?"}\"");
+
+            _meadCooldownTimer = MeadCooldown;
+            return true;
+        }
+
+        private static bool IsMeadItem(ItemDrop.ItemData item)
+        {
+            if (item == null || item.m_shared == null) return false;
+            if (item.m_shared.m_itemType != ItemDrop.ItemData.ItemType.Consumable) return false;
+            if (item.m_shared.m_consumeStatusEffect == null) return false;
+            // Meads have no food stats — they work entirely through status effects.
+            // Items with food stats are regular food handled by TryAutoConsume.
+            return item.m_shared.m_food <= 0f
+                && item.m_shared.m_foodStamina <= 0f
+                && item.m_shared.m_foodEitr <= 0f;
+        }
+
+        private static MeadKind ClassifyMead(ItemDrop.ItemData item)
+        {
+            var se = item.m_shared?.m_consumeStatusEffect;
+            if (se == null) return MeadKind.Unknown;
+
+            // Classify via SE_Stats fields (most reliable)
+            if (se is SE_Stats stats)
+            {
+                if (stats.m_healthOverTime > 0f || stats.m_healthOverTimeDuration > 0f)
+                    return MeadKind.Health;
+                if (stats.m_staminaOverTime > 0f || stats.m_staminaOverTimeDuration > 0f
+                    || stats.m_staminaUpFront > 0f)
+                    return MeadKind.Stamina;
+            }
+
+            // Fallback: check prefab name
+            string prefab = item.m_dropPrefab != null ? item.m_dropPrefab.name : "";
+            if (prefab.IndexOf("Health", System.StringComparison.OrdinalIgnoreCase) >= 0)
+                return MeadKind.Health;
+            if (prefab.IndexOf("Stamina", System.StringComparison.OrdinalIgnoreCase) >= 0)
+                return MeadKind.Stamina;
+
+            return MeadKind.Unknown;
         }
 
         // ── ZDO persistence ─────────────────────────────────────────────────

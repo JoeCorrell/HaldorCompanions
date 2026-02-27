@@ -174,6 +174,17 @@ namespace Companions
             return true;
         }
 
+        /// <summary>
+        /// Restore stamina by a fixed amount. Used by mead consumption since
+        /// SE_Stats.m_staminaUpFront calls Player.AddStamina which is a no-op
+        /// on non-Player characters.
+        /// </summary>
+        public void Restore(float amount)
+        {
+            if (float.IsNaN(amount) || amount <= 0f) return;
+            Stamina = Mathf.Min(MaxStamina, Stamina + amount);
+        }
+
         public float GetStaminaPercentage()
         {
             float max = MaxStamina;

@@ -1,87 +1,45 @@
 using HarmonyLib;
+using UnityEngine;
 
 namespace Companions
 {
     /// <summary>
-    /// Perfect parry timing, food-based max health, power attacks, and weapon control
-    /// for companions. Uses ReflectionHelper for safe block timer access.
+    /// Perfect parry timing and food-based max health for companions.
+    /// Uses ReflectionHelper for safe block timer access.
+    ///
+    /// Note: EquipBestWeapon and DoAttack patches were removed — CompanionAI
+    /// owns weapon selection and attack logic directly (no MonsterAI).
     /// </summary>
     public static class CombatPatches
     {
-        /// <summary>
-        /// Prevents vanilla MonsterAI.SelectBestAttack from overriding the
-        /// CombatController's weapon selections. Without this, MonsterAI calls
-        /// EquipBestWeapon every 1s, causing pickaxe/bow cycling mid-combat.
-        /// </summary>
-        [HarmonyPatch(typeof(Humanoid), nameof(Humanoid.EquipBestWeapon))]
-        private static class EquipBestWeapon_SuppressForCompanion
-        {
-            static bool Prefix(Humanoid __instance)
-            {
-                var setup = __instance.GetComponent<CompanionSetup>();
-                if (setup == null) return true; // Not a companion — run vanilla
-
-                // Companions manage their own weapons via CombatController + AutoEquipBest
-                return false;
-            }
-        }
-
         private static float _lastHealthLogTime;
         private const float HealthLogInterval = 5f;
-
-        /// <summary>
-        /// When a companion's DoAttack fires and the target is staggered,
-        /// upgrade the normal attack to a power attack (secondary).
-        /// </summary>
-        /// <summary>
-        /// Suppresses MonsterAI attacks when CombatController wants to block (SuppressAttack=true).
-        /// Also upgrades normal attacks to power attacks on staggered targets.
-        /// </summary>
-        [HarmonyPatch(typeof(MonsterAI), "DoAttack")]
-        private static class DoAttack_Patch
-        {
-            static bool Prefix(MonsterAI __instance, Character target, ref bool __result)
-            {
-                var combat = __instance.GetComponent<CombatController>();
-                if (combat == null) return true; // not a companion
-
-                // Suppress attack when CombatController has decided to block
-                if (combat.SuppressAttack)
-                {
-                    __result = false;
-                    return false;
-                }
-
-                // Power attack on staggered target
-                if (target == null || !target.IsStaggering()) return true;
-
-                var humanoid = __instance.GetComponent<Humanoid>();
-                if (humanoid == null) return true;
-
-                var weapon = humanoid.GetCurrentWeapon();
-                if (weapon == null || !weapon.HaveSecondaryAttack()) return true;
-
-                __result = humanoid.StartAttack(target, true);
-                CompanionsPlugin.Log.LogInfo(
-                    $"[Combat] DoAttack — power attack on staggered \"{target.m_name}\"");
-                return false;
-            }
-        }
 
         [HarmonyPatch(typeof(Humanoid), "BlockAttack")]
         private static class BlockAttack_Patch
         {
-            static void Prefix(Humanoid __instance)
+            static void Prefix(Humanoid __instance, HitData hit, Character attacker)
             {
                 if (__instance.GetComponent<CompanionSetup>() == null) return;
 
                 float timer = ReflectionHelper.GetBlockTimer(__instance);
+                string attackerName = attacker != null ? attacker.m_name : "unknown";
+                float totalDmg = hit != null ? hit.GetTotalDamage() : 0f;
+
                 if (timer >= 0f)
                 {
                     CompanionsPlugin.Log.LogInfo(
-                        $"[Combat] BlockAttack — setting block timer to 0 for parry " +
-                        $"(was {timer:F3}) companion=\"{__instance.m_name}\"");
+                        $"[Combat] PARRY — BlockAttack fired! timer={timer:F3}→0 " +
+                        $"attacker=\"{attackerName}\" dmg={totalDmg:F0} " +
+                        $"companion=\"{__instance.m_name}\"");
                     ReflectionHelper.TrySetBlockTimer(__instance, 0f);
+                }
+                else
+                {
+                    CompanionsPlugin.Log.LogWarning(
+                        $"[Combat] BlockAttack fired but timer={timer:F3} (not blocking?) " +
+                        $"attacker=\"{attackerName}\" dmg={totalDmg:F0} " +
+                        $"companion=\"{__instance.m_name}\"");
                 }
             }
         }

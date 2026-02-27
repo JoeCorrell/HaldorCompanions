@@ -110,7 +110,7 @@ namespace Companions
             if (setup != null) setup.ApplyAppearance(appearance);
 
             // Set follow target immediately so the companion moves to the player
-            var ai = go.GetComponent<MonsterAI>();
+            var ai = go.GetComponent<CompanionAI>();
             ai?.SetFollowTarget(player.gameObject);
 
             CompanionsPlugin.Log.LogInfo(

@@ -21,11 +21,20 @@ namespace Companions
         internal static readonly int ActionModeSchemaHash = StringExtensionMethods.GetStableHashCode("HC_ActionModeSchema");
         internal static readonly int StaminaHash    = StringExtensionMethods.GetStableHashCode("HC_Stamina");
         internal static readonly int AutoPickupHash = StringExtensionMethods.GetStableHashCode("HC_AutoPickup");
+        internal static readonly int CombatStanceHash = StringExtensionMethods.GetStableHashCode("HC_CombatStance");
+        internal static readonly int FormationSlotHash = StringExtensionMethods.GetStableHashCode("HC_FormationSlot");
+        private  static readonly int StarterGearHash = StringExtensionMethods.GetStableHashCode("HC_StarterGear");
         internal const int ModeFollow      = 0;
         internal const int ModeGatherWood  = 1;
         internal const int ModeGatherStone = 2;
         internal const int ModeGatherOre   = 3;
         internal const int ModeStay        = 4;
+
+        // ── Combat stances ────────────────────────────────────────────────────
+        internal const int StanceBalanced   = 0;
+        internal const int StanceAggressive = 1;
+        internal const int StanceDefensive  = 2;
+        internal const int StancePassive    = 3;
         internal const float MaxLeashDistance = 50f;
         private const int ActionModeSchemaVersion = 2;
 
@@ -42,7 +51,7 @@ namespace Companions
 
         private ZNetView       _nview;
         private VisEquipment   _visEquip;
-        private MonsterAI      _ai;
+        private CompanionAI    _ai;
         private Humanoid       _humanoid;
         private ZSyncAnimation _zanim;
         private bool           _initialized;
@@ -57,7 +66,7 @@ namespace Companions
         {
             _nview    = GetComponent<ZNetView>();
             _visEquip = GetComponent<VisEquipment>();
-            _ai       = GetComponent<MonsterAI>();
+            _ai       = GetComponent<CompanionAI>();
             _humanoid = GetComponent<Humanoid>();
             _zanim    = GetComponent<ZSyncAnimation>();
 
@@ -109,7 +118,7 @@ namespace Companions
             UpdateEquipQueue(Time.deltaTime);
 
             // Ensure follow target stays set for follow/gather modes.
-            // It can be lost on zone reload, player respawn, or after MonsterAI combat.
+            // It can be lost on zone reload, player respawn, or after combat.
             if (_ai != null && _ai.GetFollowTarget() == null && Player.m_localPlayer != null)
             {
                 var zdo = _nview?.GetZDO();
@@ -187,6 +196,7 @@ namespace Companions
             RestoreActionMode();
             RestoreName();
             RegisterInventoryCallback();
+            AddStarterGear(zdo);
 
             int mode = zdo.GetInt(ActionModeHash, ModeFollow);
             CompanionsPlugin.Log.LogInfo(
@@ -266,6 +276,9 @@ namespace Companions
 
             int mode = zdo.GetInt(ActionModeHash, ModeFollow);
             ApplyFollowMode(mode);
+
+            // Ensure formation slot is assigned
+            AssignFormationSlot();
         }
 
         // ──────────────────────────────────────────────────────────────────────
@@ -342,6 +355,42 @@ namespace Companions
             {
                 var character = GetComponent<Character>();
                 if (character != null) character.m_name = name;
+            }
+        }
+
+        // ── Starter gear ─────────────────────────────────────────────────────
+
+        private static readonly string[] StarterItems = {
+            "ArmorPaddedCuirass",
+            "ArmorPaddedGreaves",
+            "HelmetPadded",
+            "AxeIron",
+            "ShieldBucklerIron",
+            "PickaxeIron"
+        };
+
+        private void AddStarterGear(ZDO zdo)
+        {
+            if (!_nview.IsOwner()) return;
+            if (zdo.GetBool(StarterGearHash, false)) return;
+
+            zdo.Set(StarterGearHash, true);
+
+            if (_humanoid == null) return;
+            var inv = _humanoid.GetInventory();
+            if (inv == null) return;
+
+            var player = Player.m_localPlayer;
+            long pid = player != null ? player.GetPlayerID() : 0L;
+            string pname = player != null ? player.GetPlayerName() : "";
+
+            foreach (string itemName in StarterItems)
+            {
+                var added = inv.AddItem(itemName, 1, 1, 0, pid, pname);
+                if (added != null)
+                    CompanionsPlugin.Log.LogInfo($"[Setup] Added starter item: {itemName}");
+                else
+                    CompanionsPlugin.Log.LogWarning($"[Setup] Failed to add starter item: {itemName}");
             }
         }
 
@@ -709,6 +758,64 @@ namespace Companions
         }
 
         /// <summary>Sum of armor from all equipped armor pieces.</summary>
+        // ── Combat stance accessors ───────────────────────────────────────
+
+        internal int GetCombatStance()
+        {
+            var zdo = _nview?.GetZDO();
+            if (zdo == null) return StanceBalanced;
+            int v = zdo.GetInt(CombatStanceHash, StanceBalanced);
+            return (v < StanceBalanced || v > StancePassive) ? StanceBalanced : v;
+        }
+
+        internal void SetCombatStance(int stance)
+        {
+            if (stance < StanceBalanced || stance > StancePassive) stance = StanceBalanced;
+            var zdo = _nview?.GetZDO();
+            if (zdo == null) return;
+            zdo.Set(CombatStanceHash, stance);
+        }
+
+        /// <summary>
+        /// Assign a formation slot to this companion by scanning all owned
+        /// companions and returning the first unused slot 0..7.
+        /// </summary>
+        internal int AssignFormationSlot()
+        {
+            var zdo = _nview?.GetZDO();
+            if (zdo == null) return 0;
+
+            int existing = zdo.GetInt(FormationSlotHash, -1);
+            if (existing >= 0) return existing;
+
+            // Collect used slots from other companions owned by the same player
+            var used = new HashSet<int>();
+            var player = Player.m_localPlayer;
+            if (player == null) return 0;
+            string localId = player.GetPlayerID().ToString();
+
+            foreach (var setup in FindObjectsByType<CompanionSetup>(FindObjectsSortMode.None))
+            {
+                if (setup == this) continue;
+                var otherZdo = setup._nview?.GetZDO();
+                if (otherZdo == null) continue;
+                if (otherZdo.GetString(OwnerHash, "") != localId) continue;
+                int slot = otherZdo.GetInt(FormationSlotHash, -1);
+                if (slot >= 0) used.Add(slot);
+            }
+
+            for (int i = 0; i < 8; i++)
+            {
+                if (!used.Contains(i))
+                {
+                    zdo.Set(FormationSlotHash, i);
+                    return i;
+                }
+            }
+            zdo.Set(FormationSlotHash, 0);
+            return 0;
+        }
+
         internal float GetTotalArmor()
         {
             float armor = 0f;

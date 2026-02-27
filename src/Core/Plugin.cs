@@ -1,6 +1,7 @@
 using System;
 using System.Reflection;
 using BepInEx;
+using BepInEx.Configuration;
 using BepInEx.Logging;
 using HarmonyLib;
 using TMPro;
@@ -20,12 +21,16 @@ namespace Companions
 
         private static Harmony _harmony;
         internal static ManualLogSource Log;
+        internal static ConfigEntry<KeyCode> DirectTargetKey;
         private bool _fontFixWarned;
 
         private void Awake()
         {
             Log = Logger;
             Log.LogInfo($"{PluginName} v{PluginVersion} loading...");
+
+            DirectTargetKey = Config.Bind("Controls", "DirectTargetKey", KeyCode.Z,
+                "Press while looking at an enemy to direct companions to focus-fire that target.");
 
             _harmony = new Harmony(PluginGUID);
             try

@@ -20,10 +20,10 @@ namespace Companions
             if (owner == null) return;
             if (owner.GetComponent<CompanionSetup>() == null) return;
 
-            var ai = owner.GetComponent<MonsterAI>();
+            var ai = owner.GetComponent<CompanionAI>();
             if (ai == null) return;
 
-            Character target = ReflectionHelper.GetTargetCreature(ai);
+            Character target = ai.m_targetCreature;
             if (target == null || target.IsDead()) return;
 
             // Redirect toward target center mass — enforce minimum arrow speed

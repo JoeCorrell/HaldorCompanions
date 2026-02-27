@@ -17,7 +17,7 @@ namespace Companions
         public bool IsActive => _phase != RepairPhase.Idle;
 
         // ── Components ──────────────────────────────────────────────────────
-        private MonsterAI        _ai;
+        private CompanionAI      _ai;
         private Humanoid         _humanoid;
         private Character        _character;
         private CompanionSetup   _setup;
@@ -26,6 +26,7 @@ namespace Companions
         private CompanionTalk    _talk;
         private CombatController _combat;
         private HarvestController _harvest;
+        private DoorHandler      _doorHandler;
 
         // ── State ───────────────────────────────────────────────────────────
         private RepairPhase     _phase;
@@ -35,12 +36,14 @@ namespace Companions
         private float           _stuckTimer;
         private float           _stuckCheckTimer;
         private Vector3         _stuckCheckPos;
+        private bool            _lastScanFailed;  // suppresses repeated scan detail logging
         private readonly List<ItemDrop.ItemData> _repairQueue = new List<ItemDrop.ItemData>();
         private readonly List<ItemDrop.ItemData> _tempWorn    = new List<ItemDrop.ItemData>();
 
         // ── Config ──────────────────────────────────────────────────────────
-        private const float DurabilityThreshold = 0.50f;
+        private const float DurabilityThreshold = 0.70f;
         private const float ScanInterval        = 5f;
+        private const float ScanBackoffInterval = 60f;   // long backoff when no station can help
         private const float ScanRadius          = 20f;
         private const float RepairTickInterval  = 0.8f;
         private const float MoveTimeout         = 12f;
@@ -52,15 +55,16 @@ namespace Companions
 
         private void Awake()
         {
-            _ai        = GetComponent<MonsterAI>();
+            _ai        = GetComponent<CompanionAI>();
             _humanoid  = GetComponent<Humanoid>();
             _character = GetComponent<Character>();
             _setup     = GetComponent<CompanionSetup>();
             _nview     = GetComponent<ZNetView>();
             _zanim     = GetComponent<ZSyncAnimation>();
             _talk      = GetComponent<CompanionTalk>();
-            _combat    = GetComponent<CombatController>();
-            _harvest   = GetComponent<HarvestController>();
+            _combat      = GetComponent<CombatController>();
+            _harvest     = GetComponent<HarvestController>();
+            _doorHandler = GetComponent<DoorHandler>();
         }
 
         private void Update()
@@ -102,24 +106,46 @@ namespace Companions
             var inv = _humanoid?.GetInventory();
             if (inv == null) return;
 
-            // Find items below durability threshold
+            // Get ALL worn items (any durability below max)
             _tempWorn.Clear();
             inv.GetWornItems(_tempWorn);
+            if (_tempWorn.Count == 0) return;
 
-            bool anyBelowThreshold = false;
-            for (int i = _tempWorn.Count - 1; i >= 0; i--)
+            // Log worn item details (suppress on repeated failed scans to avoid spam)
+            if (!_lastScanFailed)
             {
-                var item = _tempWorn[i];
-                float maxDur = item.GetMaxDurability();
-                if (maxDur <= 0f || item.m_durability / maxDur >= DurabilityThreshold)
-                    _tempWorn.RemoveAt(i);
-                else
-                    anyBelowThreshold = true;
+                for (int i = 0; i < _tempWorn.Count; i++)
+                {
+                    var item = _tempWorn[i];
+                    float maxDur = item.GetMaxDurability();
+                    float pct = maxDur > 0f ? item.m_durability / maxDur * 100f : 100f;
+                    var recipe = ObjectDB.instance?.GetRecipe(item);
+                    string stationName = recipe?.m_craftingStation?.m_name ?? recipe?.m_repairStation?.m_name ?? "none";
+                    int minLevel = recipe?.m_minStationLevel ?? 0;
+                    Log($"Scan: \"{item.m_shared.m_name}\" dur={item.m_durability:F0}/{maxDur:F0} ({pct:F0}%) " +
+                        $"station=\"{stationName}\" minLevel={minLevel} canRepair={item.m_shared.m_canBeReparied}");
+                }
             }
 
-            if (!anyBelowThreshold) return;
+            // Only trigger a repair trip if at least one item is below threshold
+            bool anyBelowThreshold = false;
+            for (int i = 0; i < _tempWorn.Count; i++)
+            {
+                float maxDur = _tempWorn[i].GetMaxDurability();
+                if (maxDur > 0f && _tempWorn[i].m_durability / maxDur < DurabilityThreshold)
+                {
+                    anyBelowThreshold = true;
+                    break;
+                }
+            }
 
-            // Find nearest station that can repair at least one item
+            if (!anyBelowThreshold)
+            {
+                Log($"Scan: {_tempWorn.Count} worn items but none below {DurabilityThreshold * 100f:F0}% — skipping");
+                return;
+            }
+
+            // Find nearest station that can repair at least one worn item
             var stations = ReflectionHelper.GetAllCraftingStations();
             if (stations == null) return;
 
@@ -132,9 +158,8 @@ namespace Companions
                 if (station == null) continue;
 
                 float dist = Vector3.Distance(transform.position, station.transform.position);
-                if (dist > ScanRadius || dist >= bestDist) continue;
+                if (dist > ScanRadius) continue;
 
-                // Check if this station can repair any of our worn items
                 bool canRepairAny = false;
                 for (int i = 0; i < _tempWorn.Count; i++)
                 {
@@ -145,21 +170,39 @@ namespace Companions
                     }
                 }
 
-                if (canRepairAny)
+                Log($"Scan: station \"{station.m_name}\" level={station.GetLevel()} " +
+                    $"dist={dist:F1}m canRepairAny={canRepairAny}");
+
+                if (canRepairAny && dist < bestDist)
                 {
                     bestStation = station;
                     bestDist = dist;
                 }
             }
 
-            if (bestStation == null) return;
+            if (bestStation == null)
+            {
+                if (!_lastScanFailed)
+                    Log($"Scan: no reachable station can repair any worn items within {ScanRadius}m — backing off {ScanBackoffInterval}s");
+                _lastScanFailed = true;
+                _scanTimer = ScanBackoffInterval;
+                return;
+            }
 
-            // Build repair queue for this station
+            _lastScanFailed = false;
+
+            // Build repair queue: ALL worn items this station can repair
+            // (not just items below 50% — once we're making the trip,
+            // repair everything to full)
             _repairQueue.Clear();
             for (int i = 0; i < _tempWorn.Count; i++)
             {
-                if (CanRepairAt(bestStation, _tempWorn[i]))
+                bool canRepair = CanRepairAt(bestStation, _tempWorn[i]);
+                if (canRepair)
                     _repairQueue.Add(_tempWorn[i]);
+                else
+                    Log($"Scan: \"{_tempWorn[i].m_shared.m_name}\" cannot be repaired at " +
+                        $"\"{bestStation.m_name}\" — {GetRepairRejectReason(bestStation, _tempWorn[i])}");
             }
 
             _targetStation = bestStation;
@@ -169,7 +212,7 @@ namespace Companions
 
             _phase = RepairPhase.MovingToStation;
             Log($"Found {_repairQueue.Count} items to repair at " +
-                $"\"{_targetStation.m_name}\" ({bestDist:F1}m away)");
+                $"\"{_targetStation.m_name}\" level={_targetStation.GetLevel()} ({bestDist:F1}m away)");
 
             if (_talk != null) _talk.Say("Time for repairs.");
         }
@@ -178,6 +221,10 @@ namespace Companions
 
         private void UpdateMoving(float dt)
         {
+            // DoorHandler is actively opening a door — pause movement
+            if (_doorHandler != null && _doorHandler.IsActive)
+                return;
+
             if (_targetStation == null)
             {
                 Abort("station destroyed while moving");
@@ -190,7 +237,7 @@ namespace Companions
             if (dist < UseDistance)
             {
                 _ai.StopMoving();
-                ReflectionHelper.LookAt(_ai, _targetStation.transform.position);
+                _ai.LookAtPoint( _targetStation.transform.position);
 
                 // Start crafting animation
                 if (_zanim != null)
@@ -204,7 +251,7 @@ namespace Companions
             }
 
             // Move toward station
-            ReflectionHelper.TryMoveTo(_ai, dt, _targetStation.transform.position, UseDistance, true);
+            _ai.MoveToPoint( dt, _targetStation.transform.position, UseDistance, true);
 
             // Stuck detection — check movement over 1s windows
             _stuckCheckTimer += dt;
@@ -245,7 +292,7 @@ namespace Companions
             }
 
             // Face station and keep animation active
-            ReflectionHelper.LookAt(_ai, _targetStation.transform.position);
+            _ai.LookAtPoint( _targetStation.transform.position);
             _targetStation.PokeInUse();
 
             _repairTickTimer -= dt;
@@ -289,7 +336,7 @@ namespace Companions
             _targetStation = null;
             _repairQueue.Clear();
             _phase = RepairPhase.Idle;
-            _scanTimer = ScanInterval; // don't re-scan immediately
+            _scanTimer = 1f; // quick rescan for remaining items at other stations
         }
 
         private void Abort(string reason)
@@ -347,6 +394,26 @@ namespace Companions
                 return false;
 
             return true;
+        }
+
+        /// <summary>Diagnostic: explains why an item can't be repaired at a station.</summary>
+        private static string GetRepairRejectReason(CraftingStation station, ItemDrop.ItemData item)
+        {
+            if (!item.m_shared.m_canBeReparied) return "canBeRepaired=false";
+            var recipe = ObjectDB.instance?.GetRecipe(item);
+            if (recipe == null) return "no recipe found";
+            if (recipe.m_craftingStation == null && recipe.m_repairStation == null) return "recipe has no station";
+
+            string recipeStation = recipe.m_repairStation?.m_name ?? recipe.m_craftingStation?.m_name ?? "?";
+            bool nameMatch = (recipe.m_repairStation != null && recipe.m_repairStation.m_name == station.m_name) ||
+                             (recipe.m_craftingStation != null && recipe.m_craftingStation.m_name == station.m_name);
+            if (!nameMatch) return $"wrong station (needs \"{recipeStation}\")";
+
+            int stationLevel = Mathf.Min(station.GetLevel(), 4);
+            if (stationLevel < recipe.m_minStationLevel)
+                return $"station level too low ({stationLevel} < {recipe.m_minStationLevel})";
+
+            return "unknown";
         }
 
         private void Log(string msg)

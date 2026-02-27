@@ -2,6 +2,7 @@
 build/
 bin/
 obj/
+Directory.Build.props
 
 ## IDE / editor
 .vs/

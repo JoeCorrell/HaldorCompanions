@@ -57,6 +57,8 @@ namespace Companions
         // ── Reflection ────────────────────────────────────────────────────────
         private static readonly System.Reflection.MethodInfo _updateVisuals =
             AccessTools.Method(typeof(VisEquipment), "UpdateVisuals");
+        private static readonly System.Reflection.FieldInfo _currentModelIndex =
+            AccessTools.Field(typeof(VisEquipment), "m_currentModelIndex");
 
         // ── Colour endpoints (Valheim character creator palette) ──────────────
         private static readonly Color SkinLight  = new Color(0.97f, 0.85f, 0.70f);
@@ -536,8 +538,16 @@ namespace Companions
                 if (mb is VisEquipment) continue;
                 mb.enabled = false;
             }
+            foreach (var renderer in _clone.GetComponentsInChildren<Renderer>(true))
+                renderer.enabled = true;
+
             foreach (var anim in _clone.GetComponentsInChildren<Animator>())
-                anim.updateMode = AnimatorUpdateMode.Normal;
+            {
+                anim.updateMode     = AnimatorUpdateMode.Normal;
+                anim.cullingMode    = AnimatorCullingMode.AlwaysAnimate;
+                anim.applyRootMotion = false;
+                anim.Rebind();
+            }
 
             int charLayer = LayerMask.NameToLayer("character");
             if (charLayer < 0) charLayer = 9;
@@ -673,6 +683,11 @@ namespace Companions
             if (_clone == null) return;
             var ve = _clone.GetComponent<VisEquipment>();
             if (ve == null) return;
+
+            // Force-reset internal hash state so UpdateVisuals does a full rebuild
+            // (otherwise SetModel(0) is a no-op when the prefab default is already 0,
+            //  and UpdateBaseModel skips applying body textures)
+            _currentModelIndex?.SetValue(ve, -1);
 
             ve.SetModel(_current.ModelIndex);
             ve.SetHairItem(string.IsNullOrEmpty(_current.HairItem) ? "Hair1" : _current.HairItem);

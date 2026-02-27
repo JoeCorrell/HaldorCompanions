@@ -16,6 +16,12 @@ namespace Companions
             var stamina = __instance.GetComponent<CompanionStamina>();
             if (stamina == null) return;
 
+            if (go == null)
+            {
+                stamina.IsRunning = false;
+                return;
+            }
+
             float dist = Vector3.Distance(
                 go.transform.position, __instance.transform.position);
             stamina.IsRunning = dist > 10f;
