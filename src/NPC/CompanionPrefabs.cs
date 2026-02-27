@@ -118,6 +118,9 @@ namespace Companions
             // Door handling (open, pass through, close behind)
             go.AddComponent<DoorHandler>();
 
+            // Auto-repair at nearby workbenches
+            go.AddComponent<RepairController>();
+
             // Register with ZNetScene
             int hash = StringExtensionMethods.GetStableHashCode(go.name);
             zNetScene.m_prefabs.Add(go);

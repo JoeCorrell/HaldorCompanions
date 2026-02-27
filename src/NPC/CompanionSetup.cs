@@ -40,12 +40,13 @@ namespace Companions
         private static readonly FieldInfo _shoulderItemField = AccessTools.Field(typeof(Humanoid), "m_shoulderItem");
         private static readonly FieldInfo _utilityItemField  = AccessTools.Field(typeof(Humanoid), "m_utilityItem");
 
-        private ZNetView     _nview;
-        private VisEquipment _visEquip;
-        private MonsterAI    _ai;
-        private Humanoid     _humanoid;
-        private bool         _initialized;
-        private bool         _ownerMismatchLogged;
+        private ZNetView       _nview;
+        private VisEquipment   _visEquip;
+        private MonsterAI      _ai;
+        private Humanoid       _humanoid;
+        private ZSyncAnimation _zanim;
+        private bool           _initialized;
+        private bool           _ownerMismatchLogged;
 
         /// <summary>
         /// When true, auto-equip is suppressed (used by CompanionHarvest to keep tools equipped).
@@ -58,6 +59,7 @@ namespace Companions
             _visEquip = GetComponent<VisEquipment>();
             _ai       = GetComponent<MonsterAI>();
             _humanoid = GetComponent<Humanoid>();
+            _zanim    = GetComponent<ZSyncAnimation>();
 
             CompanionsPlugin.Log.LogInfo(
                 $"[Setup] Awake — nview={_nview != null} visEquip={_visEquip != null} " +
@@ -72,6 +74,18 @@ namespace Companions
         {
             if (!_initialized) { TryInit(); return; }
 
+            // Freeze companion in place while our UI is open —
+            // prevents it from running around or following the player during interaction.
+            {
+                var panel = CompanionInteractPanel.Instance;
+                if (panel != null && panel.IsVisible && panel.CurrentCompanion == this)
+                {
+                    _ai?.SetPatrolPoint();
+                    _ai?.SetFollowTarget(null);
+                    return;
+                }
+            }
+
             // Process deferred auto-equip (throttled during rapid pickup)
             if (_autoEquipCooldown > 0f)
             {
@@ -80,9 +94,19 @@ namespace Companions
                 {
                     _autoEquipPending = false;
                     if (_humanoid != null && _nview != null && _nview.IsOwner() && !SuppressAutoEquip)
+                    {
+                        CompanionsPlugin.Log.LogInfo("[Setup] Deferred auto-equip firing now");
                         AutoEquipBest();
+                    }
+                    else if (SuppressAutoEquip)
+                    {
+                        CompanionsPlugin.Log.LogInfo("[Setup] Deferred auto-equip skipped — SuppressAutoEquip=true");
+                    }
                 }
             }
+
+            // Process equip queue (delayed equipping with animation)
+            UpdateEquipQueue(Time.deltaTime);
 
             // Ensure follow target stays set for follow/gather modes.
             // It can be lost on zone reload, player respawn, or after MonsterAI combat.
@@ -278,9 +302,21 @@ namespace Companions
             switch (mode)
             {
                 case ModeFollow:
+                    _ai.SetFollowTarget(Player.m_localPlayer.gameObject);
+                    CompanionsPlugin.Log.LogInfo($"[Setup]   → Follow player (mode={mode})");
+                    break;
                 case ModeGatherWood:
                 case ModeGatherStone:
                 case ModeGatherOre:
+                    // Don't override follow target if HarvestController is actively
+                    // driving movement to a resource — it sets its own follow target.
+                    var harvestCheck = GetComponent<HarvestController>();
+                    if (harvestCheck != null && harvestCheck.IsActive)
+                    {
+                        CompanionsPlugin.Log.LogInfo(
+                            $"[Setup]   → Gather mode={mode}, harvest active — skipping follow override");
+                        break;
+                    }
                     _ai.SetFollowTarget(Player.m_localPlayer.gameObject);
                     CompanionsPlugin.Log.LogInfo($"[Setup]   → Follow player (mode={mode})");
                     break;
@@ -316,6 +352,11 @@ namespace Companions
         private bool  _autoEquipPending;
         private const float AutoEquipMinInterval = 0.5f;
 
+        // ── Equip queue (delayed equipping with animation) ──────────────────
+        private readonly List<ItemDrop.ItemData> _equipQueue = new List<ItemDrop.ItemData>();
+        private float _equipTimer;
+        private bool  _equipAnimActive;
+
         private void RegisterInventoryCallback()
         {
             if (_humanoid == null) return;
@@ -323,6 +364,97 @@ namespace Companions
             if (inv == null) return;
 
             inv.m_onChanged = (Action)Delegate.Combine(inv.m_onChanged, new Action(OnInventoryChanged));
+        }
+
+        private void QueueEquip(ItemDrop.ItemData item)
+        {
+            if (item == null) return;
+            _equipQueue.Add(item);
+        }
+
+        private void UpdateEquipQueue(float dt)
+        {
+            if (_equipQueue.Count == 0)
+            {
+                if (_equipAnimActive)
+                {
+                    if (_zanim != null) _zanim.SetBool("equipping", false);
+                    _equipAnimActive = false;
+                }
+                return;
+            }
+
+            // Validate front of queue — item may have been removed from inventory
+            var inv = _humanoid?.GetInventory();
+            while (_equipQueue.Count > 0 && (inv == null || !inv.ContainsItem(_equipQueue[0])))
+            {
+                CompanionsPlugin.Log.LogInfo(
+                    $"[Setup] Equip queue: skipping \"{_equipQueue[0]?.m_shared?.m_name ?? "?"}\" — no longer in inventory");
+                _equipQueue.RemoveAt(0);
+            }
+            if (_equipQueue.Count == 0) return;
+
+            // Start animation if not playing
+            if (!_equipAnimActive)
+            {
+                _equipAnimActive = true;
+                if (_zanim != null) _zanim.SetBool("equipping", true);
+                float dur = _equipQueue[0].m_shared.m_equipDuration;
+                _equipTimer = dur > 0f ? dur : 0.1f;
+                CompanionsPlugin.Log.LogInfo(
+                    $"[Setup] Equip queue: started \"{_equipQueue[0].m_shared.m_name}\" " +
+                    $"duration={_equipTimer:F1}s ({_equipQueue.Count} items queued)");
+                return;
+            }
+
+            _equipTimer -= dt;
+            if (_equipTimer > 0f) return;
+
+            // Timer expired — actually equip the item
+            var item = _equipQueue[0];
+            _equipQueue.RemoveAt(0);
+
+            _equipping = true;
+            try
+            {
+                _humanoid.EquipItem(item, true);
+                item.m_shared.m_equipEffect.Create(transform.position, Quaternion.identity);
+            }
+            finally { _equipping = false; }
+
+            CompanionsPlugin.Log.LogInfo(
+                $"[Setup] Equip queue: equipped \"{item.m_shared.m_name}\" ({_equipQueue.Count} remaining)");
+
+            // Set timer for next item or stop
+            if (_equipQueue.Count > 0)
+            {
+                float dur = _equipQueue[0].m_shared.m_equipDuration;
+                _equipTimer = dur > 0f ? dur : 0.1f;
+                CompanionsPlugin.Log.LogInfo(
+                    $"[Setup] Equip queue: next \"{_equipQueue[0].m_shared.m_name}\" duration={_equipTimer:F1}s");
+            }
+            else
+            {
+                if (_zanim != null) _zanim.SetBool("equipping", false);
+                _equipAnimActive = false;
+            }
+        }
+
+        /// <summary>Cancel any pending equip queue (used when combat or harvest takes over).</summary>
+        internal void ClearEquipQueue()
+        {
+            if (_equipQueue.Count > 0)
+            {
+                CompanionsPlugin.Log.LogInfo(
+                    $"[Setup] Equip queue cleared ({_equipQueue.Count} items dropped)");
+                _equipQueue.Clear();
+            }
+            if (_equipAnimActive)
+            {
+                if (_zanim != null) _zanim.SetBool("equipping", false);
+                _equipAnimActive = false;
+            }
+            _equipTimer = 0f;
         }
 
         private void OnInventoryChanged()
@@ -336,13 +468,17 @@ namespace Companions
                 UnequipMissingEquippedItems();
                 if (owner && !SuppressAutoEquip)
                 {
-                    CompanionsPlugin.Log.LogInfo("[Setup] OnInventoryChanged — auto-equip triggered");
                     // Throttle: during rapid pickup the callback fires many times.
                     // Defer the expensive full scan if on cooldown.
                     if (_autoEquipCooldown > 0f)
+                    {
                         _autoEquipPending = true;
+                        CompanionsPlugin.Log.LogInfo(
+                            $"[Setup] OnInventoryChanged — deferred (cooldown={_autoEquipCooldown:F2}s)");
+                    }
                     else
                     {
+                        CompanionsPlugin.Log.LogInfo("[Setup] OnInventoryChanged — auto-equip triggered");
                         AutoEquipBest();
                         _autoEquipCooldown = AutoEquipMinInterval;
                     }
@@ -365,12 +501,15 @@ namespace Companions
             var inv = _humanoid.GetInventory();
             if (inv == null) return;
 
+            // Clear any pending equip queue from a previous run
+            ClearEquipQueue();
+
             var items = inv.GetAllItems();
 
             // Find best item per slot by damage/armor value
-            ItemDrop.ItemData bestRight    = null;  float bestRightDmg    = float.MinValue;
-            ItemDrop.ItemData best2H       = null;  float best2HDmg       = float.MinValue;
-            ItemDrop.ItemData bestTool     = null;  float bestToolDmg     = float.MinValue;
+            ItemDrop.ItemData bestRight    = null;  float bestRightDmg    = 0f;
+            ItemDrop.ItemData best2H       = null;  float best2HDmg       = 0f;
+            ItemDrop.ItemData bestTool     = null;  float bestToolDmg     = 0f;
             ItemDrop.ItemData bestShield   = null;  float bestShieldBlock  = 0f;
             ItemDrop.ItemData bestChest    = null;  float bestChestArmor   = 0f;
             ItemDrop.ItemData bestLegs     = null;  float bestLegsArmor    = 0f;
@@ -451,6 +590,16 @@ namespace Companions
                 }
             }
 
+            // Log what AutoEquipBest selected
+            CompanionsPlugin.Log.LogInfo(
+                $"[Setup] AutoEquipBest — 1H=\"{bestRight?.m_shared?.m_name ?? "none"}\"({bestRightDmg:F0}) " +
+                $"2H=\"{best2H?.m_shared?.m_name ?? "none"}\"({best2HDmg:F0}) " +
+                $"shield=\"{bestShield?.m_shared?.m_name ?? "none"}\"(block={bestShieldBlock:F0}) " +
+                $"helm=\"{bestHelmet?.m_shared?.m_name ?? "none"}\" " +
+                $"chest=\"{bestChest?.m_shared?.m_name ?? "none"}\" " +
+                $"legs=\"{bestLegs?.m_shared?.m_name ?? "none"}\""
+            );
+
             // Decide weapons: prefer 2H if it's stronger than 1H+shield combined
             var curRight = GetEquipSlot(_rightItemField);
             var curLeft  = GetEquipSlot(_leftItemField);
@@ -459,19 +608,33 @@ namespace Companions
             var desiredRight = use2H ? best2H : bestRight;
             // Tools (pickaxes) are never auto-equipped as weapons — HarvestController manages them
 
+            CompanionsPlugin.Log.LogInfo(
+                $"[Setup] Weapon decision: use2H={use2H} " +
+                $"desired=\"{desiredRight?.m_shared?.m_name ?? "none"}\" " +
+                $"current=\"{curRight?.m_shared?.m_name ?? "none"}\" " +
+                $"needsSwap={desiredRight != null && curRight != desiredRight}");
+
             if (desiredRight != null && curRight != desiredRight)
             {
                 if (curRight != null)
+                {
+                    CompanionsPlugin.Log.LogInfo(
+                        $"[Setup] Unequip right: \"{curRight.m_shared?.m_name ?? "?"}\"");
                     _humanoid.UnequipItem(curRight, false);
+                }
 
                 bool desiredIs2H = IsTwoHandedWeapon(desiredRight);
                 if (desiredIs2H && curLeft != null)
                 {
+                    CompanionsPlugin.Log.LogInfo(
+                        $"[Setup] Unequip left for 2H: \"{curLeft.m_shared?.m_name ?? "?"}\"");
                     _humanoid.UnequipItem(curLeft, false);
                     curLeft = null;
                 }
 
-                _humanoid.EquipItem(desiredRight, true);
+                QueueEquip(desiredRight);
+                CompanionsPlugin.Log.LogInfo(
+                    $"[Setup] Queued right: \"{desiredRight.m_shared?.m_name ?? "?"}\"");
                 curRight = desiredRight;
             }
 
@@ -483,12 +646,20 @@ namespace Companions
                 if (curLeft != bestShield)
                 {
                     if (curLeft != null)
+                    {
+                        CompanionsPlugin.Log.LogInfo(
+                            $"[Setup] Unequip left for shield swap: \"{curLeft.m_shared?.m_name ?? "?"}\"");
                         _humanoid.UnequipItem(curLeft, false);
-                    _humanoid.EquipItem(bestShield, true);
+                    }
+                    QueueEquip(bestShield);
+                    CompanionsPlugin.Log.LogInfo(
+                        $"[Setup] Queued shield: \"{bestShield.m_shared?.m_name ?? "?"}\"");
                 }
             }
             else if (rightIs2H && curLeft != null)
             {
+                CompanionsPlugin.Log.LogInfo(
+                    $"[Setup] Unequip left (2H in right): \"{curLeft.m_shared?.m_name ?? "?"}\"");
                 _humanoid.UnequipItem(curLeft, false);
             }
 
@@ -513,9 +684,19 @@ namespace Companions
             if (equipped == bestItem) return;
 
             if (equipped != null)
+            {
+                CompanionsPlugin.Log.LogInfo(
+                    $"[Setup] Armor swap {slotField.Name}: " +
+                    $"\"{equipped.m_shared?.m_name ?? "?"}\" → \"{bestItem.m_shared?.m_name ?? "?"}\"");
                 _humanoid.UnequipItem(equipped, false);
+            }
+            else
+            {
+                CompanionsPlugin.Log.LogInfo(
+                    $"[Setup] Armor queued {slotField.Name}: \"{bestItem.m_shared?.m_name ?? "?"}\"");
+            }
 
-            _humanoid.EquipItem(bestItem, true);
+            QueueEquip(bestItem);
         }
 
         private static bool IsTwoHandedWeapon(ItemDrop.ItemData item)

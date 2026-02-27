@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Reflection;
 using HarmonyLib;
 using UnityEngine;
@@ -43,6 +44,8 @@ namespace Companions
         private static readonly MethodInfo _isLookingAtMethod =
             AccessTools.Method(typeof(BaseAI), "IsLookingAt",
                 new[] { typeof(Vector3), typeof(float), typeof(bool) });
+        private static readonly MethodInfo _setAlertedMethod =
+            AccessTools.Method(typeof(BaseAI), "SetAlerted", new[] { typeof(bool) });
 
         private static bool _loggedMoveToInit;
 
@@ -255,6 +258,46 @@ namespace Companions
             if (ai == null || _isLookingAtMethod == null) return false;
             try { return (bool)_isLookingAtMethod.Invoke(ai, new object[] { point, minAngle, false }); }
             catch { return false; }
+        }
+
+        /// <summary>
+        /// Clears the alert state on a BaseAI. SetAlerted is protected virtual,
+        /// so we invoke via reflection. This resets m_alerted, the animator bool,
+        /// and the ZDO flag.
+        /// </summary>
+        internal static void SetAlerted(BaseAI ai, bool alert)
+        {
+            if (ai == null || _setAlertedMethod == null) return;
+            try { _setAlertedMethod.Invoke(ai, new object[] { alert }); }
+            catch { }
+        }
+
+        // ══════════════════════════════════════════════════════════════════════
+        //  CraftingStation.m_allStations (private static)
+        // ══════════════════════════════════════════════════════════════════════
+
+        private static readonly FieldInfo _allStationsField =
+            AccessTools.Field(typeof(CraftingStation), "m_allStations");
+
+        internal static List<CraftingStation> GetAllCraftingStations()
+        {
+            if (_allStationsField == null) return null;
+            try { return _allStationsField.GetValue(null) as List<CraftingStation>; }
+            catch { return null; }
+        }
+
+        // ══════════════════════════════════════════════════════════════════════
+        //  Projectile.m_owner (private)
+        // ══════════════════════════════════════════════════════════════════════
+
+        private static readonly FieldInfo _projOwnerField =
+            AccessTools.Field(typeof(Projectile), "m_owner");
+
+        internal static Character GetProjectileOwner(Projectile proj)
+        {
+            if (proj == null || _projOwnerField == null) return null;
+            try { return _projOwnerField.GetValue(proj) as Character; }
+            catch { return null; }
         }
 
         // ══════════════════════════════════════════════════════════════════════

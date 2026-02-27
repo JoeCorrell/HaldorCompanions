@@ -33,16 +33,27 @@ namespace Companions
         /// When a companion's DoAttack fires and the target is staggered,
         /// upgrade the normal attack to a power attack (secondary).
         /// </summary>
+        /// <summary>
+        /// Suppresses MonsterAI attacks when CombatController wants to block (SuppressAttack=true).
+        /// Also upgrades normal attacks to power attacks on staggered targets.
+        /// </summary>
         [HarmonyPatch(typeof(MonsterAI), "DoAttack")]
-        private static class DoAttack_PowerAttack
+        private static class DoAttack_Patch
         {
             static bool Prefix(MonsterAI __instance, Character target, ref bool __result)
             {
-                if (target == null) return true;
-                var setup = __instance.GetComponent<CompanionSetup>();
-                if (setup == null) return true;
+                var combat = __instance.GetComponent<CombatController>();
+                if (combat == null) return true; // not a companion
 
-                if (!target.IsStaggering()) return true;
+                // Suppress attack when CombatController has decided to block
+                if (combat.SuppressAttack)
+                {
+                    __result = false;
+                    return false;
+                }
+
+                // Power attack on staggered target
+                if (target == null || !target.IsStaggering()) return true;
 
                 var humanoid = __instance.GetComponent<Humanoid>();
                 if (humanoid == null) return true;

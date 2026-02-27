@@ -21,8 +21,6 @@ namespace Companions
         private const float StaminaRetreatPct   = 0.15f;
         private const float HealthRecoverPct    = 0.50f;
         private const float StaminaRecoverPct   = 0.30f;
-        private const float BlockDropDelay      = 0.6f;
-        private const float BlockDetectRange    = 4f;
         private const float AttackCooldown      = 0.3f;
         private const float ConsumeCooldown     = 10f;
         private const float BowMaxRange         = 30f;
@@ -32,7 +30,16 @@ namespace Companions
         private const float PowerAttackCooldown = 3f;
         private const float RetreatDistance     = 12f;
         private const float StuckTimeout        = 8f;     // disengage if stuck this long
-        private const float HeartbeatInterval   = 2f;     // detailed state log interval
+        private const float HeartbeatIdleInterval   = 10f;  // log interval when idle (no combat)
+        private const float HeartbeatCombatInterval = 2f;   // log interval during active combat
+
+        // ── Blocking / parry tuning ────────────────────────────────────────
+        private const float ThreatDetectRange    = 8f;    // detect enemy attacks within this range
+        private const float ProjectileDetectRange = 20f;  // detect incoming arrows/spells within this range
+        private const float ProjectileScanInterval = 0.25f; // scan frequency for projectiles
+        private const float BlockGrace           = 0.3f;  // hold block after last threat clears
+        private const float BlockMaxHold        = 0.5f;  // max time to hold block before forced counter
+        private const float CounterWindowDuration = 0.8f; // post-parry attack window (no blocking allowed)
 
         // ── Components ──────────────────────────────────────────────────────
         private MonsterAI        _ai;
@@ -45,7 +52,6 @@ namespace Companions
 
         // ── State ───────────────────────────────────────────────────────────
         private CombatPhase _phase;
-        private float _blockTimer;
         private float _attackCooldownTimer;
         private float _consumeTimer;
         private float _powerAttackTimer;
@@ -65,6 +71,27 @@ namespace Companions
         // Target abandon tracking — prevents infinite re-engage on fleeing animals
         private int   _abandonedTargetId;
         private float _abandonCooldown;
+
+        // ── Blocking / parry state ─────────────────────────────────────────
+        /// <summary>
+        /// When true, MonsterAI.DoAttack is suppressed via Harmony patch.
+        /// Set when the companion should be blocking instead of attacking.
+        /// </summary>
+        internal bool SuppressAttack { get; private set; }
+
+        private readonly HashSet<int> _activeAttackers = new HashSet<int>();
+        private float _blockGraceTimer;
+        private float _blockHoldTimer;      // how long block has been held continuously
+        private float _counterWindow;
+        private float _projectileScanTimer;
+        private bool  _lastProjectileThreat;
+        private bool  _wasBlocking;         // track transitions for counter-attack window
+
+        // Per-phase periodic logging timers
+        private float _rangedLogTimer;    // log bow draw progress
+        private float _retreatLogTimer;   // log retreat status
+        private float _blockLogTimer;     // log block events (throttled)
+        private float _abandonLogTimer;   // log abandon cooldown hits (throttled)
 
         private void Awake()
         {
@@ -112,10 +139,19 @@ namespace Companions
                 // In gather mode: only engage if a nearby enemy is actively targeting us
                 Character gatherTarget = ReflectionHelper.GetTargetCreature(_ai);
                 bool nearbyThreat = gatherTarget != null && !gatherTarget.IsDead()
+                    && gatherTarget.GetHealth() > 0f
                     && Vector3.Distance(transform.position, gatherTarget.transform.position) < 10f;
 
                 if (!nearbyThreat)
                 {
+                    // Log WHY the threat check failed — helps diagnose dead-enemy lingering
+                    if (_phase != CombatPhase.Idle && gatherTarget != null)
+                    {
+                        CompanionsPlugin.Log.LogInfo(
+                            $"[Combat] Gather threat cleared — \"{gatherTarget.m_name}\" " +
+                            $"isDead={gatherTarget.IsDead()} hp={gatherTarget.GetHealth():F0} " +
+                            $"dist={Vector3.Distance(transform.position, gatherTarget.transform.position):F1}");
+                    }
                     if (_phase != CombatPhase.Idle) ExitCombat("gather mode, no nearby threat");
                     return;
                 }
@@ -139,19 +175,43 @@ namespace Companions
             // Get current target from MonsterAI
             Character target = ReflectionHelper.GetTargetCreature(_ai);
 
-            // ── Heartbeat logging ──
+            // ── Heartbeat logging (less frequent when idle) ──
             _heartbeatTimer -= dt;
             if (_heartbeatTimer <= 0f)
             {
-                _heartbeatTimer = HeartbeatInterval;
+                float hbInterval = (_phase == CombatPhase.Idle)
+                    ? HeartbeatIdleInterval
+                    : HeartbeatCombatInterval;
+                _heartbeatTimer = hbInterval;
                 LogHeartbeat(target);
             }
 
             if (target == null || target.IsDead())
             {
                 if (_phase != CombatPhase.Idle)
+                {
+                    if (target != null)
+                        CompanionsPlugin.Log.LogInfo(
+                            $"[Combat] Target lost — \"{target.m_name}\" isDead={target.IsDead()} " +
+                            $"hp={target.GetHealth():F0} phase={_phase}");
                     ExitCombat(target == null ? "no target" : "target dead");
+                }
                 return;
+            }
+
+            // ── Log new combat engagement ──
+            if (_phase == CombatPhase.Idle)
+            {
+                float engageDist = Vector3.Distance(transform.position, target.transform.position);
+                bool isAnimal = target.GetComponent<AnimalAI>() != null;
+                bool hasBowNow = HasBowAndArrows();
+                var curWeapon = _humanoid.GetCurrentWeapon();
+                CompanionsPlugin.Log.LogInfo(
+                    $"[Combat] ENGAGE target=\"{target.m_name}\" dist={engageDist:F1} " +
+                    $"isAnimal={isAnimal} hasBow={hasBowNow} " +
+                    $"weapon=\"{curWeapon?.m_shared?.m_name ?? "NONE"}\" " +
+                    $"hp={_character.GetHealthPercentage():P0} " +
+                    $"mode={(isGatherMode ? "gather(self-defense)" : "follow")}");
             }
 
             // ── CRITICAL: Ensure we have a combat weapon, not a tool/pickaxe ──
@@ -161,7 +221,14 @@ namespace Companions
             float movedSinceLast = Vector3.Distance(transform.position, _lastStuckPos);
             if (_phase == CombatPhase.Melee)
             {
-                if (movedSinceLast < 0.3f && !_character.InAttack())
+                float distForStuck = Vector3.Distance(transform.position, target.transform.position);
+                var stuckWeapon = _humanoid.GetCurrentWeapon();
+                float stuckRange = stuckWeapon != null ? stuckWeapon.m_shared.m_aiAttackRange : 2f;
+                bool inWeaponRange = distForStuck <= stuckRange + 1f;
+
+                // Don't count as stuck when in weapon range — standing still between
+                // attacks is normal melee behavior, not a stuck state.
+                if (movedSinceLast < 0.3f && !_character.InAttack() && !inWeaponRange)
                     _stuckTimer += dt;
                 else
                     _stuckTimer = 0f;
@@ -192,7 +259,11 @@ namespace Companions
             if (_phase == CombatPhase.Retreat)
             {
                 if (healthPct >= HealthRecoverPct && staminaPct >= StaminaRecoverPct)
+                {
+                    CompanionsPlugin.Log.LogInfo(
+                        $"[Combat] Retreat RECOVERED — hp={healthPct:P0} stam={staminaPct:P0} — re-engaging");
                     ExitCombat("recovered from retreat");
+                }
                 else
                 {
                     UpdateRetreat(target, dt);
@@ -216,6 +287,13 @@ namespace Companions
             // Skip recently abandoned targets (prevents infinite re-engage on fleeing animals)
             if (_abandonCooldown > 0f && target.GetInstanceID() == _abandonedTargetId)
             {
+                _abandonLogTimer -= dt;
+                if (_abandonLogTimer <= 0f)
+                {
+                    _abandonLogTimer = 5f;
+                    CompanionsPlugin.Log.LogInfo(
+                        $"[Combat] Skipping abandoned target \"{target.m_name}\" — cooldown={_abandonCooldown:F0}s remaining");
+                }
                 ReflectionHelper.ClearAllTargets(_ai);
                 if (_phase != CombatPhase.Idle) ExitCombat("target on abandon cooldown");
                 return;
@@ -255,6 +333,7 @@ namespace Companions
                         $"hasBow={hasBow}");
                     RestoreMeleeLoadout();
                     TransitionTo(CombatPhase.Melee);
+                    EnsureShieldEquipped();
                     UpdateMelee(target, dt);
                 }
                 else
@@ -279,6 +358,7 @@ namespace Companions
                     {
                         RestoreMeleeLoadout();
                         TransitionTo(CombatPhase.Melee);
+                        EnsureShieldEquipped();
                     }
                     UpdateMelee(target, dt);
                 }
@@ -334,11 +414,56 @@ namespace Companions
                 CompanionsPlugin.Log.LogInfo(
                     $"[Combat] After re-equip: \"{newWeapon?.m_shared?.m_name ?? "NONE"}\" " +
                     $"type={newWeapon?.m_shared?.m_itemType}");
+
+                // Also restore shield since tool equip unequips it
+                EnsureShieldEquipped();
+            }
+        }
+
+        /// <summary>
+        /// Ensures the shield is equipped in the left hand during melee combat.
+        /// HarvestController unequips the shield when equipping tools, and
+        /// EnsureCombatWeapon won't restore it if the axe is a valid combat weapon.
+        /// </summary>
+        private void EnsureShieldEquipped()
+        {
+            var left = ReflectionHelper.GetLeftItem(_humanoid);
+            if (left != null) return; // something already in left hand
+
+            var right = ReflectionHelper.GetRightItem(_humanoid);
+            if (right != null)
+            {
+                var type = right.m_shared.m_itemType;
+                if (type == ItemDrop.ItemData.ItemType.TwoHandedWeapon ||
+                    type == ItemDrop.ItemData.ItemType.TwoHandedWeaponLeft ||
+                    type == ItemDrop.ItemData.ItemType.Bow)
+                    return; // 2H weapon — can't equip shield
+            }
+
+            var inv = _humanoid.GetInventory();
+            if (inv == null) return;
+
+            ItemDrop.ItemData bestShield = null;
+            float bestBlock = 0f;
+            foreach (var item in inv.GetAllItems())
+            {
+                if (item?.m_shared == null) continue;
+                if (item.m_shared.m_itemType != ItemDrop.ItemData.ItemType.Shield) continue;
+                if (item.m_shared.m_useDurability && item.m_durability <= 0f) continue;
+                float block = item.m_shared.m_blockPower;
+                if (block > bestBlock) { bestBlock = block; bestShield = item; }
+            }
+
+            if (bestShield != null)
+            {
+                _humanoid.EquipItem(bestShield, true);
+                CompanionsPlugin.Log.LogInfo(
+                    $"[Combat] Equipped shield \"{bestShield.m_shared.m_name}\" for melee combat");
             }
         }
 
         // ════════════════════════════════════════════════════════════════════
-        //  Melee Combat
+        //  Melee Combat — defensive-first: block threats, then counter-attack
         // ════════════════════════════════════════════════════════════════════
 
         private void UpdateMelee(Character target, float dt)
@@ -347,33 +472,141 @@ namespace Companions
             var weapon = _humanoid.GetCurrentWeapon();
             float weaponRange = weapon != null ? weapon.m_shared.m_aiAttackRange : 2f;
 
-            // ── Blocking ──
-            bool shouldBlock = ShouldBlock(target, dist, weaponRange);
+            // ── 1. Threat assessment — scan for enemies winding up attacks + projectiles ──
+            bool anyMeleeThreats = false;
+            bool newThreatDetected = false;
+
+            foreach (Character c in Character.GetAllCharacters())
+            {
+                if (c == _character || c.IsDead()) continue;
+                if (!BaseAI.IsEnemy(_character, c)) continue;
+                float d = Vector3.Distance(transform.position, c.transform.position);
+                if (d > ThreatDetectRange) continue;
+
+                if (c.InAttack())
+                {
+                    anyMeleeThreats = true;
+                    int cid = c.GetInstanceID();
+                    if (!_activeAttackers.Contains(cid))
+                    {
+                        _activeAttackers.Add(cid);
+                        newThreatDetected = true;
+                        _blockLogTimer -= dt;
+                        if (_blockLogTimer <= 0f)
+                        {
+                            _blockLogTimer = 1f;
+                            CompanionsPlugin.Log.LogInfo(
+                                $"[Combat] NEW THREAT — \"{c.m_name}\" InAttack at {d:F1}m " +
+                                $"(active threats: {_activeAttackers.Count})");
+                        }
+                    }
+                }
+            }
+
+            // Remove stale attacker IDs (enemies no longer InAttack)
+            if (_activeAttackers.Count > 0)
+                _activeAttackers.RemoveWhere(id => !IsEnemyStillAttacking(id));
+
+            // Projectile threat detection (lower frequency scan)
+            bool projectileThreat = DetectIncomingProjectiles(dt);
+
+            bool anyThreats = anyMeleeThreats || projectileThreat;
+
+            // ── 2. Block decision ──
+            // During the counter-attack window the companion MUST swing, not block.
+            // This prevents permanent blocking when surrounded by many enemies where
+            // at least one is always InAttack().
+            bool hasShield = HasBlocker();
+            bool inCounterWindow = _counterWindow > 0f;
+
+            if (anyThreats)
+                _blockGraceTimer = BlockGrace;
+            else
+                _blockGraceTimer = Mathf.Max(0f, _blockGraceTimer - dt);
+
+            bool wantBlock = hasShield && (anyThreats || _blockGraceTimer > 0f);
+
+            // Force-end block after BlockMaxHold to create a parry→swing rhythm.
+            // The hold timer is long enough for the parry hit to register, then the
+            // companion drops block and swings during the counter window.
+            if (_wasBlocking)
+            {
+                _blockHoldTimer += dt;
+                if (_blockHoldTimer >= BlockMaxHold)
+                {
+                    // Force transition to counter-attack
+                    ReflectionHelper.TrySetBlocking(_character, false);
+                    _wasBlocking = false;
+                    _blockHoldTimer = 0f;
+                    _activeAttackers.Clear();
+                    SuppressAttack = false;
+                    _counterWindow = CounterWindowDuration;
+                    inCounterWindow = true;
+
+                    CompanionsPlugin.Log.LogInfo(
+                        $"[Combat] Block MAX HOLD ({BlockMaxHold:F1}s) — forced counter-attack window");
+                }
+            }
+
+            bool shouldBlock = wantBlock && !inCounterWindow;
+
             if (shouldBlock)
             {
-                ReflectionHelper.TrySetBlocking(_character, true);
-                ReflectionHelper.TrySetBlockTimer(_humanoid, 0f);
-                _blockTimer += dt;
+                SuppressAttack = true;
 
-                // Drop block after delay if no hit landed
-                if (_blockTimer > BlockDropDelay)
+                if (!_character.InAttack())
                 {
-                    ReflectionHelper.TrySetBlocking(_character, false);
-                    _blockTimer = 0f;
+                    ReflectionHelper.TrySetBlocking(_character, true);
+                    _wasBlocking = true;
+
+                    // Reset block timer for fresh parry window when a new attacker appears
+                    if (newThreatDetected)
+                        ReflectionHelper.TrySetBlockTimer(_humanoid, 0f);
                 }
-                return; // Don't attack while blocking
+
+                return; // Don't proceed to attack logic while blocking
             }
-            else
+
+            // ── 3. Not blocking — clear block state ──
+            SuppressAttack = false;
+
+            if (_wasBlocking)
             {
-                if (ReflectionHelper.GetBlocking(_character))
-                {
-                    ReflectionHelper.TrySetBlocking(_character, false);
-                    _blockTimer = 0f;
-                }
+                ReflectionHelper.TrySetBlocking(_character, false);
+                _wasBlocking = false;
+                _blockHoldTimer = 0f;
+                _activeAttackers.Clear();
+                _counterWindow = CounterWindowDuration;
+
+                CompanionsPlugin.Log.LogInfo(
+                    $"[Combat] Block ended — entering {CounterWindowDuration:F1}s counter-attack window");
             }
 
-            // ── Power attack on staggered enemy ──
-            if (target.IsStaggering() && dist <= weaponRange + 0.5f &&
+            // ── 4. Counter-attack window — post-parry, companion swings freely ──
+            if (_counterWindow > 0f)
+            {
+                _counterWindow -= dt;
+
+                if (target.IsStaggering() && dist <= weaponRange + 0.5f &&
+                    _powerAttackTimer <= 0f && _attackCooldownTimer <= 0f)
+                {
+                    if (weapon != null && weapon.HaveSecondaryAttack())
+                    {
+                        _humanoid.StartAttack(target, true);
+                        _powerAttackTimer = PowerAttackCooldown;
+                        _attackCooldownTimer = AttackCooldown;
+                        _counterWindow = 0f;
+                        CompanionsPlugin.Log.LogInfo(
+                            $"[Combat] COUNTER POWER ATTACK on staggered \"{target.m_name}\" " +
+                            $"dist={dist:F1} range={weaponRange:F1}");
+                    }
+                }
+                // Normal attacks are handled by MonsterAI.DoAttack (SuppressAttack=false)
+            }
+
+            // ── 5. Normal attacks handled by MonsterAI.DoAttack (SuppressAttack=false) ──
+            // Also fire power attacks on staggered targets outside counter window
+            if (_counterWindow <= 0f && target.IsStaggering() && dist <= weaponRange + 0.5f &&
                 _powerAttackTimer <= 0f && _attackCooldownTimer <= 0f)
             {
                 if (weapon != null && weapon.HaveSecondaryAttack())
@@ -386,28 +619,81 @@ namespace Companions
                         $"dist={dist:F1} range={weaponRange:F1}");
                 }
             }
-
-            // Normal attacks handled by MonsterAI.DoAttack — we don't interfere
         }
 
-        private bool ShouldBlock(Character target, float dist, float weaponRange)
+        /// <summary>
+        /// Check if a specific enemy (by instance ID) is still InAttack.
+        /// Used to clean stale entries from _activeAttackers.
+        /// </summary>
+        private bool IsEnemyStillAttacking(int instanceId)
         {
-            // Only block if we have a shield/blocker
-            var blocker = ReflectionHelper.GetLeftItem(_humanoid);
-            if (blocker == null || blocker.m_shared.m_itemType != ItemDrop.ItemData.ItemType.Shield)
-                return false;
-
-            // Check if target or any nearby enemy is mid-attack
-            float blockRange = weaponRange * 1.5f;
-            if (blockRange < BlockDetectRange) blockRange = BlockDetectRange;
-
             foreach (Character c in Character.GetAllCharacters())
             {
-                if (c == _character || c.IsDead()) continue;
-                if (!BaseAI.IsEnemy(_character, c)) continue;
-                float d = Vector3.Distance(transform.position, c.transform.position);
-                if (d <= blockRange && c.InAttack())
+                if (c.GetInstanceID() == instanceId)
+                    return c.InAttack() && !c.IsDead();
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// Check if companion has a shield or other blocker equipped.
+        /// </summary>
+        private bool HasBlocker()
+        {
+            var blocker = ReflectionHelper.GetLeftItem(_humanoid);
+            return blocker != null && blocker.m_shared.m_itemType == ItemDrop.ItemData.ItemType.Shield;
+        }
+
+        /// <summary>
+        /// Scans for incoming enemy projectiles heading toward the companion.
+        /// Runs at a lower frequency (ProjectileScanInterval) to reduce cost.
+        /// </summary>
+        private bool DetectIncomingProjectiles(float dt)
+        {
+            _projectileScanTimer -= dt;
+            if (_projectileScanTimer > 0f) return _lastProjectileThreat;
+            _projectileScanTimer = ProjectileScanInterval;
+
+            _lastProjectileThreat = false;
+
+            var projectiles = Object.FindObjectsByType<Projectile>(FindObjectsSortMode.None);
+            Vector3 myPos = transform.position + Vector3.up; // chest height
+
+            for (int i = 0; i < projectiles.Length; i++)
+            {
+                var proj = projectiles[i];
+                if (proj == null) continue;
+
+                Vector3 projPos = proj.transform.position;
+                Vector3 toUs = myPos - projPos;
+                float sqrDist = toUs.sqrMagnitude;
+                if (sqrDist > ProjectileDetectRange * ProjectileDetectRange || sqrDist < 1f)
+                    continue;
+
+                // Skip friendly projectiles
+                Character owner = ReflectionHelper.GetProjectileOwner(proj);
+                if (owner != null && !BaseAI.IsEnemy(_character, owner))
+                    continue;
+
+                // Check if projectile velocity is heading toward us
+                Vector3 vel = proj.GetVelocity();
+                if (vel.sqrMagnitude < 1f) continue;
+
+                float dot = Vector3.Dot(vel.normalized, toUs.normalized);
+                if (dot > 0.5f) // heading roughly toward us
+                {
+                    _lastProjectileThreat = true;
+
+                    _blockLogTimer -= dt;
+                    if (_blockLogTimer <= 0f)
+                    {
+                        _blockLogTimer = 2f;
+                        CompanionsPlugin.Log.LogInfo(
+                            $"[Combat] PROJECTILE threat — dist={Mathf.Sqrt(sqrDist):F1}m " +
+                            $"dot={dot:F2} owner=\"{owner?.m_name ?? "?"}\"");
+                    }
                     return true;
+                }
             }
 
             return false;
@@ -433,31 +719,41 @@ namespace Companions
                 return;
             }
 
-            // Don't fire while moving into position — let vanilla move us closer first
+            // Don't fire while attack animation is playing
             if (_character.InAttack()) return;
 
-            // Aim at target center mass with velocity lead
+            // Aim directly at target center mass.
+            // Velocity lead is intentionally omitted: draw% on NPC-wielded player bows
+            // is unknown, so arrow speed is unpredictable — lead only worsens accuracy.
+            // More importantly, a lead-offset aimPoint diverges from where vanilla MonsterAI
+            // rotates to face the target, causing IsLookingAt to always return false.
             Vector3 aimPoint = target.GetCenterPoint();
-            Vector3 targetVel = target.GetVelocity();
-            if (targetVel.magnitude > 0.5f)
-            {
-                float arrowSpeed = 60f;
-                float travelTime = dist / arrowSpeed;
-                aimPoint += targetVel * travelTime;
-            }
 
             // Face target and stop to aim
             ReflectionHelper.LookAt(_ai, aimPoint);
             _ai.StopMoving();
 
-            // Check if we're looking at the target
-            bool onTarget = ReflectionHelper.IsLookingAt(_ai, aimPoint, 15f);
+            // 30° tolerance — generous enough for NPC rotation lag while still
+            // ensuring the shot is in roughly the right direction.
+            bool onTarget = ReflectionHelper.IsLookingAt(_ai, aimPoint, 30f);
 
             // Draw timer — only accumulates while facing target
             if (onTarget && _bowFireCooldown <= 0f)
                 _bowDrawTimer += dt;
             else if (!onTarget)
                 _bowDrawTimer = Mathf.Max(0f, _bowDrawTimer - dt * 2f); // decay if off-target
+
+            // Periodic bow draw progress log (every 1s)
+            _rangedLogTimer -= dt;
+            if (_rangedLogTimer <= 0f)
+            {
+                _rangedLogTimer = 1f;
+                CompanionsPlugin.Log.LogInfo(
+                    $"[Combat] BOW AIM — target=\"{target.m_name}\" dist={dist:F1} " +
+                    $"draw={_bowDrawTimer:F2}/{BowDrawTime:F2} onTarget={onTarget} " +
+                    $"fireCD={_bowFireCooldown:F1} inAttack={_character.InAttack()} " +
+                    $"vel={target.GetVelocity().magnitude:F1}");
+            }
 
             // Fire when fully drawn and on target
             if (_bowDrawTimer >= BowDrawTime && onTarget && _bowFireCooldown <= 0f)
@@ -493,6 +789,20 @@ namespace Companions
             Vector3 awayDir = (transform.position - target.transform.position).normalized;
             Vector3 fleePoint = transform.position + awayDir * RetreatDistance;
             ReflectionHelper.TryMoveTo(_ai, dt, fleePoint, 2f, true);
+
+            // Periodic retreat log
+            _retreatLogTimer -= dt;
+            if (_retreatLogTimer <= 0f)
+            {
+                _retreatLogTimer = 3f;
+                float healthPct2 = _character.GetHealthPercentage();
+                float stamPct2 = _stamina != null ? _stamina.GetStaminaPercentage() : 1f;
+                float distTarget = Vector3.Distance(transform.position, target.transform.position);
+                CompanionsPlugin.Log.LogInfo(
+                    $"[Combat] RETREATING — target=\"{target.m_name}\" dist={distTarget:F1} " +
+                    $"hp={healthPct2:P0}/{HealthRecoverPct:P0} stam={stamPct2:P0}/{StaminaRecoverPct:P0} " +
+                    $"retreatTimer={_retreatTimer:F1}s");
+            }
 
             // Try consuming meads
             if (_consumeTimer <= 0f)
@@ -631,9 +941,22 @@ namespace Companions
         {
             var oldPhase = _phase;
 
+            // Clear any lingering target reference — dead enemies can hold m_targetCreature
+            // after IsDead() becomes true, keeping CombatController and HarvestController
+            // stuck in self-defense until the ZDO is removed.
+            ReflectionHelper.ClearAllTargets(_ai);
+
+            // Clear alert state — m_alerted persists after enemies die and causes
+            // MonsterAI.UpdateAI to override movement with alert-scanning behavior,
+            // preventing the companion from reaching harvest targets.
+            ReflectionHelper.SetAlerted(_ai, false);
+
             // Stop charging if active
             if (_ai.IsCharging())
+            {
+                CompanionsPlugin.Log.LogInfo("[Combat] ChargeStop — was charging on combat exit");
                 _ai.ChargeStop();
+            }
 
             if (_bowEquipped)
                 RestoreMeleeLoadout();
@@ -641,6 +964,16 @@ namespace Companions
             // Always clear suppress in case HarvestController left it on
             if (_setup != null)
                 _setup.SuppressAutoEquip = false;
+
+            // Clear blocking / parry state
+            SuppressAttack = false;
+            _activeAttackers.Clear();
+            _blockGraceTimer = 0f;
+            _blockHoldTimer = 0f;
+            _counterWindow = 0f;
+            _wasBlocking = false;
+            if (ReflectionHelper.GetBlocking(_character))
+                ReflectionHelper.TrySetBlocking(_character, false);
 
             TransitionTo(CombatPhase.Idle);
             _stuckTimer = 0f;
@@ -727,8 +1060,20 @@ namespace Companions
             if (_phase == newPhase) return;
             CompanionsPlugin.Log.LogInfo($"[Combat] Phase: {_phase} → {newPhase}");
             _phase = newPhase;
-            _blockTimer = 0f;
             if (newPhase != CombatPhase.Retreat) _retreatTimer = 0f;
+
+            // Clear blocking when leaving melee for any other phase
+            if (newPhase != CombatPhase.Melee)
+            {
+                SuppressAttack = false;
+                _activeAttackers.Clear();
+                _blockGraceTimer = 0f;
+                _blockHoldTimer = 0f;
+                _counterWindow = 0f;
+                _wasBlocking = false;
+                if (ReflectionHelper.GetBlocking(_character))
+                    ReflectionHelper.TrySetBlocking(_character, false);
+            }
         }
 
         // ════════════════════════════════════════════════════════════════════
@@ -757,11 +1102,12 @@ namespace Companions
                 $"left=\"{leftItem?.m_shared?.m_name ?? "NONE"}\" " +
                 $"bowEquipped={_bowEquipped} bowDraw={_bowDrawTimer:F1}/{BowDrawTime:F1} " +
                 $"bowCD={_bowFireCooldown:F1} charging={_ai.IsCharging()} " +
-                $"inAttack={_character.InAttack()} " +
+                $"inAttack={_character.InAttack()} blocking={_wasBlocking} " +
+                $"suppressAtk={SuppressAttack} threats={_activeAttackers.Count} " +
+                $"grace={_blockGraceTimer:F2} counter={_counterWindow:F2} " +
                 $"hp={_character.GetHealthPercentage():P0} " +
                 $"stam={(_stamina != null ? _stamina.GetStaminaPercentage() : 1f):P0} " +
-                $"stuckTimer={_stuckTimer:F1} atkCD={_attackCooldownTimer:F1} " +
-                $"suppress={_setup?.SuppressAutoEquip ?? false}");
+                $"stuckTimer={_stuckTimer:F1} atkCD={_attackCooldownTimer:F1}");
         }
     }
 }

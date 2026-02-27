@@ -51,6 +51,9 @@ namespace Companions
                     foreach (Character c in Character.GetAllCharacters())
                     {
                         if (c == character || c.IsDead()) continue;
+                        // Belt-and-suspenders: also skip enemies at 0 hp (IsDead flag
+                        // may lag behind actual death due to OnDeath animation callback)
+                        if (c.GetHealth() <= 0f) continue;
                         if (!BaseAI.IsEnemy(character, c)) continue;
                         float d = Vector3.Distance(__instance.transform.position, c.transform.position);
                         if (d < SelfDefenseRange)
@@ -75,9 +78,10 @@ namespace Companions
                     {
                         timer = 2f;
                         string name = character?.m_name ?? "?";
+                        var currentTarget = ReflectionHelper.GetTargetCreature(__instance);
                         CompanionsPlugin.Log.LogInfo(
-                            $"[TargetPatch|{name}] SELF-DEFENSE — enemy \"{nearestEnemy?.m_name ?? "?"}\" " +
-                            $"within {nearestDist:F1}m during gathering — allowing targeting");
+                            $"[TargetPatch|{name}] SELF-DEFENSE ALLOW — nearest enemy \"{nearestEnemy?.m_name ?? "?"}\" " +
+                            $"at {nearestDist:F1}m — allowing targeting. currentTarget=\"{currentTarget?.m_name ?? "null"}\"");
                     }
                     _logTimers[id] = timer;
                     return true; // Let vanilla targeting run
@@ -87,6 +91,10 @@ namespace Companions
                     // No enemies nearby — suppress targeting as before
                     LogSuppression(__instance, "Gathering(safe)");
                     ReflectionHelper.ClearAllTargets(__instance);
+                    // Clear alert state — m_alerted lingers after combat ends and causes
+                    // MonsterAI.UpdateAI to override harvest movement with alert-scanning.
+                    if (__instance.IsAlerted())
+                        ReflectionHelper.SetAlerted(__instance, false);
                     return false;
                 }
             }
@@ -138,7 +146,17 @@ namespace Companions
             var character = __instance.GetComponent<Character>();
             bool inAttack = character != null && character.InAttack();
 
-            if (moved < 0.1f && !inAttack)
+            // Check if standing still is expected (not actually stuck)
+            var follow = __instance.GetFollowTarget();
+            float distToFollow = follow != null
+                ? Vector3.Distance(__instance.transform.position, follow.transform.position) : -1f;
+            bool atFollowDist = follow != null && distToFollow < 5f;
+
+            // Also check if in harvest mode — HarvestController manages its own stuck detection
+            var harvest = __instance.GetComponent<HarvestController>();
+            bool harvesting = harvest != null && harvest.IsInGatherMode;
+
+            if (moved < 0.1f && !inAttack && !atFollowDist && !harvesting)
                 stuckTime += dt;
             else
                 stuckTime = 0f;
@@ -153,10 +171,7 @@ namespace Companions
                 {
                     warnTimer = 2f;
                     var target = ReflectionHelper.GetTargetCreature(__instance);
-                    var follow = __instance.GetFollowTarget();
                     string name = character?.m_name ?? "?";
-                    float distToFollow = follow != null
-                        ? Vector3.Distance(__instance.transform.position, follow.transform.position) : -1f;
                     float distToTarget = target != null
                         ? Vector3.Distance(__instance.transform.position, target.transform.position) : -1f;
 
@@ -181,10 +196,8 @@ namespace Companions
             {
                 periodicTimer = 3f;
                 var target = ReflectionHelper.GetTargetCreature(__instance);
-                var follow = __instance.GetFollowTarget();
+                // Reuse follow/distToFollow from stuck detection above
                 string name = character?.m_name ?? "?";
-                float distToFollow = follow != null
-                    ? Vector3.Distance(__instance.transform.position, follow.transform.position) : -1f;
                 float distToTarget = target != null
                     ? Vector3.Distance(__instance.transform.position, target.transform.position) : -1f;
                 var weapon = (__instance.GetComponent<Humanoid>())?.GetCurrentWeapon();

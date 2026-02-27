@@ -179,6 +179,18 @@ namespace Companions
                     RefreshModeText();
                 }
             }
+
+            // Gamepad: LB/RB cycle tabs, same keys vanilla uses for InventoryGui tab cycling
+            if (ZInput.GetButtonDown("JoyTabLeft"))
+            {
+                SwitchTab(0); // Actions tab
+                ZInput.ResetButtonStatus("JoyTabLeft");
+            }
+            else if (ZInput.GetButtonDown("JoyTabRight"))
+            {
+                SwitchTab(1); // Inventory tab
+                ZInput.ResetButtonStatus("JoyTabRight");
+            }
         }
 
         // ══════════════════════════════════════════════════════════════════════
@@ -238,6 +250,10 @@ namespace Companions
             _root.SetActive(true);
             _root.transform.SetAsLastSibling();
             _visible = true;
+
+            // Give gamepad focus to the first action button when opening
+            if (_followBtn != null && ZInput.IsGamepadActive())
+                EventSystem.current?.SetSelectedGameObject(_followBtn.gameObject);
         }
 
         public void Hide()
@@ -552,6 +568,21 @@ namespace Companions
             {
                 _autoPickupBtn.onClick.RemoveAllListeners();
                 _autoPickupBtn.onClick.AddListener(ToggleAutoPickup);
+            }
+
+            // Set up explicit gamepad navigation — d-pad / left stick cycles through buttons vertically.
+            // Tab buttons intentionally excluded so LB/RB handle tab switching, not up/down.
+            var btns = new Button[] {
+                _followBtn, _gatherWoodBtn, _gatherStoneBtn, _gatherOreBtn,
+                _stayBtn, _setHomeBtn, _autoPickupBtn
+            };
+            for (int i = 0; i < btns.Length; i++)
+            {
+                if (btns[i] == null) continue;
+                var nav = new Navigation { mode = Navigation.Mode.Explicit };
+                nav.selectOnUp   = i > 0               ? btns[i - 1] : btns[btns.Length - 1];
+                nav.selectOnDown = i < btns.Length - 1 ? btns[i + 1] : btns[0];
+                btns[i].navigation = nav;
             }
         }
 
