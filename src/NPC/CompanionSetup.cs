@@ -21,7 +21,7 @@ namespace Companions
         internal static readonly int ActionModeSchemaHash = StringExtensionMethods.GetStableHashCode("HC_ActionModeSchema");
         internal static readonly int StaminaHash    = StringExtensionMethods.GetStableHashCode("HC_Stamina");
         internal static readonly int AutoPickupHash = StringExtensionMethods.GetStableHashCode("HC_AutoPickup");
-        internal static readonly int CombatStanceHash = StringExtensionMethods.GetStableHashCode("HC_CombatStance");
+        internal static readonly int WanderHash = StringExtensionMethods.GetStableHashCode("HC_Wander");
         internal static readonly int FormationSlotHash = StringExtensionMethods.GetStableHashCode("HC_FormationSlot");
         internal static readonly int IsCommandableHash = StringExtensionMethods.GetStableHashCode("HC_IsCommandable");
         internal static readonly int StayHomeHash  = StringExtensionMethods.GetStableHashCode("HC_StayHome");
@@ -35,11 +35,6 @@ namespace Companions
         internal const int ModeGatherOre   = 3;
         internal const int ModeStay        = 4;
 
-        // ── Combat stances ────────────────────────────────────────────────────
-        internal const int StanceBalanced   = 0;
-        internal const int StanceAggressive = 1;
-        internal const int StanceDefensive  = 2;
-        internal const int StancePassive    = 3;
         internal const float MaxLeashDistance = 50f;
         private const int ActionModeSchemaVersion = 2;
 
@@ -402,42 +397,13 @@ namespace Companions
         }
 
         // ── Starter gear ─────────────────────────────────────────────────────
-
-        private static readonly string[] StarterItems = {
-            "ArmorPaddedCuirass",
-            "ArmorPaddedGreaves",
-            "HelmetPadded",
-            "AxeIron",
-            "ShieldBucklerIron",
-            "PickaxeIron"
-        };
+        // Companions spawn with no gear — the player equips them manually.
 
         private void AddStarterGear(ZDO zdo)
         {
+            // No-op: companions spawn empty. Kept as hook for future use.
             if (!_nview.IsOwner()) return;
-            if (zdo.GetBool(StarterGearHash, false)) return;
-
             zdo.Set(StarterGearHash, true);
-
-            // Dverger companions spawn with no gear
-            if (CompanionTierData.IsDvergerVariant(zdo.GetPrefab())) return;
-
-            if (_humanoid == null) return;
-            var inv = _humanoid.GetInventory();
-            if (inv == null) return;
-
-            var player = Player.m_localPlayer;
-            long pid = player != null ? player.GetPlayerID() : 0L;
-            string pname = player != null ? player.GetPlayerName() : "";
-
-            foreach (string itemName in StarterItems)
-            {
-                var added = inv.AddItem(itemName, 1, 1, 0, pid, pname);
-                if (added != null)
-                    CompanionsPlugin.Log.LogDebug($"[Setup] Added starter item: {itemName}");
-                else
-                    CompanionsPlugin.Log.LogWarning($"[Setup] Failed to add starter item: {itemName}");
-            }
         }
 
         // ── Auto-equip ──────────────────────────────────────────────────────
@@ -825,23 +791,11 @@ namespace Companions
         }
 
         /// <summary>Sum of armor from all equipped armor pieces.</summary>
-        // ── Combat stance accessors ───────────────────────────────────────
+        // ── Wander accessor ──────────────────────────────────────────────
 
-        internal int GetCombatStance()
-        {
-            var zdo = _nview?.GetZDO();
-            if (zdo == null) return StanceBalanced;
-            int v = zdo.GetInt(CombatStanceHash, StanceBalanced);
-            return (v < StanceBalanced || v > StancePassive) ? StanceBalanced : v;
-        }
+        internal bool GetWander() => _nview?.GetZDO()?.GetBool(WanderHash, false) ?? false;
 
-        internal void SetCombatStance(int stance)
-        {
-            if (stance < StanceBalanced || stance > StancePassive) stance = StanceBalanced;
-            var zdo = _nview?.GetZDO();
-            if (zdo == null) return;
-            zdo.Set(CombatStanceHash, stance);
-        }
+        internal void SetWander(bool v) => _nview?.GetZDO()?.Set(WanderHash, v);
 
         // ── Commandable accessor ─────────────────────────────────────────
 
@@ -885,7 +839,19 @@ namespace Companions
 
         internal bool HasHomePosition()
         {
-            return _nview?.GetZDO()?.GetBool(HomePosSetHash, false) ?? false;
+            var zdo = _nview?.GetZDO();
+            if (zdo == null) return false;
+            // New format: explicit bool key
+            if (zdo.GetBool(HomePosSetHash, false)) return true;
+            // Backward compat: old saves only have the vector, no bool key.
+            // Treat non-zero HC_HomePos as "set" and migrate.
+            Vector3 pos = zdo.GetVec3(HomePosHash, Vector3.zero);
+            if (pos != Vector3.zero)
+            {
+                zdo.Set(HomePosSetHash, true);
+                return true;
+            }
+            return false;
         }
 
         /// <summary>

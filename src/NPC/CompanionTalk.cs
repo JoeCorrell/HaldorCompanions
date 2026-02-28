@@ -168,6 +168,8 @@ namespace Companions
 
         private bool IsHungry()
         {
+            // Dvergers don't eat — never report hunger
+            if (_setup != null && !_setup.CanWearArmor()) return false;
             if (_food == null) return false;
             for (int i = 0; i < CompanionFood.MaxFoodSlots; i++)
             {

@@ -91,6 +91,7 @@ namespace Companions
         private const float HealThreshold = 0.7f;
         private const float HealScanInterval = 1f;
         private const float HealLogInterval = 3f;
+        private const float HealRange = 50f;
 
         // ══════════════════════════════════════════════════════════════════════
         //  Pending Cart Navigation
@@ -371,8 +372,19 @@ namespace Companions
         private void EnforceHomePatrol(float dt)
         {
             if (_setup == null || !_setup.GetStayHome() || !_setup.HasHomePosition())
+            {
+                // Not in StayHome — restore default wander range
+                if (m_randomMoveRange > 10f)
+                    m_randomMoveRange = 4f;
                 return;
+            }
             if (m_follow != null) return; // following something actively
+
+            // Wander toggle controls whether companion roams or stays put
+            if (_setup.GetWander())
+                m_randomMoveRange = CompanionSetup.MaxLeashDistance; // 50m
+            else
+                m_randomMoveRange = 0f; // stay put at home
 
             _homePatrolTimer -= dt;
             if (_homePatrolTimer > 0f) return;
@@ -628,31 +640,6 @@ namespace Companions
             if (DirectedTargetLockTimer > 0f)
                 DirectedTargetLockTimer -= dt;
 
-            // Read stance once for this frame
-            int stance = _setup != null ? _setup.GetCombatStance() : CompanionSetup.StanceBalanced;
-
-            // Passive stance: never target, never attack, just follow
-            if (stance == CompanionSetup.StancePassive)
-            {
-                ClearTargets();
-                if (IsAlerted()) SetAlerted(false);
-                SuppressAttack = true;
-
-                if ((_harvest != null && _harvest.IsActive) ||
-                    (_repair != null && _repair.IsActive) ||
-                    (_doorHandler != null && _doorHandler.IsActive))
-                    return true;
-
-                if (m_follow != null)
-                    FollowWithFormation(m_follow, dt, stance);
-                else
-                {
-                    EnforceHomePatrol(dt);
-                    IdleMovement(dt);
-                }
-                return true;
-            }
-
             // Humanoid ref needed by heal check and combat below
             Humanoid humanoid = m_character as Humanoid;
 
@@ -733,7 +720,7 @@ namespace Companions
             }
 
             // Target acquisition with companion-specific suppression
-            UpdateTarget(humanoid, dt, stance);
+            UpdateTarget(humanoid, dt);
 
             // Debug logging (replaces TargetPatches.UpdateAI_DebugLog)
             UpdateDebugLog(dt);
@@ -751,7 +738,7 @@ namespace Companions
                     return true;
 
                 if (m_follow != null)
-                    FollowWithFormation(m_follow, dt, stance);
+                    FollowWithFormation(m_follow, dt);
                 else
                 {
                     EnforceHomePatrol(dt);
@@ -762,7 +749,7 @@ namespace Companions
 
             // Has target — combat movement + attack
             if (humanoid != null)
-                UpdateCombat(humanoid, dt, stance);
+                UpdateCombat(humanoid, dt);
 
             return true;
         }
@@ -772,7 +759,7 @@ namespace Companions
         //  Replaces MonsterAI.UpdateTarget + TargetPatches
         // ══════════════════════════════════════════════════════════════════════
 
-        private void UpdateTarget(Humanoid humanoid, float dt, int stance)
+        private void UpdateTarget(Humanoid humanoid, float dt)
         {
             m_updateTargetTimer -= dt;
 
@@ -852,40 +839,12 @@ namespace Companions
                 bool playerNear = Player.IsPlayerInRange(transform.position, 50f);
                 m_updateTargetTimer = playerNear ? UpdateTargetIntervalNear : UpdateTargetIntervalFar;
 
-                // Aggressive: boost view range for wider scan
-                float savedRange = m_viewRange;
-                if (stance == CompanionSetup.StanceAggressive)
-                    m_viewRange = Mathf.Max(m_viewRange, 50f);
-
                 Character enemy = FindEnemy();
-
-                if (stance == CompanionSetup.StanceAggressive)
-                    m_viewRange = savedRange;
 
                 if (enemy != null)
                 {
-                    // Defensive: only engage enemies within 5m OR targeting the player
-                    if (stance == CompanionSetup.StanceDefensive)
-                    {
-                        float eDist = Vector3.Distance(transform.position, enemy.transform.position);
-                        bool targetsPlayer = false;
-                        var eAI = enemy.GetBaseAI();
-                        if (eAI != null)
-                        {
-                            var aiTarget = eAI.GetTargetCreature();
-                            targetsPlayer = aiTarget != null && aiTarget.IsPlayer();
-                        }
-                        if (eDist > 5f && !targetsPlayer)
-                            enemy = null; // ignore distant non-threats
-                    }
-
-                    if (enemy != null)
-                    {
-                        m_targetCreature = enemy;
-                        m_targetStatic = null;
-                        if (stance == CompanionSetup.StanceAggressive)
-                            SetAlerted(true);
-                    }
+                    m_targetCreature = enemy;
+                    m_targetStatic = null;
                 }
             }
 
@@ -968,7 +927,7 @@ namespace Companions
         //  Combat Movement + Attack
         // ══════════════════════════════════════════════════════════════════════
 
-        private void UpdateCombat(Humanoid humanoid, float dt, int stance)
+        private void UpdateCombat(Humanoid humanoid, float dt)
         {
             if (m_targetCreature == null) return;
 
@@ -1022,18 +981,13 @@ namespace Companions
                     Vector3 moveTarget = m_lastKnownTargetPos;
 
                     // Flanking: approach from opposite side of player
-                    if (stance != CompanionSetup.StancePassive &&
-                        stance != CompanionSetup.StanceDefensive &&
-                        m_follow != null && dist > weaponRange * 2f)
+                    if (m_follow != null && dist > weaponRange * 2f)
                     {
                         float playerToTarget = Vector3.Distance(m_follow.transform.position, m_lastKnownTargetPos);
                         if (playerToTarget < 15f && playerToTarget > 1f)
                         {
                             Vector3 behindTarget = (m_lastKnownTargetPos - m_follow.transform.position).normalized;
-                            float flankDist = stance == CompanionSetup.StanceAggressive
-                                ? weaponRange * 0.5f
-                                : weaponRange;
-                            moveTarget = m_lastKnownTargetPos + behindTarget * flankDist;
+                            moveTarget = m_lastKnownTargetPos + behindTarget * weaponRange;
                         }
                     }
 
@@ -1125,7 +1079,7 @@ namespace Companions
         //  Formation Following
         // ══════════════════════════════════════════════════════════════════════
 
-        private void FollowWithFormation(GameObject target, float dt, int stance)
+        private void FollowWithFormation(GameObject target, float dt)
         {
             if (target == null) { IdleMovement(dt); return; }
 
@@ -1152,8 +1106,7 @@ namespace Companions
             // Compute formation offset relative to player's facing
             Vector3 playerFwd = target.transform.forward;
             Vector3 playerRight = target.transform.right;
-            float offsetScale = stance == CompanionSetup.StanceDefensive ? 0.6f : 1f;
-            Vector3 offset = GetFormationOffset(_formationSlot, playerFwd, playerRight) * offsetScale;
+            Vector3 offset = GetFormationOffset(_formationSlot, playerFwd, playerRight);
 
             Vector3 formationPos = target.transform.position + offset;
 
@@ -1212,7 +1165,7 @@ namespace Companions
                 if (ratio >= HealThreshold) continue;
 
                 float dist = Vector3.Distance(transform.position, c.transform.position);
-                if (dist > m_viewRange) continue;
+                if (dist > HealRange) continue;
 
                 // Only heal the player or player-owned companions
                 bool isPlayer = c.IsPlayer();
@@ -1517,13 +1470,22 @@ namespace Companions
                     bool canMove = m_character != null && m_character.CanMove();
                     bool pathResult = FoundPath();
 
+                    bool stayHome = _setup != null && _setup.GetStayHome();
+                    bool hasHome = _setup != null && _setup.HasHomePosition();
+                    bool hasPatrol = false;
+                    Vector3 patrolPt = Vector3.zero;
+                    if (GetPatrolPoint(out patrolPt)) hasPatrol = true;
+
                     CompanionsPlugin.Log.LogWarning(
                         $"[CompanionAI] STUCK {_stuckDetectTimer:F1}s — " +
                         $"target=\"{m_targetCreature?.m_name ?? "null"}\" targetDist={distToTarget:F1} " +
                         $"follow=\"{follow?.name ?? "null"}\" followDist={distToFollow:F1} " +
                         $"inAttack={inAttack} isAlerted={IsAlerted()} " +
                         $"charging={IsCharging()} pos={transform.position:F1} " +
-                        $"onGround={onGround} canMove={canMove} pathOK={pathResult}");
+                        $"onGround={onGround} canMove={canMove} pathOK={pathResult} " +
+                        $"stayHome={stayHome} hasHome={hasHome} " +
+                        $"patrol={hasPatrol} patrolPt={patrolPt:F1} " +
+                        $"wanderRange={m_randomMoveRange:F0}");
                 }
                 return;
             }

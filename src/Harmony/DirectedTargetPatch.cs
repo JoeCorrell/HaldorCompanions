@@ -324,8 +324,6 @@ namespace Companions
                 if (!setup.GetIsCommandable()) continue;
                 var ai = setup.GetComponent<CompanionAI>();
                 if (ai == null) continue;
-                if (setup.GetCombatStance() == CompanionSetup.StancePassive) continue;
-
                 CancelExistingActions(setup);
                 ai.m_targetCreature = enemy;
                 ai.SetAlerted(true);

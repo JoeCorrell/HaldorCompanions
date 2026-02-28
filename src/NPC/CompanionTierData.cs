@@ -96,10 +96,12 @@ namespace Companions
             GiveStarterGear = false,
         };
 
-        /// <summary>All Dverger variants in UI display order.</summary>
+        /// <summary>All Dverger variants in UI display order.
+        /// Note: Dverger (Mage) is excluded — it duplicates DvergerFire.
+        /// The def is kept for backward compatibility with existing saves.</summary>
         public static readonly CompanionTierDef[] DvergerVariants =
         {
-            DvergerWarrior, Dverger, DvergerFire, DvergerIce, DvergerSupport
+            DvergerWarrior, DvergerFire, DvergerIce, DvergerSupport
         };
 
         // ── Variant detection ───────────────────────────────────────────────
@@ -111,6 +113,8 @@ namespace Companions
             _dvergerHashes = new HashSet<int>();
             foreach (var v in DvergerVariants)
                 _dvergerHashes.Add(StringExtensionMethods.GetStableHashCode(v.PrefabName));
+            // Legacy Mage variant (HC_Dverger) — not in UI but still exists in saves
+            _dvergerHashes.Add(StringExtensionMethods.GetStableHashCode(Dverger.PrefabName));
         }
 
         /// <summary>

@@ -16,12 +16,13 @@ namespace Companions
         private enum HarvestState { Idle, Moving, Attacking, CollectingDrops }
 
         // ── Components ──────────────────────────────────────────────────────
-        private ZNetView       _nview;
-        private CompanionAI    _ai;
-        private Humanoid       _humanoid;
-        private Character      _character;
-        private CompanionSetup _setup;
-        private DoorHandler    _doorHandler;
+        private ZNetView         _nview;
+        private CompanionAI      _ai;
+        private Humanoid         _humanoid;
+        private Character        _character;
+        private CompanionSetup   _setup;
+        private DoorHandler      _doorHandler;
+        private CompanionStamina _stamina;
 
         // ── State ───────────────────────────────────────────────────────────
         private HarvestState _state = State_Idle;
@@ -33,6 +34,8 @@ namespace Companions
         private string       _targetType;     // "TreeLog", "Stump", "TreeBase", "MineRock5", etc.
         private int          _swingCount;      // consecutive successful attack swings on current target
         private int          _totalAttempts;   // total attack attempts (success + failure) on current target
+        private int          _consecutiveFailures; // consecutive StartAttack failures (not animation-blocked)
+        private bool         _reapproach;      // true = return to Moving used tighter approach distance
         private float        _selfDefenseLogTimer;
         private bool         _wasInSelfDefense;  // true last frame when combat target was present
         private ItemDrop.ItemData _pendingToolReequip; // deferred equip when EquipItem fails mid-animation
@@ -117,6 +120,7 @@ namespace Companions
             _character = GetComponent<Character>();
             _setup       = GetComponent<CompanionSetup>();
             _doorHandler = GetComponent<DoorHandler>();
+            _stamina     = GetComponent<CompanionStamina>();
 
             // Build a per-companion tag: "[Harvest#1234]" using instance ID
             int id = GetInstanceID();
@@ -477,6 +481,8 @@ namespace Companions
             _targetType = null;
             _swingCount    = 0;
             _totalAttempts = 0;
+            _consecutiveFailures = 0;
+            _reapproach    = false;
             _scanTimer     = 0f;
             _pendingToolReequip = null;
 
@@ -636,7 +642,14 @@ namespace Companions
             // slopes and terrain obstacles that MoveTowards can't climb.
             // CompanionAI.UpdateAI skips Follow() when harvest is active,
             // so there's no dual-control jitter.
-            float moveGoal = IsLowTarget() ? range * 0.3f : range * 0.5f;
+            // After re-approach (attacks failed/whiffed), get much closer.
+            float moveGoal;
+            if (_reapproach)
+                moveGoal = range * 0.15f;  // get right on top of target
+            else if (IsLowTarget())
+                moveGoal = range * 0.3f;
+            else
+                moveGoal = range * 0.5f;
             bool moveResult = _ai.MoveToPoint(dt, targetPos, moveGoal, true);
 
             // Pathfinding failed at close range — fall back to direct push.
@@ -689,11 +702,18 @@ namespace Companions
             Vector3 toTarget = targetPos - transform.position;
             float horizDist = new Vector3(toTarget.x, 0f, toTarget.z).magnitude;
             bool isLow = IsLowTarget();
-            float arrivalDist = isLow ? range : range + ArrivalSlack;
+            float arrivalDist;
+            if (_reapproach)
+                arrivalDist = range * 0.5f;  // much tighter on re-approach
+            else if (isLow)
+                arrivalDist = range;
+            else
+                arrivalDist = range + ArrivalSlack;
             if (distToTarget <= arrivalDist || horizDist <= arrivalDist)
             {
                 if (_ai != null) _ai.StopMoving();
                 FaceTarget();
+                _reapproach = false;  // consumed
                 _attackTimer = 0.3f; // brief pause before first swing
                 _state = State_Attacking;
 
@@ -725,9 +745,9 @@ namespace Companions
             {
                 float dist = Vector3.Distance(transform.position, _target.transform.position);
                 float range = GetAttackRange();
-                bool needsCloser = _swingCount >= 2 || IsLowTarget();
+                bool needsCloser = _swingCount >= 2 || _totalAttempts >= 2 || IsLowTarget();
                 float shuffleThreshold = needsCloser ? range * 0.5f : range * 0.8f;
-                float shuffleGoal     = needsCloser ? range * 0.2f : range * 0.5f;
+                float shuffleGoal     = needsCloser ? range * 0.15f : range * 0.5f;
                 if (dist > shuffleThreshold)
                     _ai.MoveToPoint( Time.deltaTime, _target.transform.position, shuffleGoal, false);
             }
@@ -757,13 +777,14 @@ namespace Companions
 
             FaceTarget();
 
-            // Check distance — may have drifted
+            // Check distance — may have drifted or never been close enough
             float dist = Vector3.Distance(transform.position, _target.transform.position);
             float range = GetAttackRange();
-            if (dist > range + 1.5f)
+            if (dist > range + 0.5f)
             {
-                Log($"Drifted too far from target: dist={dist:F1}m " +
-                    $"(range={range:F1} + 1.5) — returning to Moving state");
+                Log($"Too far from target: dist={dist:F1}m " +
+                    $"(range={range:F1} + 0.5) — returning to Moving state");
+                _reapproach = true;
                 _moveTimer = 0f;
                 _moveLogTimer = 0f;
                 _state = State_Moving;
@@ -817,18 +838,68 @@ namespace Companions
                 return;
             }
 
-            // Use power attack (secondary, downward swing) for low targets like
-            // fallen logs and stumps — horizontal swing often passes over them.
-            // Also escalate to power attack after 3+ whiffs on any target.
-            // CRITICAL: Only use power attack if the weapon actually HAS a secondary attack!
-            // Without this check, weapons without secondary (e.g. bronze pickaxe) fail forever.
-            bool wantPower = IsLowTarget() || _swingCount >= 3;
-            bool usePowerAttack = wantPower && weapon.HaveSecondaryAttack();
+            // Wait for stamina to regenerate before spamming attacks.
+            // Primary attack costs ~12-20 stamina; without food, base max is 25.
+            float priCost = weapon.m_shared.m_attack.m_attackStamina;
+            if (_stamina != null && priCost > 0f && _stamina.Stamina < priCost + 0.1f)
+            {
+                _attackTimer = 0.5f;
+                return;
+            }
+
+            // Power attack (secondary, downward swing) is better for low targets
+            // (logs/stumps) but costs more stamina. Start with primary attack;
+            // only escalate to secondary after 3+ primary whiffs AND enough stamina.
+            bool wantPower = _swingCount >= 3 && weapon.HaveSecondaryAttack();
+            bool usePowerAttack = false;
+            if (wantPower)
+            {
+                // Check if companion has enough stamina for the secondary attack.
+                // Secondary attacks typically cost more than base stamina (25),
+                // so without food they'd fail 100% of the time.
+                float secCost = weapon.m_shared.m_secondaryAttack.m_attackStamina;
+                float curStam = _stamina != null ? _stamina.Stamina : 999f;
+                usePowerAttack = curStam >= secCost + 1f;
+            }
 
             bool attacked = _humanoid != null && _humanoid.StartAttack(null, usePowerAttack);
             _totalAttempts++;
             _attackTimer = attacked ? AttackInterval : 0.5f; // failed retry at 0.5s (not 0.25s spam)
-            if (attacked) _swingCount++;
+            if (attacked)
+            {
+                _swingCount++;
+                _consecutiveFailures = 0;
+            }
+            else
+            {
+                _consecutiveFailures++;
+                // After 3 consecutive StartAttack failures (not animation-blocked),
+                // return to Moving to re-approach closer.
+                if (_consecutiveFailures >= 3)
+                {
+                    LogWarn($"Re-approach — {_consecutiveFailures} consecutive attack failures at dist={dist:F1}m " +
+                        $"range={range:F1} — moving closer");
+                    _reapproach = true;
+                    _consecutiveFailures = 0;
+                    _moveTimer = 0f;
+                    _moveLogTimer = 0f;
+                    _state = State_Moving;
+                    return;
+                }
+            }
+
+            // After several swings without destroy, the weapon probably isn't
+            // connecting — force re-approach to get right on top of the target.
+            if (attacked && _swingCount > 0 && _swingCount % 5 == 0 && dist > range * 0.4f)
+            {
+                LogWarn($"Re-approach — {_swingCount} swings without destroy at dist={dist:F1}m " +
+                    $"range={range:F1} — moving closer");
+                _reapproach = true;
+                _moveTimer = 0f;
+                _moveLogTimer = 0f;
+                _state = State_Moving;
+                return;
+            }
 
             // Bailout — abandon if too many successful swings without destroy OR
             // too many total attempts (catches infinite failure loops).
@@ -862,9 +933,13 @@ namespace Companions
                         var stateInfo = animator.GetCurrentAnimatorStateInfo(0);
                         animState = $"hash={stateInfo.shortNameHash} norm={stateInfo.normalizedTime:F2}";
                     }
+                    float stam = _stamina != null ? _stamina.Stamina : -1f;
+                    float stamMax = _stamina != null ? _stamina.MaxStamina : -1f;
                     LogWarn($"Attack FAILED — attempts={_totalAttempts}/{TotalAttemptMax} " +
                         $"animState=[{animState}] power={usePowerAttack} " +
-                        $"weapon=\"{weapon?.m_shared?.m_name ?? "NONE"}\"");
+                        $"weapon=\"{weapon?.m_shared?.m_name ?? "NONE"}\" " +
+                        $"stamina={stam:F0}/{stamMax:F0} " +
+                        $"atkCost={weapon.m_shared.m_attack.m_attackStamina:F0}");
                 }
             }
         }

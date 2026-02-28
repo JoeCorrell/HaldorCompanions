@@ -25,9 +25,10 @@ namespace Companions
         public CompanionSetup CurrentCompanion => _companion;
 
         // ── Layout constants ─────────────────────────────────────────────────
-        private const float PanelW       = 400f;
-        private const float PanelH       = 400f;
-        private const float DvergerPanelH = 260f;
+        private const float PanelW        = 400f;
+        private const float PanelH        = 400f;
+        private const float DvergerPanelW  = 310f;
+        private const float DvergerPanelH  = 290f;
         private const float UiScale      = 1.25f;
         private const float OuterPad     = 6f;
         private const float TabBarH      = 28f;
@@ -115,12 +116,9 @@ namespace Companions
         private Button          _commandableBtn;
         private int             _activeMode;
 
-        // ── Stance buttons ──────────────────────────────────────────────────
-        private Button _balancedBtn;
-        private Button _aggressiveBtn;
-        private Button _defensiveBtn;
-        private Button _passiveBtn;
-        private int    _activeStance;
+        // ── Wander toggle ──────────────────────────────────────────────────
+        private Button _wanderBtn;
+        private bool   _activeWander;
 
         private bool _built;
         private bool _visible;
@@ -204,12 +202,12 @@ namespace Companions
                     RefreshModeText();
                 }
 
-                int zdoStance = _companionNview.GetZDO().GetInt(
-                    CompanionSetup.CombatStanceHash, CompanionSetup.StanceBalanced);
-                if (zdoStance != _activeStance)
+                // Sync Wander toggle from ZDO
+                bool zdoWander = _companion.GetWander();
+                if (zdoWander != _activeWander)
                 {
-                    _activeStance = zdoStance;
-                    RefreshStanceButtons();
+                    _activeWander = zdoWander;
+                    RefreshWanderButton();
                 }
 
                 // Sync StayHome toggle from ZDO
@@ -312,9 +310,9 @@ namespace Companions
             if (_activeMode < CompanionSetup.ModeFollow || _activeMode > CompanionSetup.ModeStay)
                 _activeMode = CompanionSetup.ModeFollow;
 
-            _activeStance = _companion.GetCombatStance();
+            _activeWander = _companion.GetWander();
             RefreshActionButtons();
-            RefreshStanceButtons();
+            RefreshWanderButton();
             RefreshModeText();
             RefreshAutoPickupButton();
             RefreshCommandableButton();
@@ -488,13 +486,14 @@ namespace Companions
             _root.transform.SetParent(canvasParent, false);
             _root.transform.SetAsLastSibling();
 
+            float panelW = _builtForDverger ? DvergerPanelW : PanelW;
             float panelH = _builtForDverger ? DvergerPanelH : PanelH;
 
             var rootRT = _root.GetComponent<RectTransform>();
             rootRT.anchorMin        = new Vector2(0.5f, 0.5f);
             rootRT.anchorMax        = new Vector2(0.5f, 0.5f);
             rootRT.pivot            = new Vector2(0.5f, 0.5f);
-            rootRT.sizeDelta        = new Vector2(PanelW, panelH);
+            rootRT.sizeDelta        = new Vector2(panelW, panelH);
             rootRT.anchoredPosition = Vector2.zero;
             rootRT.localScale       = Vector3.one * UiScale;
 
@@ -561,7 +560,8 @@ namespace Companions
             barRT.sizeDelta = new Vector2(0f, TabBarH);
             barRT.anchoredPosition = new Vector2(0f, -OuterPad);
 
-            float halfW = (PanelW - OuterPad * 2f - 4f) / 2f;
+            float curPanelW = _builtForDverger ? DvergerPanelW : PanelW;
+            float halfW = (curPanelW - OuterPad * 2f - 4f) / 2f;
 
             _actionsTabBtn = BuildTabButton(barGO.transform, "ActionsTab", "Actions",
                 font, OuterPad, halfW);
@@ -620,20 +620,32 @@ namespace Companions
             SetBtnHighlight(_inventoryTabBtn, tab == 1);
         }
 
-        private static float ComputeInventorySlotSize()
+        private float ComputeInventorySlotSize()
         {
             int gridRows = Mathf.CeilToInt(MainGridSlots / (float)GridCols);
 
-            float availW = PanelW - OuterPad * 2f - 4f;
+            float curW = _builtForDverger ? DvergerPanelW : PanelW;
+            float curH = _builtForDverger ? DvergerPanelH : PanelH;
+
+            float availW = curW - OuterPad * 2f - 4f;
             float slotW = (availW - (GridCols - 1) * InventorySlotGap) / GridCols;
 
-            // Food section overhead: bottomY(4) + gap(2) + label(14) + gap(4) + sep(1) + gridGap(8) = 33
-            const float foodOverhead = 33f;
-            float totalH = PanelH - OuterPad * 2f - TabBarH - 4f;
-            // Height budget: gridRows grid slots + 1 food slot row + overhead + row gaps
-            float slotH = (totalH - foodOverhead - (gridRows - 1) * InventorySlotGap) / (gridRows + 1);
+            float totalH = curH - OuterPad * 2f - TabBarH - 4f;
 
-            return Mathf.Floor(Mathf.Min(slotW, slotH));
+            if (_builtForDverger)
+            {
+                // No food slots — all height goes to the grid
+                float slotH = (totalH - (gridRows - 1) * InventorySlotGap) / gridRows;
+                return Mathf.Floor(Mathf.Min(slotW, slotH));
+            }
+            else
+            {
+                // Food section overhead: bottomY(4) + gap(2) + label(14) + gap(4) + sep(1) + gridGap(8) = 33
+                const float foodOverhead = 33f;
+                // Height budget: gridRows grid slots + 1 food slot row + overhead + row gaps
+                float slotH = (totalH - foodOverhead - (gridRows - 1) * InventorySlotGap) / (gridRows + 1);
+                return Mathf.Floor(Mathf.Min(slotW, slotH));
+            }
         }
 
         private void BuildInventoryContent(RectTransform parent, TMP_FontAsset font)
@@ -641,7 +653,8 @@ namespace Companions
             float slotSize = ComputeInventorySlotSize();
             float y = 0f;
             BuildInventoryGrid(parent, font, ref y, slotSize);
-            BuildFoodSlots(parent, font, slotSize);
+            if (!_builtForDverger)
+                BuildFoodSlots(parent, font, slotSize);
         }
 
         private void BuildActionControls(RectTransform parent, TMP_FontAsset font, ref float y)
@@ -672,6 +685,9 @@ namespace Companions
             _setHomeBtn = BuildUnwiredActionButton(parent, ref y, btnH, btnGap, "Set Home");
             if (_setHomeBtn != null)
                 _setHomeBtn.onClick.AddListener(OnSetHomeClicked);
+            _wanderBtn = BuildUnwiredActionButton(parent, ref y, btnH, btnGap, "Wander: OFF");
+            if (_wanderBtn != null)
+                _wanderBtn.onClick.AddListener(ToggleWander);
             _autoPickupBtn = BuildActionButton(parent, ref y, btnH, btnGap, "Auto Pickup: OFF", -1);
             if (_autoPickupBtn != null)
             {
@@ -679,61 +695,22 @@ namespace Companions
                 _autoPickupBtn.onClick.AddListener(ToggleAutoPickup);
             }
 
-            // Commandable + Combat Stance — Player-clone companions only
-            if (!_builtForDverger)
+            _commandableBtn = BuildActionButton(parent, ref y, btnH, btnGap, "Command: ON", -1);
+            if (_commandableBtn != null)
             {
-                _commandableBtn = BuildActionButton(parent, ref y, btnH, btnGap, "Command: ON", -1);
-                if (_commandableBtn != null)
-                {
-                    _commandableBtn.onClick.RemoveAllListeners();
-                    _commandableBtn.onClick.AddListener(ToggleCommandable);
-                }
-
-                // ── Combat Stance section ──
-                y -= 6f;
-                var stanceHeader = MakeText(parent, "StanceHeader", "Combat Stance",
-                    font, 10f, GoldColor, TextAlignmentOptions.Center);
-                stanceHeader.fontStyle = FontStyles.Bold;
-                PlaceTopStretch(stanceHeader.GetComponent<RectTransform>(), ref y, 14f);
-                y -= 2f;
-
-                // 4 horizontal stance buttons
-                float stanceBtnH = 30f;
-                float stanceGap = 2f;
-                float totalW = parent.rect.width > 0 ? parent.rect.width : (PanelW - OuterPad * 2f - 4f);
-                float stanceBtnW = (totalW - stanceGap * 3f) / 4f;
-
-                var stanceRow = new GameObject("StanceRow", typeof(RectTransform));
-                stanceRow.transform.SetParent(parent, false);
-                var stanceRowRT = stanceRow.GetComponent<RectTransform>();
-                stanceRowRT.anchorMin = new Vector2(0f, 1f);
-                stanceRowRT.anchorMax = new Vector2(1f, 1f);
-                stanceRowRT.pivot = new Vector2(0.5f, 1f);
-                stanceRowRT.sizeDelta = new Vector2(0f, stanceBtnH);
-                stanceRowRT.anchoredPosition = new Vector2(0f, y);
-                y -= stanceBtnH + 2f;
-
-                _balancedBtn   = BuildStanceButton(stanceRow.transform, "BAL", 0, stanceBtnW, stanceBtnH, stanceGap, CompanionSetup.StanceBalanced);
-                _aggressiveBtn = BuildStanceButton(stanceRow.transform, "AGG", 1, stanceBtnW, stanceBtnH, stanceGap, CompanionSetup.StanceAggressive);
-                _defensiveBtn  = BuildStanceButton(stanceRow.transform, "DEF", 2, stanceBtnW, stanceBtnH, stanceGap, CompanionSetup.StanceDefensive);
-                _passiveBtn    = BuildStanceButton(stanceRow.transform, "PAS", 3, stanceBtnW, stanceBtnH, stanceGap, CompanionSetup.StancePassive);
+                _commandableBtn.onClick.RemoveAllListeners();
+                _commandableBtn.onClick.AddListener(ToggleCommandable);
             }
-            else
-            {
+
+            if (_builtForDverger)
                 _commandableBtn = null;
-                _balancedBtn = null;
-                _aggressiveBtn = null;
-                _defensiveBtn = null;
-                _passiveBtn = null;
-            }
 
             // Set up explicit gamepad navigation — d-pad / left stick cycles through buttons vertically.
             // Tab buttons intentionally excluded so LB/RB handle tab switching, not up/down.
             // Build a filtered list so navigation never links to null buttons.
             var allBtns = new Button[] {
                 _followBtn, _gatherWoodBtn, _gatherStoneBtn, _gatherOreBtn,
-                _stayBtn, _setHomeBtn, _autoPickupBtn, _commandableBtn,
-                _balancedBtn, _aggressiveBtn, _defensiveBtn, _passiveBtn
+                _stayBtn, _setHomeBtn, _wanderBtn, _autoPickupBtn, _commandableBtn
             };
             var validBtns = new System.Collections.Generic.List<Button>();
             for (int i = 0; i < allBtns.Length; i++)
@@ -1533,46 +1510,30 @@ namespace Companions
             SetBtnHighlight(_stayBtn, on);
         }
 
-        // ── Combat Stance UI ─────────────────────────────────────────────────
+        // ── Wander toggle ─────────────────────────────────────────────────
 
-        private Button BuildStanceButton(Transform parent, string label, int index,
-            float btnW, float btnH, float gap, int stanceValue)
+        private void ToggleWander()
         {
-            var go = CreateTintedButton(parent, $"Stance_{label}", label);
-            if (go == null) return null;
+            if (_companion == null) return;
+            EnsureCompanionOwnership();
+            _activeWander = !_activeWander;
+            _companion.SetWander(_activeWander);
+            RefreshWanderButton();
 
-            var rt = go.GetComponent<RectTransform>();
-            rt.anchorMin = new Vector2(0f, 0f);
-            rt.anchorMax = new Vector2(0f, 1f);
-            rt.pivot = new Vector2(0f, 0.5f);
-            rt.sizeDelta = new Vector2(btnW, 0f);
-            rt.anchoredPosition = new Vector2(index * (btnW + gap), 0f);
+            // Auto-set home position if enabling wander without one
+            if (_activeWander && !_companion.HasHomePosition())
+                _companion.SetHomePosition(_companion.transform.position);
 
-            var btn = go.GetComponent<Button>();
-            if (btn != null)
-                btn.onClick.AddListener(() => SetCombatStance(stanceValue));
-            return btn;
+            CompanionsPlugin.Log.LogDebug($"[UI] ToggleWander → {(_activeWander ? "ON" : "OFF")}");
         }
 
-        private void SetCombatStance(int stance)
+        private void RefreshWanderButton()
         {
-            if (stance < CompanionSetup.StanceBalanced || stance > CompanionSetup.StancePassive)
-                stance = CompanionSetup.StanceBalanced;
-
-            _activeStance = stance;
-            _companion?.SetCombatStance(stance);
-            RefreshStanceButtons();
-
-            string[] names = { "Balanced", "Aggressive", "Defensive", "Passive" };
-            CompanionsPlugin.Log.LogDebug($"[UI] SetCombatStance → {names[stance]}");
-        }
-
-        private void RefreshStanceButtons()
-        {
-            SetBtnHighlight(_balancedBtn,   _activeStance == CompanionSetup.StanceBalanced);
-            SetBtnHighlight(_aggressiveBtn, _activeStance == CompanionSetup.StanceAggressive);
-            SetBtnHighlight(_defensiveBtn,  _activeStance == CompanionSetup.StanceDefensive);
-            SetBtnHighlight(_passiveBtn,    _activeStance == CompanionSetup.StancePassive);
+            if (_wanderBtn == null) return;
+            var txt = _wanderBtn.GetComponentInChildren<TMP_Text>();
+            if (txt != null)
+                txt.text = _activeWander ? "Wander: ON" : "Wander: OFF";
+            SetBtnHighlight(_wanderBtn, _activeWander);
         }
 
         private void SetBtnHighlight(Button btn, bool active)

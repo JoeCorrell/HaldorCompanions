@@ -500,37 +500,16 @@ namespace Companions
             _selectedDvergerVariant = CompanionTierData.DvergerVariants[0];
             var variants = CompanionTierData.DvergerVariants;
 
-            // Row 1: first 3 variants
-            int row1Count = Mathf.Min(3, variants.Length);
-            var vRow1 = MakeAnchoredRow(_dvergerGroup.transform, dy, genderH);
-            dy -= genderH + gap;
-            for (int i = 0; i < row1Count; i++)
+            // Vertical list — one button per row
+            for (int i = 0; i < variants.Length; i++)
             {
                 var v = variants[i];
-                float xMin = (float)i / row1Count + 0.01f;
-                float xMax = (float)(i + 1) / row1Count - 0.01f;
-                var btn = AddToggleButton(vRow1, v.DisplayName, buttonTemplate,
-                    new Vector2(xMin, 0f), new Vector2(xMax, 1f),
+                var vRow = MakeAnchoredRow(_dvergerGroup.transform, dy, genderH);
+                dy -= genderH + gap;
+                var btn = AddToggleButton(vRow, v.DisplayName, buttonTemplate,
+                    new Vector2(0.01f, 0f), new Vector2(0.99f, 1f),
                     () => SetDvergerVariant(v));
                 _variantButtons.Add(btn);
-            }
-
-            // Row 2: remaining variants (if any)
-            if (variants.Length > 3)
-            {
-                int row2Count = variants.Length - 3;
-                var vRow2 = MakeAnchoredRow(_dvergerGroup.transform, dy, genderH);
-                dy -= genderH + gap;
-                for (int i = 0; i < row2Count; i++)
-                {
-                    var v = variants[3 + i];
-                    float xMin = (float)i / row2Count + 0.01f;
-                    float xMax = (float)(i + 1) / row2Count - 0.01f;
-                    var btn = AddToggleButton(vRow2, v.DisplayName, buttonTemplate,
-                        new Vector2(xMin, 0f), new Vector2(xMax, 1f),
-                        () => SetDvergerVariant(v));
-                    _variantButtons.Add(btn);
-                }
             }
 
             float dvergerGroupH = -dy;

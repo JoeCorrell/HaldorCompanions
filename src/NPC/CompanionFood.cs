@@ -486,11 +486,6 @@ namespace Companions
         {
             if (!IsFoodItem(item)) return false;
             string name = item.m_shared?.m_name ?? "?";
-            if (_humanoid != null && !_humanoid.CanConsumeItem(item, checkWorldLevel: false))
-            {
-                CompanionsPlugin.Log.LogDebug($"[Food] CanConsume REJECTED \"{name}\" — CanConsumeItem=false (world level?)");
-                return false;
-            }
             if (!isRefresh && IsFoodAlreadyActive(item.m_shared.m_name))
             {
                 CompanionsPlugin.Log.LogDebug($"[Food] CanConsume REJECTED \"{name}\" — already active in another slot");

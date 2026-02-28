@@ -142,9 +142,6 @@ namespace Companions
             _abandonCooldown = Mathf.Max(0f, _abandonCooldown - dt);
             _dodgeCooldown = Mathf.Max(0f, _dodgeCooldown - dt);
 
-            // Read combat stance
-            int stance = _setup != null ? _setup.GetCombatStance() : CompanionSetup.StanceBalanced;
-
             // Active dodge — supersedes all other combat logic
             if (_isDodging)
             {
@@ -300,21 +297,9 @@ namespace Companions
             }
             _lastStuckPos = transform.position;
 
-            // ── Retreat check (highest priority, stance-aware thresholds) ──
+            // ── Retreat check ──
             float healthPct = _character.GetHealthPercentage();
             float staminaPct = _stamina != null ? _stamina.GetStaminaPercentage() : 1f;
-
-            // Stance-modified retreat thresholds
-            float retreatHpPct, retreatStamPct;
-            switch (stance)
-            {
-                case CompanionSetup.StanceAggressive:
-                    retreatHpPct = 0.15f; retreatStamPct = 0.05f; break;
-                case CompanionSetup.StanceDefensive:
-                    retreatHpPct = 0.45f; retreatStamPct = 0.25f; break;
-                default:
-                    retreatHpPct = HealthRetreatPct; retreatStamPct = StaminaRetreatPct; break;
-            }
 
             if (_phase == CombatPhase.Retreat)
             {
@@ -326,16 +311,16 @@ namespace Companions
                 }
                 else
                 {
-                    UpdateRetreat(target, dt, stance);
+                    UpdateRetreat(target, dt);
                     return;
                 }
             }
-            else if (healthPct < retreatHpPct || staminaPct < retreatStamPct)
+            else if (healthPct < HealthRetreatPct || staminaPct < StaminaRetreatPct)
             {
                 TransitionTo(CombatPhase.Retreat);
                 CompanionsPlugin.Log.LogDebug(
-                    $"[Combat] Entering RETREAT — hp={healthPct:P0} stam={staminaPct:P0} stance={stance}");
-                UpdateRetreat(target, dt, stance);
+                    $"[Combat] Entering RETREAT — hp={healthPct:P0} stam={staminaPct:P0}");
+                UpdateRetreat(target, dt);
                 return;
             }
 
@@ -379,7 +364,7 @@ namespace Companions
                     RestoreMeleeLoadout();
                     TransitionTo(CombatPhase.Melee);
                     EnsureShieldEquipped();
-                    UpdateMelee(target, dt, stance);
+                    UpdateMelee(target, dt);
                 }
                 else
                 {
@@ -405,7 +390,7 @@ namespace Companions
                         TransitionTo(CombatPhase.Melee);
                         EnsureShieldEquipped();
                     }
-                    UpdateMelee(target, dt, stance);
+                    UpdateMelee(target, dt);
                 }
             }
         }
@@ -511,7 +496,7 @@ namespace Companions
         //  Melee Combat — defensive-first: block threats, then counter-attack
         // ════════════════════════════════════════════════════════════════════
 
-        private void UpdateMelee(Character target, float dt, int stance)
+        private void UpdateMelee(Character target, float dt)
         {
             // Use center-to-surface distance (consistent with CompanionAI.UpdateCombat)
             float dist = Vector3.Distance(transform.position, target.transform.position)
@@ -560,7 +545,6 @@ namespace Companions
             // ── 1b. Dodge check — before block decision ──
             if (_dodgeCooldown <= 0f && !_isDodging && !_character.InAttack() &&
                 !ReflectionHelper.GetBlocking(_character) &&
-                stance != CompanionSetup.StanceAggressive &&
                 closestAttacker != null)
             {
                 // Check if attacker is facing us
@@ -585,15 +569,12 @@ namespace Companions
                     _dodgeDirection = perp;
                     _isDodging = true;
                     _dodgeDuration = DodgeDurationTime;
-                    float cooldown = stance == CompanionSetup.StanceDefensive
-                        ? DodgeCooldownTime * 0.6f
-                        : DodgeCooldownTime;
-                    _dodgeCooldown = cooldown;
+                    _dodgeCooldown = DodgeCooldownTime;
                     _stamina?.UseStamina(DodgeStaminaCost);
 
                     CompanionsPlugin.Log.LogDebug(
                         $"[Combat] DODGE — attacker=\"{closestAttacker.m_name}\" " +
-                        $"dist={closestAttackerDist:F1} cd={cooldown:F1}s");
+                        $"dist={closestAttackerDist:F1} cd={DodgeCooldownTime:F1}s");
                     return; // skip block/attack this frame
                 }
             }
@@ -677,10 +658,6 @@ namespace Companions
             }
 
             bool shouldBlock = wantBlock && !inCounterWindow;
-
-            // Aggressive: never block
-            if (stance == CompanionSetup.StanceAggressive)
-                shouldBlock = false;
 
             if (shouldBlock)
             {
@@ -794,9 +771,7 @@ namespace Companions
                 if (weapon != null && weapon.HaveSecondaryAttack())
                 {
                     _humanoid.StartAttack(target, true);
-                    float paCooldown = stance == CompanionSetup.StanceAggressive
-                        ? PowerAttackCooldown * 0.5f : PowerAttackCooldown;
-                    _powerAttackTimer = paCooldown;
+                    _powerAttackTimer = PowerAttackCooldown;
                     _attackCooldownTimer = AttackCooldown;
                     CompanionsPlugin.Log.LogDebug(
                         $"[Combat] POWER ATTACK on staggered \"{target.m_name}\" " +
@@ -965,7 +940,7 @@ namespace Companions
         //  Retreat + Consumables
         // ════════════════════════════════════════════════════════════════════
 
-        private void UpdateRetreat(Character target, float dt, int stance)
+        private void UpdateRetreat(Character target, float dt)
         {
             _retreatTimer += dt;
 
@@ -985,7 +960,7 @@ namespace Companions
                 // and enemy isn't too close to the player
                 if (dotCheck > -0.5f && enemyToPlayer > 5f)
                 {
-                    float playerWeight = stance == CompanionSetup.StanceDefensive ? 0.85f : 0.7f;
+                    float playerWeight = 0.7f;
                     awayDir = (toPlayer * playerWeight + awayDir * (1f - playerWeight)).normalized;
                 }
             }
