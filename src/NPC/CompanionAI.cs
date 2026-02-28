@@ -87,8 +87,10 @@ namespace Companions
         private Character _healTarget;
         private float _healScanTimer;
         private float _healEquipTimer;
+        private float _healLogTimer;
         private const float HealThreshold = 0.7f;
         private const float HealScanInterval = 1f;
+        private const float HealLogInterval = 3f;
 
         // ══════════════════════════════════════════════════════════════════════
         //  Pending Cart Navigation
@@ -657,6 +659,7 @@ namespace Companions
             if (_isDvergerSupport && humanoid != null)
             {
                 _healScanTimer -= dt;
+                Character prevHealTarget = _healTarget;
                 if (_healScanTimer <= 0f)
                 {
                     _healScanTimer = HealScanInterval;
@@ -667,7 +670,23 @@ namespace Companions
                 if (_healTarget != null &&
                     (_healTarget.IsDead() ||
                      _healTarget.GetHealth() / _healTarget.GetMaxHealth() >= HealThreshold))
+                {
+                    CompanionsPlugin.Log.LogDebug(
+                        $"[CompanionAI:Heal] Target \"{_healTarget.m_name}\" recovered or died — clearing");
                     _healTarget = null;
+                }
+
+                // Log target transitions
+                if (_healTarget != prevHealTarget)
+                {
+                    if (_healTarget != null)
+                        CompanionsPlugin.Log.LogDebug(
+                            $"[CompanionAI:Heal] New heal target \"{_healTarget.m_name}\" " +
+                            $"HP={_healTarget.GetHealth():F0}/{_healTarget.GetMaxHealth():F0} " +
+                            $"({_healTarget.GetHealth() / _healTarget.GetMaxHealth() * 100f:F0}%)");
+                    else if (prevHealTarget != null)
+                        CompanionsPlugin.Log.LogDebug("[CompanionAI:Heal] No hurt allies in range — resuming combat");
+                }
 
                 if (_healTarget != null)
                 {
@@ -676,7 +695,13 @@ namespace Companions
                     if (_healEquipTimer <= 0f && !m_character.InAttack())
                     {
                         _healEquipTimer = 1f;
+                        var prevWeapon = humanoid.GetCurrentWeapon();
                         humanoid.EquipBestWeapon(null, null, _healTarget, null);
+                        var newWeapon = humanoid.GetCurrentWeapon();
+                        if (prevWeapon != newWeapon)
+                            CompanionsPlugin.Log.LogDebug(
+                                $"[CompanionAI:Heal] Weapon switch \"{prevWeapon?.m_shared?.m_name ?? "none"}\" " +
+                                $"→ \"{newWeapon?.m_shared?.m_name ?? "none"}\"");
                     }
 
                     UpdateHealBehavior(humanoid, dt);
@@ -689,7 +714,13 @@ namespace Companions
                     if (_healEquipTimer <= 0f && !m_character.InAttack())
                     {
                         _healEquipTimer = 1f;
+                        var prevWeapon = humanoid.GetCurrentWeapon();
                         humanoid.EquipBestWeapon(m_targetCreature, m_targetStatic, null, null);
+                        var newWeapon = humanoid.GetCurrentWeapon();
+                        if (prevWeapon != newWeapon)
+                            CompanionsPlugin.Log.LogDebug(
+                                $"[CompanionAI:Heal] Weapon switch back \"{prevWeapon?.m_shared?.m_name ?? "none"}\" " +
+                                $"→ \"{newWeapon?.m_shared?.m_name ?? "none"}\"");
                     }
                 }
             }
@@ -1205,6 +1236,18 @@ namespace Companions
                          - _healTarget.GetRadius();
             float attackRange = weapon.m_shared.m_aiAttackRange;
 
+            // Throttled state logging
+            _healLogTimer -= dt;
+            if (_healLogTimer <= 0f)
+            {
+                _healLogTimer = HealLogInterval;
+                CompanionsPlugin.Log.LogDebug(
+                    $"[CompanionAI:Heal] Healing \"{_healTarget.m_name}\" — " +
+                    $"dist={dist:F1} range={attackRange:F1} " +
+                    $"weapon=\"{weapon.m_shared.m_name}\" " +
+                    $"targetHP={_healTarget.GetHealth():F0}/{_healTarget.GetMaxHealth():F0}");
+            }
+
             if (dist < attackRange)
             {
                 StopMoving();
@@ -1222,12 +1265,14 @@ namespace Companions
                     {
                         m_timeSinceAttacking = 0f;
                         CompanionsPlugin.Log.LogDebug(
-                            $"[CompanionAI] Heal attack on \"{_healTarget.m_name}\" " +
+                            $"[CompanionAI:Heal] Heal attack fired on \"{_healTarget.m_name}\" " +
                             $"(HP: {_healTarget.GetHealth():F0}/{_healTarget.GetMaxHealth():F0})");
                     }
                     else
                     {
                         _attackRetryTime = Time.time + 0.5f;
+                        CompanionsPlugin.Log.LogDebug(
+                            $"[CompanionAI:Heal] Heal attack FAILED on \"{_healTarget.m_name}\" — retrying in 0.5s");
                     }
                 }
             }
