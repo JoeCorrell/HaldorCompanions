@@ -10,10 +10,10 @@ using UnityEngine.UI;
 namespace Companions
 {
     /// <summary>
-    /// Companion interaction overlay — appears alongside InventoryGui when
-    /// a companion's Container is opened.  Single panel with two tabs:
-    /// Actions = stats + controls, Inventory = grid + food slots.
-    /// Vanilla container panel is hidden; our grid handles item transfer.
+    /// Companion inventory overlay — appears alongside InventoryGui when
+    /// a companion's Container is opened (tap E).  Single panel showing
+    /// name input, 5×6 inventory grid, and 3 food slots.
+    /// Action controls have moved to CompanionRadialMenu (hold E).
     /// </summary>
     public class CompanionInteractPanel : MonoBehaviour
     {
@@ -24,14 +24,15 @@ namespace Companions
         public bool IsNameInputFocused => _nameInput != null && _nameInput.isFocused;
         public CompanionSetup CurrentCompanion => _companion;
 
+        public static bool IsOpenFor(CompanionSetup setup)
+            => Instance != null && Instance._visible
+            && Instance._companion != null && Instance._companion == setup;
+
         // ── Layout constants ─────────────────────────────────────────────────
-        private const float PanelW        = 400f;
         private const float PanelH        = 400f;
-        private const float DvergerPanelW  = 310f;
-        private const float DvergerPanelH  = 290f;
-        private const float UiScale      = 1.25f;
-        private const float OuterPad     = 6f;
-        private const float TabBarH      = 28f;
+        private const float DvergerPanelH = 290f;
+        private const float UiScale       = 1.25f;
+        private const float OuterPad      = 2f;
 
         // ── Grid constants ───────────────────────────────────────────────────
         private const int GridCols          = 5;
@@ -41,48 +42,18 @@ namespace Companions
         private const float InventorySlotGap = 3f;
 
         // ── Style constants ──────────────────────────────────────────────────
-        private static readonly Color PanelBg        = new Color(0.18f, 0.14f, 0.09f, 0.92f);
-        private static readonly Color ColBg          = new Color(0f, 0f, 0f, 0.75f);
-        private static readonly Color GoldColor      = new Color(0.83f, 0.64f, 0.31f, 1f);
-        private static readonly Color GoldTextColor  = new Color(0.83f, 0.52f, 0.18f, 1f);
-        private static readonly Color LabelText      = new Color(1f, 0.9f, 0.5f, 1f);
-        private static readonly Color EquipBlue      = new Color(0.29f, 0.55f, 0.94f, 1f);
-        private static readonly Color BarBg          = new Color(0.15f, 0.15f, 0.15f, 0.85f);
-        private static readonly Color SlotTint       = new Color(0f, 0f, 0f, 0.5625f);
+        private static readonly Color PanelBg          = new Color(0.18f, 0.14f, 0.09f, 0.92f);
+        private static readonly Color ColBg            = new Color(0f, 0f, 0f, 0.75f);
+        private static readonly Color GoldColor        = new Color(0.83f, 0.64f, 0.31f, 1f);
+        private static readonly Color LabelText        = new Color(1f, 0.9f, 0.5f, 1f);
+        private static readonly Color EquipBlue        = new Color(0.29f, 0.55f, 0.94f, 1f);
+        private static readonly Color BarBg            = new Color(0.15f, 0.15f, 0.15f, 0.85f);
+        private static readonly Color SlotTint         = new Color(0f, 0f, 0f, 0.5625f);
         private static readonly Color EquippedSlotTint = new Color(0.10f, 0.20f, 0.38f, 0.80f);
 
         // ── Custom sprite caches ─────────────────────────────────────────────
         private static Sprite _panelBgSprite;
         private static Sprite _sliderBgSprite;
-
-        // ── Button template ──────────────────────────────────────────────────
-        private static GameObject _buttonTemplate;
-        private static float      _btnHeight = 30f;
-
-        // ── Preview camera ───────────────────────────────────────────────────
-        private static readonly Vector3 PreviewPos = new Vector3(10040f, 5000f, 10000f);
-        private RenderTexture  _rt;
-        private Camera         _cam;
-        private GameObject     _camGO;
-        private GameObject     _clone;
-        private GameObject     _lightRig;
-        private static readonly Vector3 PreviewCameraOffsetDir =
-            new Vector3(0f, 0.18f, 1f).normalized;
-
-        private Color                             _savedAmbient;
-        private float                             _savedAmbientIntensity;
-        private UnityEngine.Rendering.AmbientMode _savedAmbientMode;
-
-        // ── VisEquipment reflection ──────────────────────────────────────────
-        private static readonly MethodInfo _updateVisuals =
-            AccessTools.Method(typeof(VisEquipment), "UpdateVisuals");
-        private static readonly FieldInfo _visRightItemHash    = AccessTools.Field(typeof(VisEquipment), "m_currentRightItemHash");
-        private static readonly FieldInfo _visLeftItemHash     = AccessTools.Field(typeof(VisEquipment), "m_currentLeftItemHash");
-        private static readonly FieldInfo _visChestItemHash    = AccessTools.Field(typeof(VisEquipment), "m_currentChestItemHash");
-        private static readonly FieldInfo _visLegItemHash      = AccessTools.Field(typeof(VisEquipment), "m_currentLegItemHash");
-        private static readonly FieldInfo _visHelmetItemHash   = AccessTools.Field(typeof(VisEquipment), "m_currentHelmetItemHash");
-        private static readonly FieldInfo _visShoulderItemHash = AccessTools.Field(typeof(VisEquipment), "m_currentShoulderItemHash");
-        private static readonly FieldInfo _visUtilityItemHash  = AccessTools.Field(typeof(VisEquipment), "m_currentUtilityItemHash");
 
         // ── InventoryGui drag system reflection ──────────────────────────────
         private static readonly FieldInfo _dragItemField      = AccessTools.Field(typeof(InventoryGui), "m_dragItem");
@@ -94,31 +65,14 @@ namespace Companions
         // ── Companion references ─────────────────────────────────────────────
         private CompanionSetup   _companion;
         private Character        _companionChar;
-        private CompanionStamina _companionStamina;
         private CompanionFood    _companionFood;
         private Humanoid         _companionHumanoid;
         private Container        _companionContainer;
         private ZNetView         _companionNview;
-        private CompanionAI      _companionAI;
-        private HarvestController   _companionHarvest;
 
         // ── UI elements ──────────────────────────────────────────────────────
         private GameObject      _root;
         private TMP_InputField  _nameInput;
-        private TextMeshProUGUI _modeText;
-        private Button          _followBtn;
-        private Button          _gatherWoodBtn;
-        private Button          _gatherStoneBtn;
-        private Button          _gatherOreBtn;
-        private Button          _stayBtn;
-        private Button          _setHomeBtn;
-        private Button          _autoPickupBtn;
-        private Button          _commandableBtn;
-        private int             _activeMode;
-
-        // ── Wander toggle ──────────────────────────────────────────────────
-        private Button _wanderBtn;
-        private bool   _activeWander;
 
         private bool _built;
         private bool _visible;
@@ -135,19 +89,6 @@ namespace Companions
         private TextMeshProUGUI[] _foodSlotCounts;
         private float             _invRefreshTimer;
 
-        // ── Tab system ───────────────────────────────────────────────────────
-        private RectTransform   _actionsContent;
-        private RectTransform   _inventoryContent;
-        private Button          _actionsTabBtn;
-        private Button          _inventoryTabBtn;
-        private int             _activeTab;
-
-        // ── Controller selection highlight ──────────────────────────────────
-        private static readonly Color SelectionGlow = new Color(1f, 0.82f, 0.24f, 0.25f);
-        private readonly System.Collections.Generic.Dictionary<Button, GameObject> _selectionOverlays =
-            new System.Collections.Generic.Dictionary<Button, GameObject>();
-        private GameObject _lastSelectedOverlay;
-
         // ══════════════════════════════════════════════════════════════════════
         //  Lifecycle
         // ══════════════════════════════════════════════════════════════════════
@@ -157,15 +98,8 @@ namespace Companions
         private void OnDestroy()
         {
             if (Instance == this) Instance = null;
-            ClearPreviewClone();
-            // Release RenderTexture and camera
-            if (_rt != null)  { _rt.Release(); UnityEngine.Object.Destroy(_rt); _rt = null; }
-            if (_camGO != null) { UnityEngine.Object.Destroy(_camGO); _camGO = null; }
-            _cam = null;
-            // Clear static sprite caches to avoid holding destroyed Texture2D refs
             _panelBgSprite = null;
             _sliderBgSprite = null;
-            _buttonTemplate = null;
             Teardown();
         }
 
@@ -189,67 +123,6 @@ namespace Companions
             }
 
             RefreshInventoryGrid();
-
-            // Sync action mode from ZDO (may change externally, e.g. overweight auto-revert)
-            if (_companionNview != null && _companionNview.GetZDO() != null)
-            {
-                int zdoMode = _companionNview.GetZDO().GetInt(
-                    CompanionSetup.ActionModeHash, CompanionSetup.ModeFollow);
-                if (zdoMode != _activeMode)
-                {
-                    _activeMode = zdoMode;
-                    RefreshActionButtons();
-                    RefreshModeText();
-                }
-
-                // Sync Wander toggle from ZDO
-                bool zdoWander = _companion.GetWander();
-                if (zdoWander != _activeWander)
-                {
-                    _activeWander = zdoWander;
-                    RefreshWanderButton();
-                }
-
-                // Sync StayHome toggle from ZDO
-                RefreshStayHomeButton();
-            }
-
-            // Gamepad: LB/RB cycle tabs, same keys vanilla uses for InventoryGui tab cycling
-            if (ZInput.GetButtonDown("JoyTabLeft"))
-            {
-                SwitchTab(0); // Actions tab
-                ZInput.ResetButtonStatus("JoyTabLeft");
-            }
-            else if (ZInput.GetButtonDown("JoyTabRight"))
-            {
-                SwitchTab(1); // Inventory tab
-                ZInput.ResetButtonStatus("JoyTabRight");
-            }
-
-            UpdateControllerHighlight();
-        }
-
-        private void UpdateControllerHighlight()
-        {
-            // Hide previous overlay
-            if (_lastSelectedOverlay != null)
-            {
-                _lastSelectedOverlay.SetActive(false);
-                _lastSelectedOverlay = null;
-            }
-
-            if (!ZInput.IsGamepadActive()) return;
-            if (EventSystem.current == null) return;
-
-            var selected = EventSystem.current.currentSelectedGameObject;
-            if (selected == null) return;
-
-            // Find the "selected" child overlay on the focused button
-            var selTr = selected.transform.Find("selected");
-            if (selTr == null) return;
-
-            selTr.gameObject.SetActive(true);
-            _lastSelectedOverlay = selTr.gameObject;
         }
 
         // ══════════════════════════════════════════════════════════════════════
@@ -260,26 +133,18 @@ namespace Companions
         {
             _companion          = companion;
             _companionChar      = companion.GetComponent<Character>();
-            _companionStamina   = companion.GetComponent<CompanionStamina>();
             _companionFood      = companion.GetComponent<CompanionFood>();
             _companionHumanoid  = companion.GetComponent<Humanoid>();
             _companionContainer = companion.GetComponent<Container>();
             _companionNview     = companion.GetComponent<ZNetView>();
-            _companionAI        = companion.GetComponent<CompanionAI>();
-            _companionHarvest   = companion.GetComponent<HarvestController>();
 
             CompanionsPlugin.Log.LogDebug(
                 $"[UI] Show — companion=\"{companion.name}\" " +
-                $"char={_companionChar != null} stamina={_companionStamina != null} " +
-                $"food={_companionFood != null} humanoid={_companionHumanoid != null} " +
-                $"nview={_companionNview != null} ai={_companionAI != null} " +
-                $"harvest={_companionHarvest != null} " +
-                $"dragField={_dragItemField != null} dragInvField={_dragInventoryField != null} " +
-                $"dragAmtField={_dragAmountField != null} setupDrag={_setupDragItem != null}");
+                $"char={_companionChar != null} humanoid={_companionHumanoid != null} " +
+                $"food={_companionFood != null} nview={_companionNview != null}");
 
             EnsureCompanionOwnership();
 
-            // Detect Dverger — simplified UI (no gather/stance/commandable)
             bool isDverger = !companion.CanWearArmor();
 
             // Rebuild if destroyed (scene change), never built, or companion type changed
@@ -293,6 +158,7 @@ namespace Companions
             _builtForDverger = isDverger;
             if (!_built) BuildUI();
 
+            // Load name
             string savedName = "";
             if (_companionNview != null && _companionNview.GetZDO() != null)
                 savedName = _companionNview.GetZDO().GetString(CompanionSetup.NameHash, "");
@@ -303,30 +169,11 @@ namespace Companions
                 _nameInput.onValueChanged.AddListener(OnNameChanged);
             }
 
-            _activeMode = CompanionSetup.ModeFollow;
-            if (_companionNview != null && _companionNview.GetZDO() != null)
-                _activeMode = _companionNview.GetZDO().GetInt(
-                    CompanionSetup.ActionModeHash, CompanionSetup.ModeFollow);
-            if (_activeMode < CompanionSetup.ModeFollow || _activeMode > CompanionSetup.ModeStay)
-                _activeMode = CompanionSetup.ModeFollow;
-
-            _activeWander = _companion.GetWander();
-            RefreshActionButtons();
-            RefreshWanderButton();
-            RefreshModeText();
-            RefreshAutoPickupButton();
-            RefreshCommandableButton();
             _invRefreshTimer = 0f;
-
-            SwitchTab(0); // Always open on Actions tab
 
             _root.SetActive(true);
             _root.transform.SetAsLastSibling();
             _visible = true;
-
-            // Give gamepad focus to the first action button when opening
-            if (_followBtn != null && ZInput.IsGamepadActive())
-                EventSystem.current?.SetSelectedGameObject(_followBtn.gameObject);
         }
 
         public void Hide()
@@ -341,16 +188,12 @@ namespace Companions
             if (InventoryGui.instance != null && InventoryGui.instance.m_crafting != null)
                 InventoryGui.instance.m_crafting.gameObject.SetActive(true);
 
-            ClearPreviewClone();
             _companion          = null;
             _companionChar      = null;
-            _companionStamina   = null;
             _companionFood      = null;
             _companionHumanoid  = null;
             _companionContainer = null;
             _companionNview     = null;
-            _companionAI        = null;
-            _companionHarvest   = null;
         }
 
         // ══════════════════════════════════════════════════════════════════════
@@ -382,98 +225,18 @@ namespace Companions
         }
 
         // ══════════════════════════════════════════════════════════════════════
-        //  Button template
-        // ══════════════════════════════════════════════════════════════════════
-
-        private static void EnsureButtonTemplate()
-        {
-            if (_buttonTemplate != null) return;
-            if (InventoryGui.instance == null || InventoryGui.instance.m_craftButton == null) return;
-
-            var origRT = InventoryGui.instance.m_craftButton.GetComponent<RectTransform>();
-            if (origRT != null)
-                _btnHeight = Mathf.Max(origRT.rect.height, 30f);
-
-            _buttonTemplate = UnityEngine.Object.Instantiate(InventoryGui.instance.m_craftButton.gameObject);
-            _buttonTemplate.name = "CIP_ButtonTemplate";
-            _buttonTemplate.SetActive(false);
-            UnityEngine.Object.DontDestroyOnLoad(_buttonTemplate);
-        }
-
-        private static GameObject CreateTintedButton(Transform parent, string name, string label)
-        {
-            EnsureButtonTemplate();
-            if (_buttonTemplate == null) return null;
-
-            var go = UnityEngine.Object.Instantiate(_buttonTemplate, parent);
-            go.name = name;
-            go.SetActive(true);
-
-            var btn = go.GetComponent<Button>();
-            var img = go.GetComponent<Image>();
-            if (img == null) img = go.AddComponent<Image>();
-            img.raycastTarget = true;
-            var txt = go.GetComponentInChildren<TMP_Text>(true);
-            if (txt != null)
-            {
-                txt.gameObject.SetActive(true);
-                txt.text = label;
-            }
-
-            StripButtonHints(go, txt);
-
-            // Fix button after stripping: Animator is gone, targetGraphic may be null
-            if (btn != null)
-            {
-                btn.onClick.RemoveAllListeners();
-                btn.navigation = new Navigation { mode = Navigation.Mode.None };
-                btn.interactable = true;
-                btn.transition = Selectable.Transition.None;
-                btn.targetGraphic = img;
-            }
-
-            // Controller selection highlight — semi-transparent gold glow behind the button
-            var selGO = new GameObject("selected", typeof(RectTransform), typeof(Image));
-            selGO.transform.SetParent(go.transform, false);
-            selGO.transform.SetAsFirstSibling();
-            var selRT = selGO.GetComponent<RectTransform>();
-            selRT.anchorMin = Vector2.zero;
-            selRT.anchorMax = Vector2.one;
-            selRT.offsetMin = new Vector2(-4f, -4f);
-            selRT.offsetMax = new Vector2(4f, 4f);
-            selGO.GetComponent<Image>().color = SelectionGlow;
-            selGO.GetComponent<Image>().raycastTarget = false;
-            selGO.SetActive(false);
-
-            return go;
-        }
-
-        private static void StripButtonHints(GameObject btnGO, TMP_Text label)
-        {
-            var anim = btnGO.GetComponent<Animator>();
-            if (anim != null) UnityEngine.Object.Destroy(anim);
-            var csf = btnGO.GetComponent<ContentSizeFitter>();
-            if (csf != null) UnityEngine.Object.Destroy(csf);
-            var le = btnGO.GetComponent<LayoutElement>();
-            if (le != null) UnityEngine.Object.Destroy(le);
-
-            for (int i = btnGO.transform.childCount - 1; i >= 0; i--)
-            {
-                var child = btnGO.transform.GetChild(i);
-                if (label != null && (child.gameObject == label.gameObject || label.transform.IsChildOf(child)))
-                    continue;
-                UnityEngine.Object.Destroy(child.gameObject);
-            }
-        }
-
-        // ══════════════════════════════════════════════════════════════════════
-        //  Build UI — 2-panel layout with tabs
+        //  Build UI — single panel: name + grid + food
         // ══════════════════════════════════════════════════════════════════════
 
         private void BuildUI()
         {
             TMP_FontAsset font = GetFont();
-            EnsureButtonTemplate();
+
+            // Compute slot size from height, then derive panel width from grid
+            float slotSize = ComputeInventorySlotSize();
+            float gridW = GridCols * slotSize + (GridCols - 1) * InventorySlotGap;
+            float panelW = gridW + OuterPad * 2f;
+            float panelH = _builtForDverger ? DvergerPanelH : PanelH;
 
             // Root panel — parented under InventoryGui's canvas for shared raycasting
             _root = new GameObject("HC_InteractRoot", typeof(RectTransform));
@@ -485,9 +248,6 @@ namespace Companions
             }
             _root.transform.SetParent(canvasParent, false);
             _root.transform.SetAsLastSibling();
-
-            float panelW = _builtForDverger ? DvergerPanelW : PanelW;
-            float panelH = _builtForDverger ? DvergerPanelH : PanelH;
 
             var rootRT = _root.GetComponent<RectTransform>();
             rootRT.anchorMin        = new Vector2(0.5f, 0.5f);
@@ -501,32 +261,29 @@ namespace Companions
             ApplyPanelBg(rootImg, PanelBg);
             rootImg.raycastTarget = true;
 
-            // Tab bar — two buttons at the top
-            BuildTabBar(_root.transform, font);
+            // Content area with minimal padding
+            var content = new GameObject("Content", typeof(RectTransform), typeof(Image));
+            content.transform.SetParent(_root.transform, false);
+            var contentRT = content.GetComponent<RectTransform>();
+            contentRT.anchorMin = Vector2.zero;
+            contentRT.anchorMax = Vector2.one;
+            contentRT.offsetMin = new Vector2(OuterPad, OuterPad);
+            contentRT.offsetMax = new Vector2(-OuterPad, -OuterPad);
+            var contentImg = content.GetComponent<Image>();
+            contentImg.sprite = null;
+            contentImg.color = ColBg;
+            contentImg.raycastTarget = false;
 
-            // Content containers — fill area below tab bar, above mode text
-            _actionsContent = CreateContentContainer(_root.transform, "ActionsContent");
-            _inventoryContent = CreateContentContainer(_root.transform, "InventoryContent");
+            float topY = 0f;
 
-            // Actions tab: stat bars + action controls + food display
-            BuildPreview(_actionsContent, font);
+            // Name input — centered, same width as inventory grid
+            topY = BuildNameInput(contentRT, font, topY, gridW);
+            topY -= 4f;
 
-            // Inventory tab: inventory grid + food slots
-            var invPad = MakePadded(_inventoryContent, 2f);
-            BuildInventoryContent(invPad, font);
-
-            // Mode text — anchored to bottom of root panel (always visible)
-            _modeText = MakeText(_root.transform, "ModeText", "Follow into Battle",
-                font, 11f, GoldColor, TextAlignmentOptions.Center);
-            var modeRT = _modeText.GetComponent<RectTransform>();
-            modeRT.anchorMin        = new Vector2(0f, 0f);
-            modeRT.anchorMax        = new Vector2(1f, 0f);
-            modeRT.pivot            = new Vector2(0.5f, 0f);
-            modeRT.sizeDelta        = new Vector2(0f, 16f);
-            modeRT.anchoredPosition = new Vector2(0f, -14f);
-
-            // Default to Actions tab
-            SwitchTab(0);
+            // Inventory grid + food
+            BuildInventoryGrid(contentRT, font, ref topY, slotSize);
+            if (!_builtForDverger)
+                BuildFoodSlots(contentRT, font, slotSize);
 
             ApplyFallbackFont(_root.transform, font);
             _root.SetActive(false);
@@ -549,192 +306,42 @@ namespace Companions
             }
         }
 
-        private void BuildTabBar(Transform parent, TMP_FontAsset font)
-        {
-            var barGO = new GameObject("TabBar", typeof(RectTransform));
-            barGO.transform.SetParent(parent, false);
-            var barRT = barGO.GetComponent<RectTransform>();
-            barRT.anchorMin = new Vector2(0f, 1f);
-            barRT.anchorMax = new Vector2(1f, 1f);
-            barRT.pivot = new Vector2(0.5f, 1f);
-            barRT.sizeDelta = new Vector2(0f, TabBarH);
-            barRT.anchoredPosition = new Vector2(0f, -OuterPad);
-
-            float curPanelW = _builtForDverger ? DvergerPanelW : PanelW;
-            float halfW = (curPanelW - OuterPad * 2f - 4f) / 2f;
-
-            _actionsTabBtn = BuildTabButton(barGO.transform, "ActionsTab", "Actions",
-                font, OuterPad, halfW);
-            if (_actionsTabBtn != null)
-                _actionsTabBtn.onClick.AddListener(() => SwitchTab(0));
-
-            _inventoryTabBtn = BuildTabButton(barGO.transform, "InventoryTab", "Inventory",
-                font, OuterPad + halfW + 4f, halfW);
-            if (_inventoryTabBtn != null)
-                _inventoryTabBtn.onClick.AddListener(() => SwitchTab(1));
-        }
-
-        private Button BuildTabButton(Transform parent, string name, string label,
-            TMP_FontAsset font, float xOffset, float width)
-        {
-            var go = CreateTintedButton(parent, name, label);
-            if (go == null) return null;
-
-            var rt = go.GetComponent<RectTransform>();
-            rt.anchorMin = new Vector2(0f, 0f);
-            rt.anchorMax = new Vector2(0f, 1f);
-            rt.pivot = new Vector2(0f, 0.5f);
-            rt.sizeDelta = new Vector2(width, 0f);
-            rt.anchoredPosition = new Vector2(xOffset, 0f);
-
-            return go.GetComponent<Button>();
-        }
-
-        private RectTransform CreateContentContainer(Transform parent, string name)
-        {
-            var go = new GameObject(name, typeof(RectTransform), typeof(Image));
-            go.transform.SetParent(parent, false);
-            var rt = go.GetComponent<RectTransform>();
-            // Fill area below tab bar, above mode text area
-            rt.anchorMin = new Vector2(0f, 0f);
-            rt.anchorMax = new Vector2(1f, 1f);
-            rt.offsetMin = new Vector2(OuterPad, OuterPad);
-            rt.offsetMax = new Vector2(-OuterPad, -(OuterPad + TabBarH + 4f));
-            var img = go.GetComponent<Image>();
-            img.sprite = null;
-            img.color = ColBg;
-            img.raycastTarget = false;
-            return rt;
-        }
-
-        private void SwitchTab(int tab)
-        {
-            CompanionsPlugin.Log.LogDebug($"[UI] SwitchTab — {_activeTab} → {tab}");
-            _activeTab = tab;
-            if (_actionsContent != null)
-                _actionsContent.gameObject.SetActive(tab == 0);
-            if (_inventoryContent != null)
-                _inventoryContent.gameObject.SetActive(tab == 1);
-
-            SetBtnHighlight(_actionsTabBtn, tab == 0);
-            SetBtnHighlight(_inventoryTabBtn, tab == 1);
-        }
-
         private float ComputeInventorySlotSize()
         {
             int gridRows = Mathf.CeilToInt(MainGridSlots / (float)GridCols);
-
-            float curW = _builtForDverger ? DvergerPanelW : PanelW;
             float curH = _builtForDverger ? DvergerPanelH : PanelH;
 
-            float availW = curW - OuterPad * 2f - 4f;
-            float slotW = (availW - (GridCols - 1) * InventorySlotGap) / GridCols;
-
-            float totalH = curH - OuterPad * 2f - TabBarH - 4f;
+            // Available height: panel minus top/bottom pad, name input, gap
+            float totalH = curH - OuterPad * 2f - 26f - 4f;
 
             if (_builtForDverger)
             {
-                // No food slots — all height goes to the grid
                 float slotH = (totalH - (gridRows - 1) * InventorySlotGap) / gridRows;
-                return Mathf.Floor(Mathf.Min(slotW, slotH));
+                return Mathf.Floor(slotH);
             }
             else
             {
-                // Food section overhead: bottomY(4) + gap(2) + label(14) + gap(4) + sep(1) + gridGap(8) = 33
                 const float foodOverhead = 33f;
-                // Height budget: gridRows grid slots + 1 food slot row + overhead + row gaps
                 float slotH = (totalH - foodOverhead - (gridRows - 1) * InventorySlotGap) / (gridRows + 1);
-                return Mathf.Floor(Mathf.Min(slotW, slotH));
+                return Mathf.Floor(slotH);
             }
         }
 
-        private void BuildInventoryContent(RectTransform parent, TMP_FontAsset font)
-        {
-            float slotSize = ComputeInventorySlotSize();
-            float y = 0f;
-            BuildInventoryGrid(parent, font, ref y, slotSize);
-            if (!_builtForDverger)
-                BuildFoodSlots(parent, font, slotSize);
-        }
+        // ══════════════════════════════════════════════════════════════════════
+        //  Name input
+        // ══════════════════════════════════════════════════════════════════════
 
-        private void BuildActionControls(RectTransform parent, TMP_FontAsset font, ref float y)
-        {
-            float btnH = 30f;
-            float btnGap = 2f;
-            _followBtn = BuildActionButton(parent, ref y, btnH, btnGap, "Follow into Battle", CompanionSetup.ModeFollow);
-
-            // Gather buttons — Player-clone companions only (Dvergers don't gather)
-            if (!_builtForDverger)
-            {
-                _gatherWoodBtn = BuildActionButton(parent, ref y, btnH, btnGap, "Gather Wood", CompanionSetup.ModeGatherWood);
-                _gatherStoneBtn = BuildActionButton(parent, ref y, btnH, btnGap, "Gather Stone", CompanionSetup.ModeGatherStone);
-                _gatherOreBtn = BuildActionButton(parent, ref y, btnH, btnGap, "Gather Ore", CompanionSetup.ModeGatherOre);
-            }
-            else
-            {
-                _gatherWoodBtn = null;
-                _gatherStoneBtn = null;
-                _gatherOreBtn = null;
-            }
-
-            _stayBtn = BuildUnwiredActionButton(parent, ref y, btnH, btnGap, "Stay Home: OFF");
-            if (_stayBtn != null)
-            {
-                _stayBtn.onClick.AddListener(ToggleStayHome);
-            }
-            _setHomeBtn = BuildUnwiredActionButton(parent, ref y, btnH, btnGap, "Set Home");
-            if (_setHomeBtn != null)
-                _setHomeBtn.onClick.AddListener(OnSetHomeClicked);
-            _wanderBtn = BuildUnwiredActionButton(parent, ref y, btnH, btnGap, "Wander: OFF");
-            if (_wanderBtn != null)
-                _wanderBtn.onClick.AddListener(ToggleWander);
-            _autoPickupBtn = BuildActionButton(parent, ref y, btnH, btnGap, "Auto Pickup: OFF", -1);
-            if (_autoPickupBtn != null)
-            {
-                _autoPickupBtn.onClick.RemoveAllListeners();
-                _autoPickupBtn.onClick.AddListener(ToggleAutoPickup);
-            }
-
-            _commandableBtn = BuildActionButton(parent, ref y, btnH, btnGap, "Command: ON", -1);
-            if (_commandableBtn != null)
-            {
-                _commandableBtn.onClick.RemoveAllListeners();
-                _commandableBtn.onClick.AddListener(ToggleCommandable);
-            }
-
-            if (_builtForDverger)
-                _commandableBtn = null;
-
-            // Set up explicit gamepad navigation — d-pad / left stick cycles through buttons vertically.
-            // Tab buttons intentionally excluded so LB/RB handle tab switching, not up/down.
-            // Build a filtered list so navigation never links to null buttons.
-            var allBtns = new Button[] {
-                _followBtn, _gatherWoodBtn, _gatherStoneBtn, _gatherOreBtn,
-                _stayBtn, _setHomeBtn, _wanderBtn, _autoPickupBtn, _commandableBtn
-            };
-            var validBtns = new System.Collections.Generic.List<Button>();
-            for (int i = 0; i < allBtns.Length; i++)
-                if (allBtns[i] != null) validBtns.Add(allBtns[i]);
-            for (int i = 0; i < validBtns.Count; i++)
-            {
-                var nav = new Navigation { mode = Navigation.Mode.Explicit };
-                nav.selectOnUp   = validBtns[(i - 1 + validBtns.Count) % validBtns.Count];
-                nav.selectOnDown = validBtns[(i + 1) % validBtns.Count];
-                validBtns[i].navigation = nav;
-            }
-        }
-
-        private float BuildNameInput(RectTransform parent, TMP_FontAsset font, float y)
+        private float BuildNameInput(RectTransform parent, TMP_FontAsset font, float y, float width)
         {
             float h = 26f;
 
             var inputGO = new GameObject("NameInput", typeof(RectTransform), typeof(Image));
             inputGO.transform.SetParent(parent, false);
             var inputRT = inputGO.GetComponent<RectTransform>();
-            inputRT.anchorMin = new Vector2(0f, 1f);
-            inputRT.anchorMax = new Vector2(1f, 1f);
-            inputRT.pivot = new Vector2(0f, 1f);
-            inputRT.sizeDelta = new Vector2(0f, h);
+            inputRT.anchorMin = new Vector2(0.5f, 1f);
+            inputRT.anchorMax = new Vector2(0.5f, 1f);
+            inputRT.pivot = new Vector2(0.5f, 1f);
+            inputRT.sizeDelta = new Vector2(width, h);
             inputRT.anchoredPosition = new Vector2(0f, y);
 
             var bgSprite = GetSliderBgSprite();
@@ -792,6 +399,10 @@ namespace Companions
             return y - h;
         }
 
+        // ══════════════════════════════════════════════════════════════════════
+        //  Inventory grid
+        // ══════════════════════════════════════════════════════════════════════
+
         private void BuildInventoryGrid(RectTransform parent, TMP_FontAsset font, ref float y, float slotSize)
         {
             _slotBgs = new Image[MainGridSlots];
@@ -800,12 +411,8 @@ namespace Companions
             _slotBorders = new Image[MainGridSlots];
             _slotDurabilityBars = new GameObject[MainGridSlots];
             _slotDurabilityFills = new Image[MainGridSlots];
-            CompanionsPlugin.Log.LogDebug(
-                $"[UI] BuildInventoryGrid — {GridCols}x{Mathf.CeilToInt(MainGridSlots / (float)GridCols)} grid, " +
-                $"slotSize={slotSize}px, durability bars enabled");
 
             int gridRows = Mathf.CeilToInt(MainGridSlots / (float)GridCols);
-
             float gridW = GridCols * slotSize + (GridCols - 1) * InventorySlotGap;
             float gridH = gridRows * slotSize + (gridRows - 1) * InventorySlotGap;
 
@@ -897,7 +504,7 @@ namespace Companions
                 _slotCounts[i] = countTmp;
                 _slotCounts[i].enabled = false;
 
-                // Durability bar — thin bar at slot bottom
+                // Durability bar
                 var durBarGO = new GameObject("DurabilityBg", typeof(RectTransform), typeof(Image));
                 durBarGO.transform.SetParent(slotGO.transform, false);
                 var durBgRT = durBarGO.GetComponent<RectTransform>();
@@ -945,7 +552,6 @@ namespace Companions
             foodLabelRT.anchoredPosition = new Vector2(0f, bottomY + foodSlotSz + 2f);
             foodLabel.fontStyle = FontStyles.Bold;
 
-            // Gold separator line between inventory grid and food section
             var sepGO = new GameObject("FoodSeparator", typeof(RectTransform), typeof(Image));
             sepGO.transform.SetParent(parent, false);
             var sepRT = sepGO.GetComponent<RectTransform>();
@@ -1012,66 +618,6 @@ namespace Companions
             }
         }
 
-        private Button BuildActionButton(RectTransform parent,
-            ref float y, float h, float gap, string label, int mode)
-        {
-            var go = CreateTintedButton(parent, label, label);
-            if (go == null) return null;
-
-            var rt = go.GetComponent<RectTransform>();
-            rt.anchorMin = new Vector2(0f, 1f);
-            rt.anchorMax = new Vector2(1f, 1f);
-            rt.pivot = new Vector2(0.5f, 1f);
-            rt.sizeDelta = new Vector2(0f, h);
-            rt.anchoredPosition = new Vector2(0f, y);
-            y -= h + gap;
-
-            var btn = go.GetComponent<Button>();
-            if (btn != null)
-                btn.onClick.AddListener(() => SetActionMode(mode));
-
-            return btn;
-        }
-
-        private Button BuildUnwiredActionButton(RectTransform parent,
-            ref float y, float h, float gap, string label)
-        {
-            var go = CreateTintedButton(parent, label, label);
-            if (go == null) return null;
-
-            var rt = go.GetComponent<RectTransform>();
-            rt.anchorMin = new Vector2(0f, 1f);
-            rt.anchorMax = new Vector2(1f, 1f);
-            rt.pivot = new Vector2(0.5f, 1f);
-            rt.sizeDelta = new Vector2(0f, h);
-            rt.anchoredPosition = new Vector2(0f, y);
-            y -= h + gap;
-
-            return go.GetComponent<Button>();
-        }
-
-        private void BuildPreview(RectTransform col, TMP_FontAsset font)
-        {
-            float topY = -2f;
-
-            // ── Name section ──
-            var nameHeader = MakeText(col, "NameHeader", "Name",
-                font, 11f, GoldColor, TextAlignmentOptions.Center);
-            nameHeader.fontStyle = FontStyles.Bold;
-            PlaceTopStretch(nameHeader.GetComponent<RectTransform>(), ref topY, 14f);
-            topY -= 2f;
-            topY = BuildNameInput(col, font, topY);
-            topY -= 4f;
-
-            // ── Actions section ──
-            var actionsHeader = MakeText(col, "ActionsHeader", "Actions",
-                font, 11f, GoldColor, TextAlignmentOptions.Center);
-            actionsHeader.fontStyle = FontStyles.Bold;
-            PlaceTopStretch(actionsHeader.GetComponent<RectTransform>(), ref topY, 14f);
-            topY -= 2f;
-            BuildActionControls(col, font, ref topY);
-        }
-
         // ══════════════════════════════════════════════════════════════════════
         //  Inventory grid — click handlers
         // ══════════════════════════════════════════════════════════════════════
@@ -1082,14 +628,14 @@ namespace Companions
             if (!TryGetMainGridCoord(slotIndex, out int gx, out int gy)) return;
             HandleSlotLeftClick(gx, gy, consumableOnly: false);
         }
+
         private void OnSlotRightClick(int slotIndex)
         {
             CompanionsPlugin.Log.LogDebug($"[UI] OnSlotRightClick — slotIndex={slotIndex}");
             if (!TryGetMainGridCoord(slotIndex, out int gx, out int gy)) return;
             HandleSlotRightClick(gx, gy);
         }
-        // Food slots are display-only — no click handlers.
-        // Active food effects + duration are shown via RefreshFoodSlots().
+
         private static bool IsConsumableItem(ItemDrop.ItemData item)
         {
             if (item == null || item.m_shared == null) return false;
@@ -1098,57 +644,38 @@ namespace Companions
                    item.m_shared.m_foodStamina > 0f ||
                    item.m_shared.m_foodEitr > 0f;
         }
+
         private bool TryGetMainGridCoord(int slotIndex, out int gx, out int gy)
         {
             gx = 0;
             gy = 0;
             if (slotIndex < 0 || slotIndex >= MainGridSlots) return false;
-            int flatIndex = slotIndex;
-            gx = flatIndex % GridCols;
-            gy = flatIndex / GridCols;
+            gx = slotIndex % GridCols;
+            gy = slotIndex / GridCols;
             return true;
         }
+
         private void HandleSlotLeftClick(int gx, int gy, bool consumableOnly)
         {
-            if (InventoryGui.instance == null)
-            {
-                CompanionsPlugin.Log.LogWarning("[UI] HandleSlotLeftClick ABORT — invGui is null");
-                return;
-            }
+            if (InventoryGui.instance == null) return;
             var inv = GetStorageInventory();
-            if (inv == null)
-            {
-                CompanionsPlugin.Log.LogWarning("[UI] HandleSlotLeftClick ABORT — companion inventory is null");
-                return;
-            }
+            if (inv == null) return;
 
             var dragItem = _dragItemField?.GetValue(InventoryGui.instance) as ItemDrop.ItemData;
             var dragInv  = _dragInventoryField?.GetValue(InventoryGui.instance) as Inventory;
             int dragAmt  = (_dragAmountField != null) ? (int)_dragAmountField.GetValue(InventoryGui.instance) : 1;
             bool changed = false;
 
-            CompanionsPlugin.Log.LogDebug(
-                $"[UI] HandleSlotLeftClick — slot=({gx},{gy}) consumableOnly={consumableOnly} " +
-                $"dragItem=\"{dragItem?.m_shared?.m_name}\" dragInv={dragInv != null} dragAmt={dragAmt} " +
-                $"invItems={inv.GetAllItems().Count}");
-
             if (dragItem != null && dragInv != null)
             {
                 if (consumableOnly && !IsConsumableItem(dragItem))
                 {
-                    CompanionsPlugin.Log.LogDebug(
-                        $"[UI] Food slot REJECTED drag — \"{dragItem.m_shared?.m_name}\" " +
-                        $"type={dragItem.m_shared?.m_itemType} " +
-                        $"food={dragItem.m_shared?.m_food} stam={dragItem.m_shared?.m_foodStamina} " +
-                        $"eitr={dragItem.m_shared?.m_foodEitr} " +
-                        $"slot=({gx},{gy}) consumableOnly={consumableOnly}");
                     MessageHud.instance?.ShowMessage(
                         MessageHud.MessageType.Center,
                         "Food slots only accept food items.");
                     return;
                 }
 
-                // Place dragged item into companion inventory
                 try
                 {
                     if (!dragInv.ContainsItem(dragItem))
@@ -1157,7 +684,7 @@ namespace Companions
                         return;
                     }
                 }
-                catch (System.NullReferenceException)
+                catch (NullReferenceException)
                 {
                     ClearDrag();
                     return;
@@ -1166,9 +693,6 @@ namespace Companions
                 var targetItem = inv.GetItemAt(gx, gy);
                 if (consumableOnly && targetItem != null && !IsConsumableItem(targetItem))
                 {
-                    CompanionsPlugin.Log.LogDebug(
-                        $"[UI] Food slot REJECTED swap — target \"{targetItem.m_shared?.m_name}\" " +
-                        $"is not food, slot=({gx},{gy})");
                     MessageHud.instance?.ShowMessage(
                         MessageHud.MessageType.Center,
                         "Food slots only accept food items.");
@@ -1178,7 +702,6 @@ namespace Companions
                 if (targetItem != null && _companionHumanoid.IsItemEquiped(targetItem))
                     _companionHumanoid.UnequipItem(targetItem, false);
 
-                // Keep player gear state in sync when dragging equipped gear.
                 var player = Player.m_localPlayer;
                 if (player != null && dragInv == player.GetInventory() && player.IsItemEquiped(dragItem))
                 {
@@ -1187,8 +710,6 @@ namespace Companions
                 }
 
                 bool moved = DropItemToCompanion(inv, dragInv, dragItem, dragAmt, gx, gy);
-                CompanionsPlugin.Log.LogDebug(
-                    $"[UI] DropItemToCompanion result={moved} item=\"{dragItem.m_shared?.m_name}\" → slot=({gx},{gy})");
                 if (moved)
                 {
                     ClearDrag();
@@ -1197,17 +718,8 @@ namespace Companions
             }
             else
             {
-                // No drag active — pick up item from companion inventory to start drag
                 var item = inv.GetItemAt(gx, gy);
-                if (item == null)
-                {
-                    CompanionsPlugin.Log.LogDebug($"[UI] No item at companion slot ({gx},{gy}) — nothing to pick up");
-                    return;
-                }
-
-                CompanionsPlugin.Log.LogDebug(
-                    $"[UI] Picking up \"{item.m_shared?.m_name}\" from companion({gx},{gy}) " +
-                    $"stack={item.m_stack} — starting drag");
+                if (item == null) return;
 
                 if (_setupDragItem != null && InventoryGui.instance != null)
                 {
@@ -1219,7 +731,6 @@ namespace Companions
 
             if (changed)
                 OnCompanionInventoryMutated();
-
             _invRefreshTimer = 0f;
         }
 
@@ -1228,7 +739,6 @@ namespace Companions
             if (dragItem == null || targetItem == null) return false;
             if (targetItem == dragItem) return false;
             if (dragItem.m_stack != amount) return false;
-
             return targetItem.m_shared.m_name != dragItem.m_shared.m_name ||
                    (dragItem.m_shared.m_maxQuality > 1 && targetItem.m_quality != dragItem.m_quality) ||
                    targetItem.m_shared.m_maxStackSize == 1;
@@ -1237,36 +747,19 @@ namespace Companions
         private static bool DropItemToCompanion(Inventory targetInv, Inventory fromInv,
             ItemDrop.ItemData dragItem, int amount, int x, int y)
         {
-            if (targetInv == null || fromInv == null || dragItem == null)
-            {
-                CompanionsPlugin.Log.LogWarning(
-                    $"[UI] DropItemToCompanion ABORT — targetInv={targetInv != null} " +
-                    $"fromInv={fromInv != null} dragItem={dragItem != null}");
-                return false;
-            }
+            if (targetInv == null || fromInv == null || dragItem == null) return false;
             amount = Mathf.Clamp(amount, 1, dragItem.m_stack);
 
             var targetItem = targetInv.GetItemAt(x, y);
-            CompanionsPlugin.Log.LogDebug(
-                $"[UI] DropItemToCompanion — \"{dragItem.m_shared?.m_name}\" amt={amount} " +
-                $"→ slot=({x},{y}) targetSlotItem=\"{targetItem?.m_shared?.m_name}\" " +
-                $"fromInv={fromInv.GetName()} targetInv={targetInv.GetName()}");
-
-            // Mirror vanilla InventoryGrid.DropItem semantics so swap interactions
-            // behave like base inventory drag/drop.
             if (ShouldSwapForDrop(dragItem, targetItem, amount))
             {
-                CompanionsPlugin.Log.LogDebug("[UI] DropItemToCompanion — performing swap");
                 Vector2i oldPos = dragItem.m_gridPos;
                 fromInv.RemoveItem(dragItem);
                 fromInv.MoveItemToThis(targetInv, targetItem, targetItem.m_stack, oldPos.x, oldPos.y);
                 targetInv.MoveItemToThis(fromInv, dragItem, amount, x, y);
                 return true;
             }
-
-            bool result = targetInv.MoveItemToThis(fromInv, dragItem, amount, x, y);
-            CompanionsPlugin.Log.LogDebug($"[UI] DropItemToCompanion — MoveItemToThis result={result}");
-            return result;
+            return targetInv.MoveItemToThis(fromInv, dragItem, amount, x, y);
         }
 
         private void OnCompanionInventoryMutated()
@@ -1280,14 +773,7 @@ namespace Companions
             var inv = GetStorageInventory();
             if (inv == null) return;
             var item = inv.GetItemAt(gx, gy);
-            if (item == null)
-            {
-                CompanionsPlugin.Log.LogDebug($"[UI] HandleSlotRightClick — no item at ({gx},{gy})");
-                return;
-            }
-            CompanionsPlugin.Log.LogDebug(
-                $"[UI] HandleSlotRightClick — \"{item.m_shared?.m_name}\" at ({gx},{gy}) " +
-                $"equipped={_companionHumanoid.IsItemEquiped(item)}");
+            if (item == null) return;
 
             bool hadItem = inv.ContainsItem(item);
             int stackBefore = hadItem ? item.m_stack : 0;
@@ -1295,12 +781,7 @@ namespace Companions
             bool changed = false;
 
             if (IsConsumableItem(item) && _companionFood != null)
-            {
                 changed = _companionFood.TryConsumeItem(item);
-                CompanionsPlugin.Log.LogDebug(
-                    $"[UI] Right-click food consume — \"{item.m_shared?.m_name}\" " +
-                    $"slot=({gx},{gy}) success={changed}");
-            }
 
             if (!changed)
             {
@@ -1318,294 +799,12 @@ namespace Companions
             else
                 _invRefreshTimer = 0f;
         }
+
         private void ClearDrag()
         {
-            CompanionsPlugin.Log.LogDebug("[UI] ClearDrag called");
             if (InventoryGui.instance == null) return;
             _setupDragItem?.Invoke(InventoryGui.instance,
                 new object[] { null, null, 1 });
-        }
-
-        // ══════════════════════════════════════════════════════════════════════
-        //  Action mode
-        // ══════════════════════════════════════════════════════════════════════
-
-        private void SetActionMode(int mode)
-        {
-            if (mode < CompanionSetup.ModeFollow || mode > CompanionSetup.ModeStay)
-                mode = CompanionSetup.ModeFollow;
-
-            // Block gathering modes when companion is overweight
-            bool isGatherMode = mode >= CompanionSetup.ModeGatherWood
-                             && mode <= CompanionSetup.ModeGatherOre;
-            if (isGatherMode && _companionHarvest != null && _companionHarvest.IsOverweight())
-            {
-                CompanionsPlugin.Log.LogDebug(
-                    $"[UI] SetActionMode BLOCKED — companion is overweight, cannot gather");
-                MessageHud.instance?.ShowMessage(
-                    MessageHud.MessageType.Center,
-                    "Companion is too heavy to gather. Unload their inventory first.");
-                return;
-            }
-
-            EnsureCompanionOwnership();
-            int oldMode = _activeMode;
-            _activeMode = mode;
-
-            string oldName = ModeName(oldMode);
-            string newName = ModeName(mode);
-            CompanionsPlugin.Log.LogDebug(
-                $"[UI] SetActionMode: {oldName}({oldMode}) → {newName}({mode}) " +
-                $"harvest={(_companionHarvest != null ? "attached" : "NULL")} " +
-                $"ai={(_companionAI != null ? "attached" : "NULL")}");
-
-            if (_companionNview != null && _companionNview.GetZDO() != null)
-            {
-                _companionNview.GetZDO().Set(CompanionSetup.ActionModeHash, mode);
-                CompanionsPlugin.Log.LogDebug($"[UI]   ZDO ActionModeHash set to {mode}");
-            }
-            else
-                CompanionsPlugin.Log.LogWarning("[UI]   ZDO is null — mode NOT persisted!");
-
-            _companionHarvest?.NotifyActionModeChanged();
-            ApplyActionMode();
-            RefreshActionButtons();
-            RefreshModeText();
-        }
-
-        private static string ModeName(int mode)
-        {
-            switch (mode)
-            {
-                case CompanionSetup.ModeFollow:      return "Follow";
-                case CompanionSetup.ModeGatherWood:  return "GatherWood";
-                case CompanionSetup.ModeGatherStone: return "GatherStone";
-                case CompanionSetup.ModeGatherOre:   return "GatherOre";
-                case CompanionSetup.ModeStay:        return "Stay";
-                default:                             return "Unknown";
-            }
-        }
-
-        private void ApplyActionMode()
-        {
-            if (_companionAI == null)
-            {
-                CompanionsPlugin.Log.LogWarning("[UI] ApplyActionMode — _companionAI is null!");
-                return;
-            }
-
-            bool stayHome = _companion != null && _companion.GetStayHome() && _companion.HasHomePosition();
-
-            switch (_activeMode)
-            {
-                case CompanionSetup.ModeFollow:
-                case CompanionSetup.ModeGatherWood:
-                case CompanionSetup.ModeGatherStone:
-                case CompanionSetup.ModeGatherOre:
-                    if (stayHome)
-                    {
-                        _companionAI.SetFollowTarget(null);
-                        _companionAI.SetPatrolPointAt(_companion.GetHomePosition());
-                        CompanionsPlugin.Log.LogDebug(
-                            $"[UI] ApplyActionMode: StayHome patrol (mode={_activeMode})");
-                    }
-                    else if (Player.m_localPlayer != null)
-                    {
-                        _companionAI.SetFollowTarget(Player.m_localPlayer.gameObject);
-                        CompanionsPlugin.Log.LogDebug(
-                            $"[UI] ApplyActionMode: SetFollowTarget → player (mode={_activeMode})");
-                    }
-                    else
-                        CompanionsPlugin.Log.LogWarning("[UI] ApplyActionMode — no local player!");
-                    break;
-                case CompanionSetup.ModeStay:
-                    _companionAI.SetFollowTarget(null);
-                    if (stayHome)
-                        _companionAI.SetPatrolPointAt(_companion.GetHomePosition());
-                    else
-                        _companionAI.SetPatrolPoint();
-                    CompanionsPlugin.Log.LogDebug("[UI] ApplyActionMode: Stay — cleared follow, set patrol");
-                    break;
-                default:
-                    if (Player.m_localPlayer != null)
-                        _companionAI.SetFollowTarget(Player.m_localPlayer.gameObject);
-                    CompanionsPlugin.Log.LogDebug(
-                        $"[UI] ApplyActionMode: default follow (mode={_activeMode})");
-                    break;
-            }
-        }
-
-        private void ToggleStayHome()
-        {
-            if (_companion == null || _companionAI == null) return;
-            EnsureCompanionOwnership();
-
-            bool current = _companion.GetStayHome();
-            bool next = !current;
-            _companion.SetStayHome(next);
-
-            if (next)
-            {
-                // Auto-set home position if not already set
-                if (!_companion.HasHomePosition())
-                    _companion.SetHomePosition(_companion.transform.position);
-
-                _companionAI.SetFollowTarget(null);
-                _companionAI.SetPatrolPointAt(_companion.GetHomePosition());
-                MessageHud.instance?.ShowMessage(
-                    MessageHud.MessageType.Center,
-                    "Companion will stay home.");
-            }
-            else
-            {
-                // Respect current action mode — gather modes should continue with player follow
-                if (Player.m_localPlayer != null)
-                    _companionAI.SetFollowTarget(Player.m_localPlayer.gameObject);
-                // Re-apply current mode so gather modes restore follow correctly
-                ApplyActionMode();
-                MessageHud.instance?.ShowMessage(
-                    MessageHud.MessageType.Center,
-                    "Companion will follow you.");
-            }
-
-            RefreshStayHomeButton();
-            CompanionsPlugin.Log.LogDebug(
-                $"[UI] ToggleStayHome → {next} home={_companion.GetHomePosition():F1}");
-        }
-
-        private void OnSetHomeClicked()
-        {
-            if (_companionAI == null || _companion == null) return;
-            EnsureCompanionOwnership();
-
-            Vector3 pos = _companion.transform.position;
-            _companion.SetHomePosition(pos);
-
-            // If StayHome is active, update patrol to new home
-            if (_companion.GetStayHome())
-                _companionAI.SetPatrolPointAt(pos);
-
-            MessageHud.instance?.ShowMessage(
-                MessageHud.MessageType.Center,
-                "Home point set.");
-            CompanionsPlugin.Log.LogDebug(
-                $"[UI] Set home point at {pos}");
-        }
-
-        private void RefreshActionButtons()
-        {
-            SetBtnHighlight(_followBtn,      _activeMode == CompanionSetup.ModeFollow);
-            SetBtnHighlight(_gatherWoodBtn,  _activeMode == CompanionSetup.ModeGatherWood);
-            SetBtnHighlight(_gatherStoneBtn, _activeMode == CompanionSetup.ModeGatherStone);
-            SetBtnHighlight(_gatherOreBtn,   _activeMode == CompanionSetup.ModeGatherOre);
-            RefreshStayHomeButton();
-        }
-
-        private void RefreshStayHomeButton()
-        {
-            if (_stayBtn == null || _companion == null) return;
-            bool on = _companion.GetStayHome();
-            var txt = _stayBtn.GetComponentInChildren<TMP_Text>(true);
-            if (txt != null) txt.text = on ? "Stay Home: ON" : "Stay Home: OFF";
-            SetBtnHighlight(_stayBtn, on);
-        }
-
-        // ── Wander toggle ─────────────────────────────────────────────────
-
-        private void ToggleWander()
-        {
-            if (_companion == null) return;
-            EnsureCompanionOwnership();
-            _activeWander = !_activeWander;
-            _companion.SetWander(_activeWander);
-            RefreshWanderButton();
-
-            // Auto-set home position if enabling wander without one
-            if (_activeWander && !_companion.HasHomePosition())
-                _companion.SetHomePosition(_companion.transform.position);
-
-            CompanionsPlugin.Log.LogDebug($"[UI] ToggleWander → {(_activeWander ? "ON" : "OFF")}");
-        }
-
-        private void RefreshWanderButton()
-        {
-            if (_wanderBtn == null) return;
-            var txt = _wanderBtn.GetComponentInChildren<TMP_Text>();
-            if (txt != null)
-                txt.text = _activeWander ? "Wander: ON" : "Wander: OFF";
-            SetBtnHighlight(_wanderBtn, _activeWander);
-        }
-
-        private void SetBtnHighlight(Button btn, bool active)
-        {
-            if (btn == null) return;
-            var img = btn.GetComponent<Image>();
-            if (img != null)
-                img.color = active ? GoldColor : Color.white;
-
-            var txt = btn.GetComponentInChildren<TMP_Text>(true);
-            if (txt != null)
-                txt.color = active ? LabelText : Color.white;
-        }
-
-        private void RefreshModeText()
-        {
-            if (_modeText == null) return;
-            string text;
-            switch (_activeMode)
-            {
-                case CompanionSetup.ModeFollow:      text = "Follow into Battle"; break;
-                case CompanionSetup.ModeGatherWood:  text = "Gather Wood"; break;
-                case CompanionSetup.ModeGatherStone: text = "Gather Stone"; break;
-                case CompanionSetup.ModeGatherOre:   text = "Gather Ore"; break;
-                case CompanionSetup.ModeStay:        text = "Stay Home"; break;
-                default:                             text = "Follow into Battle"; break;
-            }
-            if (_companion != null && _companion.GetStayHome() && _activeMode != CompanionSetup.ModeStay)
-                text += " (Home)";
-            _modeText.text = text;
-        }
-
-        // ── Auto pickup toggle ─────────────────────────────────────────────
-
-        private void ToggleAutoPickup()
-        {
-            if (_companionNview == null || _companionNview.GetZDO() == null) return;
-            EnsureCompanionOwnership();
-            var zdo = _companionNview.GetZDO();
-            bool current = zdo.GetBool(CompanionSetup.AutoPickupHash, true);
-            zdo.Set(CompanionSetup.AutoPickupHash, !current);
-            RefreshAutoPickupButton();
-        }
-
-        private void RefreshAutoPickupButton()
-        {
-            if (_autoPickupBtn == null) return;
-            bool on = _companionNview != null && _companionNview.GetZDO() != null
-                && _companionNview.GetZDO().GetBool(CompanionSetup.AutoPickupHash, true);
-            var txt = _autoPickupBtn.GetComponentInChildren<TMP_Text>(true);
-            if (txt != null) txt.text = on ? "Auto Pickup: ON" : "Auto Pickup: OFF";
-            SetBtnHighlight(_autoPickupBtn, on);
-        }
-
-        // ── Commandable toggle ────────────────────────────────────────────
-
-        private void ToggleCommandable()
-        {
-            if (_companion == null) return;
-            EnsureCompanionOwnership();
-            bool current = _companion.GetIsCommandable();
-            _companion.SetIsCommandable(!current);
-            RefreshCommandableButton();
-        }
-
-        private void RefreshCommandableButton()
-        {
-            if (_commandableBtn == null) return;
-            bool on = _companion != null && _companion.GetIsCommandable();
-            var txt = _commandableBtn.GetComponentInChildren<TMP_Text>(true);
-            if (txt != null) txt.text = on ? "Command: ON" : "Command: OFF";
-            SetBtnHighlight(_commandableBtn, on);
         }
 
         // ══════════════════════════════════════════════════════════════════════
@@ -1628,22 +827,12 @@ namespace Companions
                 _companionNview.ClaimOwnership();
         }
 
-        /// <summary>
-        /// Returns the inventory used for player-facing storage.
-        /// For Player-clone companions: Humanoid inventory (shared with Container).
-        /// For Dverger variants: Container's own inventory (Humanoid inventory holds
-        /// fixed default gear and must not be exposed to the player).
-        /// </summary>
         private Inventory GetStorageInventory()
         {
             if (_builtForDverger && _companionContainer != null)
                 return _companionContainer.GetInventory();
             return _companionHumanoid?.GetInventory();
         }
-
-        // ══════════════════════════════════════════════════════════════════════
-        //  Stat bars
-        // ══════════════════════════════════════════════════════════════════════
 
         // ══════════════════════════════════════════════════════════════════════
         //  Inventory grid refresh
@@ -1700,7 +889,6 @@ namespace Companions
                     _slotBgs[flatIndex].color = EquippedSlotTint;
                 }
 
-                // Durability bar
                 if (_slotDurabilityBars != null && _slotDurabilityFills != null
                     && item.m_shared != null && item.m_shared.m_useDurability)
                 {
@@ -1806,313 +994,13 @@ namespace Companions
         }
 
         // ══════════════════════════════════════════════════════════════════════
-        //  Preview camera
-        // ══════════════════════════════════════════════════════════════════════
-
-        private Animator _cloneAnimator;
-        private Animator _sourceAnimator;
-        private AnimatorCullingMode _savedSourceCullingMode;
-        private bool _sourceCullingOverridden;
-        private Vector3 _previewCenter = PreviewPos + Vector3.up * 0.95f;
-        private float _previewDistance = 2.8f;
-        private float _previewBoundsTimer;
-        private const float PreviewBoundsRefreshInterval = 0.5f;
-
-        private void SetupPreviewClone()
-        {
-            ClearPreviewClone();
-            if (_companion == null) return;
-
-            ZNetView.m_forceDisableInit = true;
-            try   { _clone = UnityEngine.Object.Instantiate(_companion.gameObject, PreviewPos, Quaternion.identity); }
-            finally { ZNetView.m_forceDisableInit = false; }
-
-            _clone.name = "HC_InteractPreviewClone";
-            _clone.transform.position = PreviewPos;
-
-            var rb = _clone.GetComponent<Rigidbody>();
-            if (rb != null) UnityEngine.Object.Destroy(rb);
-
-            // Disable all MonoBehaviours except VisEquipment
-            foreach (var mb in _clone.GetComponentsInChildren<MonoBehaviour>(true))
-            {
-                if (mb is VisEquipment) continue;
-                mb.enabled = false;
-            }
-            foreach (var renderer in _clone.GetComponentsInChildren<Renderer>(true))
-                renderer.enabled = true;
-
-            // Re-enable and configure the Animator for live animation sync
-            _cloneAnimator  = _clone.GetComponentInChildren<Animator>();
-            _sourceAnimator = _companion.GetComponentInChildren<Animator>();
-            if (_cloneAnimator != null)
-            {
-                _cloneAnimator.enabled    = true;
-                _cloneAnimator.updateMode = AnimatorUpdateMode.Normal;
-                _cloneAnimator.cullingMode = AnimatorCullingMode.AlwaysAnimate;
-                _cloneAnimator.applyRootMotion = false;
-                _cloneAnimator.Rebind();
-            }
-            OverrideSourceAnimatorCulling();
-
-            int charLayer = LayerMask.NameToLayer("character");
-            if (charLayer < 0) charLayer = 9;
-            foreach (var t in _clone.GetComponentsInChildren<Transform>(true))
-                t.gameObject.layer = charLayer;
-
-            SetupLightRig();
-
-            SyncPreviewEquipment();
-            SyncPreviewAnimation();
-            _previewBoundsTimer = 0f;
-            RecalculatePreviewBounds();
-            UpdatePreviewCamera();
-            LockPreviewCloneFacing();
-        }
-
-        private void SyncPreviewAnimation()
-        {
-            EnsurePreviewAnimators();
-            if (_cloneAnimator == null || _sourceAnimator == null) return;
-            if (!_sourceAnimator.isInitialized) return;
-            if (!_cloneAnimator.isInitialized) _cloneAnimator.Rebind();
-
-            // Copy all animator parameters from live companion to clone
-            for (int i = 0; i < _sourceAnimator.parameterCount; i++)
-            {
-                var param = _sourceAnimator.GetParameter(i);
-                switch (param.type)
-                {
-                    case AnimatorControllerParameterType.Float:
-                        _cloneAnimator.SetFloat(param.nameHash, _sourceAnimator.GetFloat(param.nameHash));
-                        break;
-                    case AnimatorControllerParameterType.Int:
-                        _cloneAnimator.SetInteger(param.nameHash, _sourceAnimator.GetInteger(param.nameHash));
-                        break;
-                    case AnimatorControllerParameterType.Bool:
-                        _cloneAnimator.SetBool(param.nameHash, _sourceAnimator.GetBool(param.nameHash));
-                        break;
-                }
-            }
-
-            _cloneAnimator.speed = _sourceAnimator.speed;
-
-            // Sync all layers so upper-body actions (eat/equip/attack) stay live.
-            int layers = Mathf.Min(_sourceAnimator.layerCount, _cloneAnimator.layerCount);
-            for (int layer = 0; layer < layers; layer++)
-            {
-                _cloneAnimator.SetLayerWeight(layer, _sourceAnimator.GetLayerWeight(layer));
-                var state = _sourceAnimator.GetCurrentAnimatorStateInfo(layer);
-                _cloneAnimator.Play(state.fullPathHash, layer, state.normalizedTime);
-            }
-            _cloneAnimator.Update(0f);
-        }
-
-        private void EnsurePreviewAnimators()
-        {
-            if (_cloneAnimator == null && _clone != null)
-            {
-                _cloneAnimator = _clone.GetComponentInChildren<Animator>(true);
-                if (_cloneAnimator != null)
-                {
-                    _cloneAnimator.enabled = true;
-                    _cloneAnimator.updateMode = AnimatorUpdateMode.Normal;
-                    _cloneAnimator.cullingMode = AnimatorCullingMode.AlwaysAnimate;
-                    _cloneAnimator.applyRootMotion = false;
-                }
-            }
-
-            if (_sourceAnimator == null && _companion != null)
-            {
-                _sourceAnimator = _companion.GetComponentInChildren<Animator>(true);
-                OverrideSourceAnimatorCulling();
-            }
-        }
-
-        private void OverrideSourceAnimatorCulling()
-        {
-            if (_sourceCullingOverridden || _sourceAnimator == null) return;
-            _savedSourceCullingMode = _sourceAnimator.cullingMode;
-            _sourceAnimator.cullingMode = AnimatorCullingMode.AlwaysAnimate;
-            _sourceCullingOverridden = true;
-        }
-
-        private void RestoreSourceAnimatorCulling()
-        {
-            if (!_sourceCullingOverridden) return;
-            if (_sourceAnimator != null)
-                _sourceAnimator.cullingMode = _savedSourceCullingMode;
-            _sourceCullingOverridden = false;
-        }
-
-        private void ClearPreviewClone()
-        {
-            RestoreSourceAnimatorCulling();
-            if (_lightRig != null) { UnityEngine.Object.Destroy(_lightRig); _lightRig = null; }
-            if (_clone    != null) { UnityEngine.Object.Destroy(_clone);    _clone    = null; }
-            _cloneAnimator  = null;
-            _sourceAnimator = null;
-            _previewCenter = PreviewPos + Vector3.up * 0.95f;
-            _previewDistance = 2.8f;
-            _previewBoundsTimer = 0f;
-        }
-
-        private void SetupLightRig()
-        {
-            if (_lightRig != null) UnityEngine.Object.Destroy(_lightRig);
-            _lightRig = new GameObject("HC_InteractPreviewLightRig");
-            UnityEngine.Object.DontDestroyOnLoad(_lightRig);
-            _lightRig.transform.position = PreviewPos;
-
-            int charLayer = LayerMask.NameToLayer("character");
-            if (charLayer < 0) charLayer = 9;
-            int charNet   = LayerMask.NameToLayer("character_net");
-            int lightMask = 1 << charLayer;
-            if (charNet >= 0) lightMask |= 1 << charNet;
-
-            AddLight(_lightRig.transform, "Key",    new Vector3( 1.5f,  2.5f,  3.5f), 2.0f, new Color(1f, 0.92f, 0.82f), 15f, lightMask);
-            AddLight(_lightRig.transform, "Fill",   new Vector3(-2.5f,  1.5f,  3.0f), 1.2f, new Color(0.9f, 0.92f, 1f),  15f, lightMask);
-            AddLight(_lightRig.transform, "Rim",    new Vector3( 0.0f,  3.0f, -2.5f), 1.2f, new Color(0.95f, 0.88f, 0.78f), 15f, lightMask);
-            AddLight(_lightRig.transform, "Bottom", new Vector3( 0.0f, -0.5f,  3.0f), 0.5f, new Color(0.85f, 0.82f, 0.78f), 10f, lightMask);
-        }
-
-        private static void AddLight(Transform parent, string name,
-            Vector3 pos, float intensity, Color color, float range, int mask)
-        {
-            var go = new GameObject(name);
-            go.transform.SetParent(parent, false);
-            go.transform.localPosition = pos;
-            var lt        = go.AddComponent<Light>();
-            lt.type       = LightType.Point;
-            lt.intensity  = intensity;
-            lt.color      = color;
-            lt.range      = range;
-            lt.shadows    = LightShadows.None;
-            lt.cullingMask = mask;
-        }
-
-        private void SyncPreviewEquipment()
-        {
-            if (_clone == null || _companionHumanoid == null) return;
-
-            var cloneVE = _clone.GetComponent<VisEquipment>();
-            var realVE  = _companionHumanoid.GetComponent<VisEquipment>();
-            if (cloneVE == null || realVE == null) return;
-
-            CopyField(_visRightItemHash,    realVE, cloneVE);
-            CopyField(_visLeftItemHash,     realVE, cloneVE);
-            CopyField(_visChestItemHash,    realVE, cloneVE);
-            CopyField(_visLegItemHash,      realVE, cloneVE);
-            CopyField(_visHelmetItemHash,   realVE, cloneVE);
-            CopyField(_visShoulderItemHash, realVE, cloneVE);
-            CopyField(_visUtilityItemHash,  realVE, cloneVE);
-
-            _updateVisuals?.Invoke(cloneVE, null);
-        }
-
-        private static void CopyField(FieldInfo fi, VisEquipment src, VisEquipment dst)
-        {
-            if (fi != null) fi.SetValue(dst, fi.GetValue(src));
-        }
-
-        private void LockPreviewCloneFacing()
-        {
-            if (_clone == null) return;
-
-            _clone.transform.position = PreviewPos;
-            _clone.transform.rotation = Quaternion.LookRotation(Vector3.forward, Vector3.up);
-        }
-
-        private void UpdatePreviewCamera()
-        {
-            if (_camGO == null) return;
-            Vector3 offset = PreviewCameraOffsetDir * _previewDistance;
-            _camGO.transform.position = _previewCenter + offset;
-            _camGO.transform.LookAt(_previewCenter);
-        }
-
-        private void UpdatePreviewBounds()
-        {
-            if (_clone == null || _cam == null) return;
-            _previewBoundsTimer -= Time.deltaTime;
-            if (_previewBoundsTimer > 0f) return;
-            _previewBoundsTimer = PreviewBoundsRefreshInterval;
-            RecalculatePreviewBounds();
-        }
-
-        private void RecalculatePreviewBounds()
-        {
-            if (_clone == null || _cam == null) return;
-
-            bool hasBounds = false;
-            Bounds bounds = default;
-            foreach (var renderer in _clone.GetComponentsInChildren<Renderer>(true))
-            {
-                if (renderer == null || !renderer.enabled) continue;
-                if (!hasBounds)
-                {
-                    bounds = renderer.bounds;
-                    hasBounds = true;
-                }
-                else
-                {
-                    bounds.Encapsulate(renderer.bounds);
-                }
-            }
-
-            if (!hasBounds)
-            {
-                _previewCenter = PreviewPos + Vector3.up * 0.95f;
-                _previewDistance = 2.8f;
-                return;
-            }
-
-            _previewCenter = bounds.center + Vector3.up * (bounds.extents.y * 0.05f);
-            float radius = Mathf.Max(0.5f, bounds.extents.magnitude * 0.95f);
-            float aspect = (_rt != null && _rt.height > 0) ? (float)_rt.width / _rt.height : 1f;
-            float halfFovV = _cam.fieldOfView * 0.5f * Mathf.Deg2Rad;
-            float halfFovH = Mathf.Atan(Mathf.Tan(halfFovV) * aspect);
-            float limitingHalfFov = Mathf.Min(halfFovV, halfFovH);
-            float safeHalfFov = Mathf.Max(0.2f, limitingHalfFov);
-
-            _previewDistance = Mathf.Clamp(radius / Mathf.Sin(safeHalfFov), 1.6f, 4.8f);
-            _cam.farClipPlane = Mathf.Max(10f, _previewDistance + 8f);
-        }
-
-        private void RenderPreview()
-        {
-            if (_cam == null || _clone == null) return;
-            _savedAmbient          = RenderSettings.ambientLight;
-            _savedAmbientIntensity = RenderSettings.ambientIntensity;
-            _savedAmbientMode      = RenderSettings.ambientMode;
-            try
-            {
-                RenderSettings.ambientMode      = UnityEngine.Rendering.AmbientMode.Flat;
-                RenderSettings.ambientLight     = new Color(0.45f, 0.4f, 0.35f);
-                RenderSettings.ambientIntensity = 1.2f;
-                _cam.Render();
-            }
-            finally
-            {
-                RenderSettings.ambientMode      = _savedAmbientMode;
-                RenderSettings.ambientLight     = _savedAmbient;
-                RenderSettings.ambientIntensity = _savedAmbientIntensity;
-            }
-        }
-
-        // ══════════════════════════════════════════════════════════════════════
         //  Teardown
         // ══════════════════════════════════════════════════════════════════════
 
         private void Teardown()
         {
-            ClearPreviewClone();
-            if (_camGO != null) { UnityEngine.Object.Destroy(_camGO); _camGO = null; _cam = null; }
-            if (_rt    != null) { _rt.Release(); UnityEngine.Object.Destroy(_rt); _rt = null; }
-            if (_root  != null) { UnityEngine.Object.Destroy(_root); _root = null; }
-            if (_buttonTemplate != null) { UnityEngine.Object.Destroy(_buttonTemplate); _buttonTemplate = null; }
+            if (_root != null) { UnityEngine.Object.Destroy(_root); _root = null; }
             _built = false;
-
             _panelBgSprite  = null;
             _sliderBgSprite = null;
         }
@@ -2147,12 +1035,12 @@ namespace Companions
             TMP_FontAsset best = null;
             for (int i = 0; i < fonts.Length; i++)
             {
-                var font = fonts[i];
-                if (IsBrokenTmpFont(font)) continue;
-                string name = font.name.ToLowerInvariant();
+                var fnt = fonts[i];
+                if (IsBrokenTmpFont(fnt)) continue;
+                string name = fnt.name.ToLowerInvariant();
                 if (name.Contains("averia") || name.Contains("norse") || name.Contains("valheim"))
-                    return font;
-                if (best == null) best = font;
+                    return fnt;
+                if (best == null) best = fnt;
             }
 
             return best;
@@ -2207,30 +1095,6 @@ namespace Companions
             return rt;
         }
 
-        private static void PlaceTopStretch(RectTransform rt, ref float y, float h)
-        {
-            rt.anchorMin        = new Vector2(0f, 1f);
-            rt.anchorMax        = new Vector2(1f, 1f);
-            rt.pivot            = new Vector2(0.5f, 1f);
-            rt.sizeDelta        = new Vector2(0f, h);
-            rt.anchoredPosition = new Vector2(0f, y);
-            y -= h;
-        }
-
-        private static void MakeSeparator(RectTransform parent, ref float y)
-        {
-            var sep = new GameObject("Sep", typeof(RectTransform), typeof(Image));
-            sep.transform.SetParent(parent, false);
-            var sepRT = sep.GetComponent<RectTransform>();
-            sepRT.anchorMin        = new Vector2(0.05f, 1f);
-            sepRT.anchorMax        = new Vector2(0.95f, 1f);
-            sepRT.pivot            = new Vector2(0.5f, 1f);
-            sepRT.sizeDelta        = new Vector2(0f, 2f);
-            sepRT.anchoredPosition = new Vector2(0f, y);
-            sep.GetComponent<Image>().color = GoldColor;
-            y -= 2f;
-        }
-
         // ══════════════════════════════════════════════════════════════════════
         //  Bootstrap
         // ══════════════════════════════════════════════════════════════════════
@@ -2244,7 +1108,3 @@ namespace Companions
         }
     }
 }
-
-
-
-

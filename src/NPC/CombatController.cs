@@ -198,8 +198,7 @@ namespace Companions
                 if (_phase != CombatPhase.Idle) ExitCombat("harvest active");
                 return;
             }
-            var panel = CompanionInteractPanel.Instance;
-            if (panel != null && panel.IsVisible && panel.CurrentCompanion == _setup) return;
+            if (CompanionInteractPanel.IsOpenFor(_setup) || CompanionRadialMenu.IsOpenFor(_setup)) return;
 
             // Get current target from CompanionAI
             Character target = _ai.m_targetCreature;

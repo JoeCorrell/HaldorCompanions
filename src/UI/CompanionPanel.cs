@@ -401,14 +401,20 @@ namespace Companions
             float pickerH = 36f;
             float sliderH = 24f;
 
-            // ── Type ────────────────────────────────────────────────────────
-            y = PlacePlainLabel(p, font, "Type", y, labelH);
-            y -= gap;
-
-            var tRow = MakeAnchoredRow(p, y, genderH);
-            y -= genderH + secGap;
-            _companionTypeBtn = AddToggleButton(tRow, "Companion", buttonTemplate, new Vector2(0.01f, 0f), new Vector2(0.49f, 1f), () => SetType(CompanionTierData.Companion));
-            _dvergerTypeBtn   = AddToggleButton(tRow, "Dverger",   buttonTemplate, new Vector2(0.51f, 0f), new Vector2(0.99f, 1f), () => SetType(CompanionTierData.Dverger));
+            // ── Type (Dverger hidden for now — only Companion available) ────
+            {
+                float savedY = y;
+                y = PlacePlainLabel(p, font, "Type", y, labelH);
+                y -= gap;
+                var tRow = MakeAnchoredRow(p, y, genderH);
+                _companionTypeBtn = AddToggleButton(tRow, "Companion", buttonTemplate, new Vector2(0.01f, 0f), new Vector2(0.49f, 1f), () => SetType(CompanionTierData.Companion));
+                _dvergerTypeBtn   = AddToggleButton(tRow, "Dverger",   buttonTemplate, new Vector2(0.51f, 0f), new Vector2(0.99f, 1f), () => SetType(CompanionTierData.Dverger));
+                // Hide type section — always Companion
+                tRow.gameObject.SetActive(false);
+                var typeLabel = p.Find("TypeLabel");
+                if (typeLabel != null) typeLabel.gameObject.SetActive(false);
+                y = savedY;
+            }
 
             // ── Appearance group (hidden for Dverger — they use vanilla model) ──
             _appearanceGroup = new GameObject("AppearanceGroup", typeof(RectTransform));

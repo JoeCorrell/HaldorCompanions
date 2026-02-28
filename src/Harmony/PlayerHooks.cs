@@ -17,7 +17,7 @@ namespace Companions
     }
 
     /// <summary>
-    /// Block all player input while the companion interaction panel is visible.
+    /// Block all player input while the companion interaction panel or radial is visible.
     /// Prevents jumping/moving/attacking while editing the companion name, etc.
     /// </summary>
     [HarmonyPatch(typeof(Player), "TakeInput")]
@@ -28,6 +28,9 @@ namespace Companions
             if (!__result) return;
             var panel = CompanionInteractPanel.Instance;
             if (panel != null && panel.IsVisible)
+            { __result = false; return; }
+            var radial = CompanionRadialMenu.Instance;
+            if (radial != null && radial.IsVisible)
                 __result = false;
         }
     }

@@ -764,8 +764,7 @@ namespace Companions
             m_updateTargetTimer -= dt;
 
             // ── UI open → suppress targeting completely ──
-            var panel = CompanionInteractPanel.Instance;
-            if (panel != null && panel.IsVisible && _setup != null && panel.CurrentCompanion == _setup)
+            if (CompanionInteractPanel.IsOpenFor(_setup) || CompanionRadialMenu.IsOpenFor(_setup))
             {
                 ThrottledTargetLog("UIOpen");
                 ClearTargets();

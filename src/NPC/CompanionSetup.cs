@@ -89,14 +89,11 @@ namespace Companions
 
             // Freeze companion in place while our UI is open —
             // prevents it from running around or following the player during interaction.
+            if (CompanionInteractPanel.IsOpenFor(this) || CompanionRadialMenu.IsOpenFor(this))
             {
-                var panel = CompanionInteractPanel.Instance;
-                if (panel != null && panel.IsVisible && panel.CurrentCompanion == this)
-                {
-                    _ai?.SetPatrolPoint();
-                    _ai?.SetFollowTarget(null);
-                    return;
-                }
+                _ai?.SetPatrolPoint();
+                _ai?.SetFollowTarget(null);
+                return;
             }
 
             // Process deferred auto-equip (throttled during rapid pickup)
@@ -322,7 +319,7 @@ namespace Companions
             ApplyFollowMode(mode);
         }
 
-        private void ApplyFollowMode(int mode)
+        internal void ApplyFollowMode(int mode)
         {
             if (_ai == null) return;
 

@@ -416,8 +416,7 @@ namespace Companions
                 return true;
 
             // Skip while companion UI is open for this companion
-            var panel = CompanionInteractPanel.Instance;
-            if (panel != null && panel.IsVisible && panel.CurrentCompanion == _setup)
+            if (CompanionInteractPanel.IsOpenFor(_setup) || CompanionRadialMenu.IsOpenFor(_setup))
                 return true;
 
             return false;

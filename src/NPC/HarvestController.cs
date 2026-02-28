@@ -1459,8 +1459,7 @@ namespace Companions
 
         private bool IsCompanionUIOpen()
         {
-            var panel = CompanionInteractPanel.Instance;
-            return panel != null && panel.IsVisible && panel.CurrentCompanion == _setup;
+            return CompanionInteractPanel.IsOpenFor(_setup) || CompanionRadialMenu.IsOpenFor(_setup);
         }
 
         private float GetCurrentWeight()
