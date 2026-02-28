@@ -36,15 +36,14 @@ namespace Companions
             try
             {
                 _harmony.PatchAll(Assembly.GetExecutingAssembly());
+                int count = 0;
+                foreach (var _ in _harmony.GetPatchedMethods()) count++;
+                Log.LogInfo($"{PluginName} loaded successfully! ({count} methods patched)");
             }
             catch (Exception ex)
             {
                 Log.LogError($"[Companions] Harmony PatchAll failed: {ex}");
             }
-
-            int count = 0;
-            foreach (var _ in _harmony.GetPatchedMethods()) count++;
-            Log.LogInfo($"{PluginName} loaded successfully! ({count} methods patched)");
 
             SceneManager.sceneLoaded += OnSceneLoaded;
             EnsureTmpDefaultFont("awake");

@@ -27,6 +27,7 @@ namespace Companions
         // ── Layout constants ─────────────────────────────────────────────────
         private const float PanelW       = 400f;
         private const float PanelH       = 400f;
+        private const float DvergerPanelH = 260f;
         private const float UiScale      = 1.25f;
         private const float OuterPad     = 6f;
         private const float TabBarH      = 28f;
@@ -95,6 +96,7 @@ namespace Companions
         private CompanionStamina _companionStamina;
         private CompanionFood    _companionFood;
         private Humanoid         _companionHumanoid;
+        private Container        _companionContainer;
         private ZNetView         _companionNview;
         private CompanionAI      _companionAI;
         private HarvestController   _companionHarvest;
@@ -122,6 +124,7 @@ namespace Companions
 
         private bool _built;
         private bool _visible;
+        private bool _builtForDverger;
 
         // ── Inventory grid ───────────────────────────────────────────────────
         private Image[]           _slotBgs;
@@ -140,6 +143,12 @@ namespace Companions
         private Button          _actionsTabBtn;
         private Button          _inventoryTabBtn;
         private int             _activeTab;
+
+        // ── Controller selection highlight ──────────────────────────────────
+        private static readonly Color SelectionGlow = new Color(1f, 0.82f, 0.24f, 0.25f);
+        private readonly System.Collections.Generic.Dictionary<Button, GameObject> _selectionOverlays =
+            new System.Collections.Generic.Dictionary<Button, GameObject>();
+        private GameObject _lastSelectedOverlay;
 
         // ══════════════════════════════════════════════════════════════════════
         //  Lifecycle
@@ -210,6 +219,31 @@ namespace Companions
                 SwitchTab(1); // Inventory tab
                 ZInput.ResetButtonStatus("JoyTabRight");
             }
+
+            UpdateControllerHighlight();
+        }
+
+        private void UpdateControllerHighlight()
+        {
+            // Hide previous overlay
+            if (_lastSelectedOverlay != null)
+            {
+                _lastSelectedOverlay.SetActive(false);
+                _lastSelectedOverlay = null;
+            }
+
+            if (!ZInput.IsGamepadActive()) return;
+            if (EventSystem.current == null) return;
+
+            var selected = EventSystem.current.currentSelectedGameObject;
+            if (selected == null) return;
+
+            // Find the "selected" child overlay on the focused button
+            var selTr = selected.transform.Find("selected");
+            if (selTr == null) return;
+
+            selTr.gameObject.SetActive(true);
+            _lastSelectedOverlay = selTr.gameObject;
         }
 
         // ══════════════════════════════════════════════════════════════════════
@@ -218,16 +252,17 @@ namespace Companions
 
         public void Show(CompanionSetup companion)
         {
-            _companion         = companion;
-            _companionChar     = companion.GetComponent<Character>();
-            _companionStamina  = companion.GetComponent<CompanionStamina>();
-            _companionFood     = companion.GetComponent<CompanionFood>();
-            _companionHumanoid = companion.GetComponent<Humanoid>();
-            _companionNview    = companion.GetComponent<ZNetView>();
-            _companionAI       = companion.GetComponent<CompanionAI>();
-            _companionHarvest  = companion.GetComponent<HarvestController>();
+            _companion          = companion;
+            _companionChar      = companion.GetComponent<Character>();
+            _companionStamina   = companion.GetComponent<CompanionStamina>();
+            _companionFood      = companion.GetComponent<CompanionFood>();
+            _companionHumanoid  = companion.GetComponent<Humanoid>();
+            _companionContainer = companion.GetComponent<Container>();
+            _companionNview     = companion.GetComponent<ZNetView>();
+            _companionAI        = companion.GetComponent<CompanionAI>();
+            _companionHarvest   = companion.GetComponent<HarvestController>();
 
-            CompanionsPlugin.Log.LogInfo(
+            CompanionsPlugin.Log.LogDebug(
                 $"[UI] Show — companion=\"{companion.name}\" " +
                 $"char={_companionChar != null} stamina={_companionStamina != null} " +
                 $"food={_companionFood != null} humanoid={_companionHumanoid != null} " +
@@ -238,8 +273,18 @@ namespace Companions
 
             EnsureCompanionOwnership();
 
-            // Rebuild if destroyed (scene change) or never built
+            // Detect Dverger — simplified UI (no gather/stance/commandable)
+            bool isDverger = !companion.CanWearArmor();
+
+            // Rebuild if destroyed (scene change), never built, or companion type changed
             if (_root == null) _built = false;
+            if (_built && isDverger != _builtForDverger)
+            {
+                Destroy(_root);
+                _root = null;
+                _built = false;
+            }
+            _builtForDverger = isDverger;
             if (!_built) BuildUI();
 
             string savedName = "";
@@ -291,14 +336,15 @@ namespace Companions
                 InventoryGui.instance.m_crafting.gameObject.SetActive(true);
 
             ClearPreviewClone();
-            _companion         = null;
-            _companionChar     = null;
-            _companionStamina  = null;
-            _companionFood     = null;
-            _companionHumanoid = null;
-            _companionNview    = null;
-            _companionAI       = null;
-            _companionHarvest  = null;
+            _companion          = null;
+            _companionChar      = null;
+            _companionStamina   = null;
+            _companionFood      = null;
+            _companionHumanoid  = null;
+            _companionContainer = null;
+            _companionNview     = null;
+            _companionAI        = null;
+            _companionHarvest   = null;
         }
 
         // ══════════════════════════════════════════════════════════════════════
@@ -380,6 +426,19 @@ namespace Companions
                 btn.targetGraphic = img;
             }
 
+            // Controller selection highlight — semi-transparent gold glow behind the button
+            var selGO = new GameObject("selected", typeof(RectTransform), typeof(Image));
+            selGO.transform.SetParent(go.transform, false);
+            selGO.transform.SetAsFirstSibling();
+            var selRT = selGO.GetComponent<RectTransform>();
+            selRT.anchorMin = Vector2.zero;
+            selRT.anchorMax = Vector2.one;
+            selRT.offsetMin = new Vector2(-4f, -4f);
+            selRT.offsetMax = new Vector2(4f, 4f);
+            selGO.GetComponent<Image>().color = SelectionGlow;
+            selGO.GetComponent<Image>().raycastTarget = false;
+            selGO.SetActive(false);
+
             return go;
         }
 
@@ -421,11 +480,13 @@ namespace Companions
             _root.transform.SetParent(canvasParent, false);
             _root.transform.SetAsLastSibling();
 
+            float panelH = _builtForDverger ? DvergerPanelH : PanelH;
+
             var rootRT = _root.GetComponent<RectTransform>();
             rootRT.anchorMin        = new Vector2(0.5f, 0.5f);
             rootRT.anchorMax        = new Vector2(0.5f, 0.5f);
             rootRT.pivot            = new Vector2(0.5f, 0.5f);
-            rootRT.sizeDelta        = new Vector2(PanelW, PanelH);
+            rootRT.sizeDelta        = new Vector2(PanelW, panelH);
             rootRT.anchoredPosition = Vector2.zero;
             rootRT.localScale       = Vector3.one * UiScale;
 
@@ -540,7 +601,7 @@ namespace Companions
 
         private void SwitchTab(int tab)
         {
-            CompanionsPlugin.Log.LogInfo($"[UI] SwitchTab — {_activeTab} → {tab}");
+            CompanionsPlugin.Log.LogDebug($"[UI] SwitchTab — {_activeTab} → {tab}");
             _activeTab = tab;
             if (_actionsContent != null)
                 _actionsContent.gameObject.SetActive(tab == 0);
@@ -580,9 +641,21 @@ namespace Companions
             float btnH = 30f;
             float btnGap = 2f;
             _followBtn = BuildActionButton(parent, ref y, btnH, btnGap, "Follow into Battle", CompanionSetup.ModeFollow);
-            _gatherWoodBtn = BuildActionButton(parent, ref y, btnH, btnGap, "Gather Wood", CompanionSetup.ModeGatherWood);
-            _gatherStoneBtn = BuildActionButton(parent, ref y, btnH, btnGap, "Gather Stone", CompanionSetup.ModeGatherStone);
-            _gatherOreBtn = BuildActionButton(parent, ref y, btnH, btnGap, "Gather Ore", CompanionSetup.ModeGatherOre);
+
+            // Gather buttons — Player-clone companions only (Dvergers don't gather)
+            if (!_builtForDverger)
+            {
+                _gatherWoodBtn = BuildActionButton(parent, ref y, btnH, btnGap, "Gather Wood", CompanionSetup.ModeGatherWood);
+                _gatherStoneBtn = BuildActionButton(parent, ref y, btnH, btnGap, "Gather Stone", CompanionSetup.ModeGatherStone);
+                _gatherOreBtn = BuildActionButton(parent, ref y, btnH, btnGap, "Gather Ore", CompanionSetup.ModeGatherOre);
+            }
+            else
+            {
+                _gatherWoodBtn = null;
+                _gatherStoneBtn = null;
+                _gatherOreBtn = null;
+            }
+
             _stayBtn = BuildUnwiredActionButton(parent, ref y, btnH, btnGap, "Stay Home: OFF");
             if (_stayBtn != null)
             {
@@ -597,56 +670,72 @@ namespace Companions
                 _autoPickupBtn.onClick.RemoveAllListeners();
                 _autoPickupBtn.onClick.AddListener(ToggleAutoPickup);
             }
-            _commandableBtn = BuildActionButton(parent, ref y, btnH, btnGap, "Command: ON", -1);
-            if (_commandableBtn != null)
+
+            // Commandable + Combat Stance — Player-clone companions only
+            if (!_builtForDverger)
             {
-                _commandableBtn.onClick.RemoveAllListeners();
-                _commandableBtn.onClick.AddListener(ToggleCommandable);
+                _commandableBtn = BuildActionButton(parent, ref y, btnH, btnGap, "Command: ON", -1);
+                if (_commandableBtn != null)
+                {
+                    _commandableBtn.onClick.RemoveAllListeners();
+                    _commandableBtn.onClick.AddListener(ToggleCommandable);
+                }
+
+                // ── Combat Stance section ──
+                y -= 6f;
+                var stanceHeader = MakeText(parent, "StanceHeader", "Combat Stance",
+                    font, 10f, GoldColor, TextAlignmentOptions.Center);
+                stanceHeader.fontStyle = FontStyles.Bold;
+                PlaceTopStretch(stanceHeader.GetComponent<RectTransform>(), ref y, 14f);
+                y -= 2f;
+
+                // 4 horizontal stance buttons
+                float stanceBtnH = 30f;
+                float stanceGap = 2f;
+                float totalW = parent.rect.width > 0 ? parent.rect.width : (PanelW - OuterPad * 2f - 4f);
+                float stanceBtnW = (totalW - stanceGap * 3f) / 4f;
+
+                var stanceRow = new GameObject("StanceRow", typeof(RectTransform));
+                stanceRow.transform.SetParent(parent, false);
+                var stanceRowRT = stanceRow.GetComponent<RectTransform>();
+                stanceRowRT.anchorMin = new Vector2(0f, 1f);
+                stanceRowRT.anchorMax = new Vector2(1f, 1f);
+                stanceRowRT.pivot = new Vector2(0.5f, 1f);
+                stanceRowRT.sizeDelta = new Vector2(0f, stanceBtnH);
+                stanceRowRT.anchoredPosition = new Vector2(0f, y);
+                y -= stanceBtnH + 2f;
+
+                _balancedBtn   = BuildStanceButton(stanceRow.transform, "BAL", 0, stanceBtnW, stanceBtnH, stanceGap, CompanionSetup.StanceBalanced);
+                _aggressiveBtn = BuildStanceButton(stanceRow.transform, "AGG", 1, stanceBtnW, stanceBtnH, stanceGap, CompanionSetup.StanceAggressive);
+                _defensiveBtn  = BuildStanceButton(stanceRow.transform, "DEF", 2, stanceBtnW, stanceBtnH, stanceGap, CompanionSetup.StanceDefensive);
+                _passiveBtn    = BuildStanceButton(stanceRow.transform, "PAS", 3, stanceBtnW, stanceBtnH, stanceGap, CompanionSetup.StancePassive);
             }
-
-            // ── Combat Stance section ──
-            y -= 6f;
-            var stanceHeader = MakeText(parent, "StanceHeader", "Combat Stance",
-                font, 10f, GoldColor, TextAlignmentOptions.Center);
-            stanceHeader.fontStyle = FontStyles.Bold;
-            PlaceTopStretch(stanceHeader.GetComponent<RectTransform>(), ref y, 14f);
-            y -= 2f;
-
-            // 4 horizontal stance buttons
-            float stanceBtnH = 24f;
-            float stanceGap = 2f;
-            float totalW = parent.rect.width > 0 ? parent.rect.width : (PanelW - OuterPad * 2f - 4f);
-            float stanceBtnW = (totalW - stanceGap * 3f) / 4f;
-
-            var stanceRow = new GameObject("StanceRow", typeof(RectTransform));
-            stanceRow.transform.SetParent(parent, false);
-            var stanceRowRT = stanceRow.GetComponent<RectTransform>();
-            stanceRowRT.anchorMin = new Vector2(0f, 1f);
-            stanceRowRT.anchorMax = new Vector2(1f, 1f);
-            stanceRowRT.pivot = new Vector2(0.5f, 1f);
-            stanceRowRT.sizeDelta = new Vector2(0f, stanceBtnH);
-            stanceRowRT.anchoredPosition = new Vector2(0f, y);
-            y -= stanceBtnH + 2f;
-
-            _balancedBtn   = BuildStanceButton(stanceRow.transform, "BAL", 0, stanceBtnW, stanceBtnH, stanceGap, CompanionSetup.StanceBalanced);
-            _aggressiveBtn = BuildStanceButton(stanceRow.transform, "AGG", 1, stanceBtnW, stanceBtnH, stanceGap, CompanionSetup.StanceAggressive);
-            _defensiveBtn  = BuildStanceButton(stanceRow.transform, "DEF", 2, stanceBtnW, stanceBtnH, stanceGap, CompanionSetup.StanceDefensive);
-            _passiveBtn    = BuildStanceButton(stanceRow.transform, "PAS", 3, stanceBtnW, stanceBtnH, stanceGap, CompanionSetup.StancePassive);
+            else
+            {
+                _commandableBtn = null;
+                _balancedBtn = null;
+                _aggressiveBtn = null;
+                _defensiveBtn = null;
+                _passiveBtn = null;
+            }
 
             // Set up explicit gamepad navigation — d-pad / left stick cycles through buttons vertically.
             // Tab buttons intentionally excluded so LB/RB handle tab switching, not up/down.
-            var btns = new Button[] {
+            // Build a filtered list so navigation never links to null buttons.
+            var allBtns = new Button[] {
                 _followBtn, _gatherWoodBtn, _gatherStoneBtn, _gatherOreBtn,
                 _stayBtn, _setHomeBtn, _autoPickupBtn, _commandableBtn,
                 _balancedBtn, _aggressiveBtn, _defensiveBtn, _passiveBtn
             };
-            for (int i = 0; i < btns.Length; i++)
+            var validBtns = new System.Collections.Generic.List<Button>();
+            for (int i = 0; i < allBtns.Length; i++)
+                if (allBtns[i] != null) validBtns.Add(allBtns[i]);
+            for (int i = 0; i < validBtns.Count; i++)
             {
-                if (btns[i] == null) continue;
                 var nav = new Navigation { mode = Navigation.Mode.Explicit };
-                nav.selectOnUp   = i > 0               ? btns[i - 1] : btns[btns.Length - 1];
-                nav.selectOnDown = i < btns.Length - 1 ? btns[i + 1] : btns[0];
-                btns[i].navigation = nav;
+                nav.selectOnUp   = validBtns[(i - 1 + validBtns.Count) % validBtns.Count];
+                nav.selectOnDown = validBtns[(i + 1) % validBtns.Count];
+                validBtns[i].navigation = nav;
             }
         }
 
@@ -726,7 +815,7 @@ namespace Companions
             _slotBorders = new Image[MainGridSlots];
             _slotDurabilityBars = new GameObject[MainGridSlots];
             _slotDurabilityFills = new Image[MainGridSlots];
-            CompanionsPlugin.Log.LogInfo(
+            CompanionsPlugin.Log.LogDebug(
                 $"[UI] BuildInventoryGrid — {GridCols}x{Mathf.CeilToInt(MainGridSlots / (float)GridCols)} grid, " +
                 $"slotSize={slotSize}px, durability bars enabled");
 
@@ -904,22 +993,7 @@ namespace Companions
                 slotRT.sizeDelta = new Vector2(foodSlotSz, foodSlotSz);
                 slotRT.anchoredPosition = new Vector2(x, 0f);
                 slotGO.GetComponent<Image>().color = SlotTint;
-
-                var btn = slotGO.AddComponent<Button>();
-                btn.transition = Selectable.Transition.None;
-                btn.navigation = new Navigation { mode = Navigation.Mode.None };
-                int slotIndex = i;
-                btn.onClick.AddListener(() => OnFoodSlotLeftClick(slotIndex));
-
-                var trigger = slotGO.AddComponent<EventTrigger>();
-                var rightEntry = new EventTrigger.Entry { eventID = EventTriggerType.PointerClick };
-                rightEntry.callback.AddListener((data) =>
-                {
-                    var pData = (PointerEventData)data;
-                    if (pData.button == PointerEventData.InputButton.Right)
-                        OnFoodSlotRightClick(slotIndex);
-                });
-                trigger.triggers.Add(rightEntry);
+                slotGO.GetComponent<Image>().raycastTarget = false;
 
                 var iconGO = new GameObject("Icon", typeof(RectTransform), typeof(Image));
                 iconGO.transform.SetParent(slotGO.transform, false);
@@ -1019,28 +1093,18 @@ namespace Companions
 
         private void OnSlotLeftClick(int slotIndex)
         {
-            CompanionsPlugin.Log.LogInfo($"[UI] OnSlotLeftClick — slotIndex={slotIndex}");
+            CompanionsPlugin.Log.LogDebug($"[UI] OnSlotLeftClick — slotIndex={slotIndex}");
             if (!TryGetMainGridCoord(slotIndex, out int gx, out int gy)) return;
             HandleSlotLeftClick(gx, gy, consumableOnly: false);
         }
         private void OnSlotRightClick(int slotIndex)
         {
-            CompanionsPlugin.Log.LogInfo($"[UI] OnSlotRightClick — slotIndex={slotIndex}");
+            CompanionsPlugin.Log.LogDebug($"[UI] OnSlotRightClick — slotIndex={slotIndex}");
             if (!TryGetMainGridCoord(slotIndex, out int gx, out int gy)) return;
             HandleSlotRightClick(gx, gy);
         }
-        private void OnFoodSlotLeftClick(int slotIndex)
-        {
-            CompanionsPlugin.Log.LogInfo($"[UI] OnFoodSlotLeftClick — slotIndex={slotIndex}");
-            if (slotIndex < 0 || slotIndex >= FoodSlotCount) return;
-            HandleSlotLeftClick(slotIndex, 0, consumableOnly: true);
-        }
-        private void OnFoodSlotRightClick(int slotIndex)
-        {
-            CompanionsPlugin.Log.LogInfo($"[UI] OnFoodSlotRightClick — slotIndex={slotIndex}");
-            if (slotIndex < 0 || slotIndex >= FoodSlotCount) return;
-            HandleSlotRightClick(slotIndex, 0);
-        }
+        // Food slots are display-only — no click handlers.
+        // Active food effects + duration are shown via RefreshFoodSlots().
         private static bool IsConsumableItem(ItemDrop.ItemData item)
         {
             if (item == null || item.m_shared == null) return false;
@@ -1061,14 +1125,12 @@ namespace Companions
         }
         private void HandleSlotLeftClick(int gx, int gy, bool consumableOnly)
         {
-            if (_companionHumanoid == null || InventoryGui.instance == null)
+            if (InventoryGui.instance == null)
             {
-                CompanionsPlugin.Log.LogWarning(
-                    $"[UI] HandleSlotLeftClick ABORT — humanoid={_companionHumanoid != null} " +
-                    $"invGui={InventoryGui.instance != null}");
+                CompanionsPlugin.Log.LogWarning("[UI] HandleSlotLeftClick ABORT — invGui is null");
                 return;
             }
-            var inv = _companionHumanoid.GetInventory();
+            var inv = GetStorageInventory();
             if (inv == null)
             {
                 CompanionsPlugin.Log.LogWarning("[UI] HandleSlotLeftClick ABORT — companion inventory is null");
@@ -1080,7 +1142,7 @@ namespace Companions
             int dragAmt  = (_dragAmountField != null) ? (int)_dragAmountField.GetValue(InventoryGui.instance) : 1;
             bool changed = false;
 
-            CompanionsPlugin.Log.LogInfo(
+            CompanionsPlugin.Log.LogDebug(
                 $"[UI] HandleSlotLeftClick — slot=({gx},{gy}) consumableOnly={consumableOnly} " +
                 $"dragItem=\"{dragItem?.m_shared?.m_name}\" dragInv={dragInv != null} dragAmt={dragAmt} " +
                 $"invItems={inv.GetAllItems().Count}");
@@ -1089,7 +1151,7 @@ namespace Companions
             {
                 if (consumableOnly && !IsConsumableItem(dragItem))
                 {
-                    CompanionsPlugin.Log.LogInfo(
+                    CompanionsPlugin.Log.LogDebug(
                         $"[UI] Food slot REJECTED drag — \"{dragItem.m_shared?.m_name}\" " +
                         $"type={dragItem.m_shared?.m_itemType} " +
                         $"food={dragItem.m_shared?.m_food} stam={dragItem.m_shared?.m_foodStamina} " +
@@ -1119,7 +1181,7 @@ namespace Companions
                 var targetItem = inv.GetItemAt(gx, gy);
                 if (consumableOnly && targetItem != null && !IsConsumableItem(targetItem))
                 {
-                    CompanionsPlugin.Log.LogInfo(
+                    CompanionsPlugin.Log.LogDebug(
                         $"[UI] Food slot REJECTED swap — target \"{targetItem.m_shared?.m_name}\" " +
                         $"is not food, slot=({gx},{gy})");
                     MessageHud.instance?.ShowMessage(
@@ -1140,7 +1202,7 @@ namespace Companions
                 }
 
                 bool moved = DropItemToCompanion(inv, dragInv, dragItem, dragAmt, gx, gy);
-                CompanionsPlugin.Log.LogInfo(
+                CompanionsPlugin.Log.LogDebug(
                     $"[UI] DropItemToCompanion result={moved} item=\"{dragItem.m_shared?.m_name}\" → slot=({gx},{gy})");
                 if (moved)
                 {
@@ -1154,11 +1216,11 @@ namespace Companions
                 var item = inv.GetItemAt(gx, gy);
                 if (item == null)
                 {
-                    CompanionsPlugin.Log.LogInfo($"[UI] No item at companion slot ({gx},{gy}) — nothing to pick up");
+                    CompanionsPlugin.Log.LogDebug($"[UI] No item at companion slot ({gx},{gy}) — nothing to pick up");
                     return;
                 }
 
-                CompanionsPlugin.Log.LogInfo(
+                CompanionsPlugin.Log.LogDebug(
                     $"[UI] Picking up \"{item.m_shared?.m_name}\" from companion({gx},{gy}) " +
                     $"stack={item.m_stack} — starting drag");
 
@@ -1200,7 +1262,7 @@ namespace Companions
             amount = Mathf.Clamp(amount, 1, dragItem.m_stack);
 
             var targetItem = targetInv.GetItemAt(x, y);
-            CompanionsPlugin.Log.LogInfo(
+            CompanionsPlugin.Log.LogDebug(
                 $"[UI] DropItemToCompanion — \"{dragItem.m_shared?.m_name}\" amt={amount} " +
                 $"→ slot=({x},{y}) targetSlotItem=\"{targetItem?.m_shared?.m_name}\" " +
                 $"fromInv={fromInv.GetName()} targetInv={targetInv.GetName()}");
@@ -1209,7 +1271,7 @@ namespace Companions
             // behave like base inventory drag/drop.
             if (ShouldSwapForDrop(dragItem, targetItem, amount))
             {
-                CompanionsPlugin.Log.LogInfo("[UI] DropItemToCompanion — performing swap");
+                CompanionsPlugin.Log.LogDebug("[UI] DropItemToCompanion — performing swap");
                 Vector2i oldPos = dragItem.m_gridPos;
                 fromInv.RemoveItem(dragItem);
                 fromInv.MoveItemToThis(targetInv, targetItem, targetItem.m_stack, oldPos.x, oldPos.y);
@@ -1218,7 +1280,7 @@ namespace Companions
             }
 
             bool result = targetInv.MoveItemToThis(fromInv, dragItem, amount, x, y);
-            CompanionsPlugin.Log.LogInfo($"[UI] DropItemToCompanion — MoveItemToThis result={result}");
+            CompanionsPlugin.Log.LogDebug($"[UI] DropItemToCompanion — MoveItemToThis result={result}");
             return result;
         }
 
@@ -1230,16 +1292,15 @@ namespace Companions
 
         private void HandleSlotRightClick(int gx, int gy)
         {
-            if (_companionHumanoid == null) return;
-            var inv = _companionHumanoid.GetInventory();
+            var inv = GetStorageInventory();
             if (inv == null) return;
             var item = inv.GetItemAt(gx, gy);
             if (item == null)
             {
-                CompanionsPlugin.Log.LogInfo($"[UI] HandleSlotRightClick — no item at ({gx},{gy})");
+                CompanionsPlugin.Log.LogDebug($"[UI] HandleSlotRightClick — no item at ({gx},{gy})");
                 return;
             }
-            CompanionsPlugin.Log.LogInfo(
+            CompanionsPlugin.Log.LogDebug(
                 $"[UI] HandleSlotRightClick — \"{item.m_shared?.m_name}\" at ({gx},{gy}) " +
                 $"equipped={_companionHumanoid.IsItemEquiped(item)}");
 
@@ -1251,7 +1312,7 @@ namespace Companions
             if (IsConsumableItem(item) && _companionFood != null)
             {
                 changed = _companionFood.TryConsumeItem(item);
-                CompanionsPlugin.Log.LogInfo(
+                CompanionsPlugin.Log.LogDebug(
                     $"[UI] Right-click food consume — \"{item.m_shared?.m_name}\" " +
                     $"slot=({gx},{gy}) success={changed}");
             }
@@ -1274,7 +1335,7 @@ namespace Companions
         }
         private void ClearDrag()
         {
-            CompanionsPlugin.Log.LogInfo("[UI] ClearDrag called");
+            CompanionsPlugin.Log.LogDebug("[UI] ClearDrag called");
             if (InventoryGui.instance == null) return;
             _setupDragItem?.Invoke(InventoryGui.instance,
                 new object[] { null, null, 1 });
@@ -1294,7 +1355,7 @@ namespace Companions
                              && mode <= CompanionSetup.ModeGatherOre;
             if (isGatherMode && _companionHarvest != null && _companionHarvest.IsOverweight())
             {
-                CompanionsPlugin.Log.LogInfo(
+                CompanionsPlugin.Log.LogDebug(
                     $"[UI] SetActionMode BLOCKED — companion is overweight, cannot gather");
                 MessageHud.instance?.ShowMessage(
                     MessageHud.MessageType.Center,
@@ -1308,7 +1369,7 @@ namespace Companions
 
             string oldName = ModeName(oldMode);
             string newName = ModeName(mode);
-            CompanionsPlugin.Log.LogInfo(
+            CompanionsPlugin.Log.LogDebug(
                 $"[UI] SetActionMode: {oldName}({oldMode}) → {newName}({mode}) " +
                 $"harvest={(_companionHarvest != null ? "attached" : "NULL")} " +
                 $"ai={(_companionAI != null ? "attached" : "NULL")}");
@@ -1316,7 +1377,7 @@ namespace Companions
             if (_companionNview != null && _companionNview.GetZDO() != null)
             {
                 _companionNview.GetZDO().Set(CompanionSetup.ActionModeHash, mode);
-                CompanionsPlugin.Log.LogInfo($"[UI]   ZDO ActionModeHash set to {mode}");
+                CompanionsPlugin.Log.LogDebug($"[UI]   ZDO ActionModeHash set to {mode}");
             }
             else
                 CompanionsPlugin.Log.LogWarning("[UI]   ZDO is null — mode NOT persisted!");
@@ -1360,13 +1421,13 @@ namespace Companions
                     {
                         _companionAI.SetFollowTarget(null);
                         _companionAI.SetPatrolPointAt(_companion.GetHomePosition());
-                        CompanionsPlugin.Log.LogInfo(
+                        CompanionsPlugin.Log.LogDebug(
                             $"[UI] ApplyActionMode: StayHome patrol (mode={_activeMode})");
                     }
                     else if (Player.m_localPlayer != null)
                     {
                         _companionAI.SetFollowTarget(Player.m_localPlayer.gameObject);
-                        CompanionsPlugin.Log.LogInfo(
+                        CompanionsPlugin.Log.LogDebug(
                             $"[UI] ApplyActionMode: SetFollowTarget → player (mode={_activeMode})");
                     }
                     else
@@ -1378,12 +1439,12 @@ namespace Companions
                         _companionAI.SetPatrolPointAt(_companion.GetHomePosition());
                     else
                         _companionAI.SetPatrolPoint();
-                    CompanionsPlugin.Log.LogInfo("[UI] ApplyActionMode: Stay — cleared follow, set patrol");
+                    CompanionsPlugin.Log.LogDebug("[UI] ApplyActionMode: Stay — cleared follow, set patrol");
                     break;
                 default:
                     if (Player.m_localPlayer != null)
                         _companionAI.SetFollowTarget(Player.m_localPlayer.gameObject);
-                    CompanionsPlugin.Log.LogInfo(
+                    CompanionsPlugin.Log.LogDebug(
                         $"[UI] ApplyActionMode: default follow (mode={_activeMode})");
                     break;
             }
@@ -1412,15 +1473,18 @@ namespace Companions
             }
             else
             {
+                // Respect current action mode — gather modes should continue with player follow
                 if (Player.m_localPlayer != null)
                     _companionAI.SetFollowTarget(Player.m_localPlayer.gameObject);
+                // Re-apply current mode so gather modes restore follow correctly
+                ApplyActionMode();
                 MessageHud.instance?.ShowMessage(
                     MessageHud.MessageType.Center,
                     "Companion will follow you.");
             }
 
             RefreshStayHomeButton();
-            CompanionsPlugin.Log.LogInfo(
+            CompanionsPlugin.Log.LogDebug(
                 $"[UI] ToggleStayHome → {next} home={_companion.GetHomePosition():F1}");
         }
 
@@ -1439,7 +1503,7 @@ namespace Companions
             MessageHud.instance?.ShowMessage(
                 MessageHud.MessageType.Center,
                 "Home point set.");
-            CompanionsPlugin.Log.LogInfo(
+            CompanionsPlugin.Log.LogDebug(
                 $"[UI] Set home point at {pos}");
         }
 
@@ -1492,7 +1556,7 @@ namespace Companions
             RefreshStanceButtons();
 
             string[] names = { "Balanced", "Aggressive", "Defensive", "Passive" };
-            CompanionsPlugin.Log.LogInfo($"[UI] SetCombatStance → {names[stance]}");
+            CompanionsPlugin.Log.LogDebug($"[UI] SetCombatStance → {names[stance]}");
         }
 
         private void RefreshStanceButtons()
@@ -1595,6 +1659,19 @@ namespace Companions
                 _companionNview.ClaimOwnership();
         }
 
+        /// <summary>
+        /// Returns the inventory used for player-facing storage.
+        /// For Player-clone companions: Humanoid inventory (shared with Container).
+        /// For Dverger variants: Container's own inventory (Humanoid inventory holds
+        /// fixed default gear and must not be exposed to the player).
+        /// </summary>
+        private Inventory GetStorageInventory()
+        {
+            if (_builtForDverger && _companionContainer != null)
+                return _companionContainer.GetInventory();
+            return _companionHumanoid?.GetInventory();
+        }
+
         // ══════════════════════════════════════════════════════════════════════
         //  Stat bars
         // ══════════════════════════════════════════════════════════════════════
@@ -1609,13 +1686,13 @@ namespace Companions
 
         private void RefreshInventoryGrid()
         {
-            if (_slotIcons == null || _companionHumanoid == null) return;
+            if (_slotIcons == null) return;
 
             _invRefreshTimer -= Time.deltaTime;
             if (_invRefreshTimer > 0f) return;
             _invRefreshTimer = 0.25f;
 
-            var inv = _companionHumanoid.GetInventory();
+            var inv = GetStorageInventory();
             if (inv == null) return;
 
             for (int i = 0; i < MainGridSlots; i++)
@@ -1693,43 +1770,25 @@ namespace Companions
         private void RefreshFoodSlots(Inventory inv)
         {
             if (_foodSlotIcons == null || _foodSlotCounts == null) return;
+            if (_companionFood == null) return;
 
             for (int i = 0; i < FoodSlotCount; i++)
             {
-                bool showedActiveFood = false;
-                if (_companionFood != null)
-                {
-                    var activeFood = _companionFood.GetFood(i);
-                    if (activeFood.IsActive)
-                    {
-                        Sprite icon = ResolveFoodIcon(activeFood, inv);
-                        if (icon != null)
-                        {
-                            _foodSlotIcons[i].sprite = icon;
-                            _foodSlotIcons[i].enabled = true;
-                        }
+                var activeFood = _companionFood.GetFood(i);
+                if (!activeFood.IsActive) continue;
 
-                        _foodSlotCounts[i].text = FormatFoodDuration(activeFood.RemainingTime);
-                        _foodSlotCounts[i].color = activeFood.RemainingTime >= 60f
-                            ? Color.white
-                            : new Color(1f, 1f, 1f, Mathf.Clamp01(0.4f + Mathf.Sin(Time.time * 10f) * 0.6f));
-                        _foodSlotCounts[i].enabled = true;
-                        showedActiveFood = true;
-                    }
+                Sprite icon = ResolveFoodIcon(activeFood, inv);
+                if (icon != null)
+                {
+                    _foodSlotIcons[i].sprite = icon;
+                    _foodSlotIcons[i].enabled = true;
                 }
 
-                if (showedActiveFood) continue;
-
-                var slotted = inv.GetItemAt(i, 0);
-                if (slotted == null || !IsConsumableItem(slotted)) continue;
-                _foodSlotIcons[i].sprite = slotted.GetIcon();
-                _foodSlotIcons[i].enabled = true;
-                if (slotted.m_shared != null && slotted.m_shared.m_maxStackSize > 1)
-                {
-                    _foodSlotCounts[i].text = FormatStackSize(slotted);
-                    _foodSlotCounts[i].color = Color.white;
-                    _foodSlotCounts[i].enabled = true;
-                }
+                _foodSlotCounts[i].text = FormatFoodDuration(activeFood.RemainingTime);
+                _foodSlotCounts[i].color = activeFood.RemainingTime >= 60f
+                    ? Color.white
+                    : new Color(1f, 1f, 1f, Mathf.Clamp01(0.4f + Mathf.Sin(Time.time * 10f) * 0.6f));
+                _foodSlotCounts[i].enabled = true;
             }
         }
 

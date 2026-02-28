@@ -179,7 +179,7 @@ namespace Companions
                     // Log WHY the threat check failed — helps diagnose dead-enemy lingering
                     if (_phase != CombatPhase.Idle && gatherTarget != null)
                     {
-                        CompanionsPlugin.Log.LogInfo(
+                        CompanionsPlugin.Log.LogDebug(
                             $"[Combat] Gather threat cleared — \"{gatherTarget.m_name}\" " +
                             $"isDead={gatherTarget.IsDead()} hp={gatherTarget.GetHealth():F0} " +
                             $"dist={Vector3.Distance(transform.position, gatherTarget.transform.position):F1}");
@@ -223,7 +223,7 @@ namespace Companions
                 if (_phase != CombatPhase.Idle)
                 {
                     if (target != null)
-                        CompanionsPlugin.Log.LogInfo(
+                        CompanionsPlugin.Log.LogDebug(
                             $"[Combat] Target lost — \"{target.m_name}\" isDead={target.IsDead()} " +
                             $"hp={target.GetHealth():F0} phase={_phase}");
                     ExitCombat(target == null ? "no target" : "target dead");
@@ -246,7 +246,7 @@ namespace Companions
                 bool isAnimal = target.GetComponent<AnimalAI>() != null;
                 bool hasBowNow = HasBowAndArrows();
                 var curWeapon = _humanoid.GetCurrentWeapon();
-                CompanionsPlugin.Log.LogInfo(
+                CompanionsPlugin.Log.LogDebug(
                     $"[Combat] ENGAGE target=\"{target.m_name}\" dist={engageDist:F1} " +
                     $"isAnimal={isAnimal} hasBow={hasBowNow} " +
                     $"weapon=\"{curWeapon?.m_shared?.m_name ?? "NONE"}\" " +
@@ -261,14 +261,22 @@ namespace Companions
             float movedSinceLast = Vector3.Distance(transform.position, _lastStuckPos);
             if (_phase == CombatPhase.Melee)
             {
-                float distForStuck = Vector3.Distance(transform.position, target.transform.position);
+                // Use same distance formula as CompanionAI.UpdateCombat
+                // (center-to-center minus target radius) for consistency.
+                float distForStuck = Vector3.Distance(transform.position, target.transform.position)
+                                     - target.GetRadius();
                 var stuckWeapon = _humanoid.GetCurrentWeapon();
                 float stuckRange = stuckWeapon != null ? stuckWeapon.m_shared.m_aiAttackRange : 2f;
-                bool inWeaponRange = distForStuck <= stuckRange + 1f;
+                // Use the stop range (half weapon range) — companion should be
+                // within this distance when properly engaged. The old check used
+                // stuckRange + 1 which was too generous and prevented stuck
+                // detection when the companion was swinging at air.
+                float stuckStopRange = Mathf.Max(stuckRange * 0.5f, 1.5f);
+                bool inStopRange = distForStuck <= stuckStopRange;
 
-                // Don't count as stuck when in weapon range — standing still between
+                // Don't count as stuck when in close range — standing still between
                 // attacks is normal melee behavior, not a stuck state.
-                if (movedSinceLast < 0.3f && !_character.InAttack() && !inWeaponRange)
+                if (movedSinceLast < 0.3f && !_character.InAttack() && !inStopRange)
                     _stuckTimer += dt;
                 else
                     _stuckTimer = 0f;
@@ -312,7 +320,7 @@ namespace Companions
             {
                 if (healthPct >= HealthRecoverPct && staminaPct >= StaminaRecoverPct)
                 {
-                    CompanionsPlugin.Log.LogInfo(
+                    CompanionsPlugin.Log.LogDebug(
                         $"[Combat] Retreat RECOVERED — hp={healthPct:P0} stam={staminaPct:P0} — re-engaging");
                     ExitCombat("recovered from retreat");
                 }
@@ -325,7 +333,7 @@ namespace Companions
             else if (healthPct < retreatHpPct || staminaPct < retreatStamPct)
             {
                 TransitionTo(CombatPhase.Retreat);
-                CompanionsPlugin.Log.LogInfo(
+                CompanionsPlugin.Log.LogDebug(
                     $"[Combat] Entering RETREAT — hp={healthPct:P0} stam={staminaPct:P0} stance={stance}");
                 UpdateRetreat(target, dt, stance);
                 return;
@@ -350,7 +358,7 @@ namespace Companions
                 }
                 else
                 {
-                    CompanionsPlugin.Log.LogInfo(
+                    CompanionsPlugin.Log.LogDebug(
                         $"[Combat] Ignoring fleeing animal \"{target.m_name}\" — no bow+arrows");
                     AbandonTarget(target);
                     _ai.ClearTargets();
@@ -365,7 +373,7 @@ namespace Companions
                 // Currently shooting — switch to melee if target closes in
                 if (distToTarget < MeleeSwitchDistance || !hasBow)
                 {
-                    CompanionsPlugin.Log.LogInfo(
+                    CompanionsPlugin.Log.LogDebug(
                         $"[Combat] Bow→Melee switch — dist={distToTarget:F1} < {MeleeSwitchDistance} " +
                         $"hasBow={hasBow}");
                     RestoreMeleeLoadout();
@@ -383,7 +391,7 @@ namespace Companions
                 // Currently melee or idle — switch to ranged if far enough and have bow
                 if (hasBow && distToTarget > BowSwitchDistance)
                 {
-                    CompanionsPlugin.Log.LogInfo(
+                    CompanionsPlugin.Log.LogDebug(
                         $"[Combat] Melee→Bow switch — dist={distToTarget:F1} > {BowSwitchDistance}");
                     EquipBow();
                     TransitionTo(CombatPhase.Ranged);
@@ -436,7 +444,7 @@ namespace Companions
 
             if (isTool || isPickaxe || isToolDamageOnly)
             {
-                CompanionsPlugin.Log.LogInfo(
+                CompanionsPlugin.Log.LogDebug(
                     $"[Combat] WEAPON CHECK — fighting with tool \"{weapon.m_shared.m_name}\" " +
                     $"(type={type} isTool={isTool} isPickaxe={isPickaxe} toolDmgOnly={isToolDamageOnly}) — forcing re-equip");
 
@@ -448,7 +456,7 @@ namespace Companions
                 _setup?.SyncEquipmentToInventory();
 
                 var newWeapon = ReflectionHelper.GetRightItem(_humanoid);
-                CompanionsPlugin.Log.LogInfo(
+                CompanionsPlugin.Log.LogDebug(
                     $"[Combat] After re-equip: \"{newWeapon?.m_shared?.m_name ?? "NONE"}\" " +
                     $"type={newWeapon?.m_shared?.m_itemType}");
 
@@ -494,7 +502,7 @@ namespace Companions
             if (bestShield != null)
             {
                 _humanoid.EquipItem(bestShield, true);
-                CompanionsPlugin.Log.LogInfo(
+                CompanionsPlugin.Log.LogDebug(
                     $"[Combat] Equipped shield \"{bestShield.m_shared.m_name}\" for melee combat");
             }
         }
@@ -505,7 +513,9 @@ namespace Companions
 
         private void UpdateMelee(Character target, float dt, int stance)
         {
-            float dist = Vector3.Distance(transform.position, target.transform.position);
+            // Use center-to-surface distance (consistent with CompanionAI.UpdateCombat)
+            float dist = Vector3.Distance(transform.position, target.transform.position)
+                         - target.GetRadius();
             var weapon = _humanoid.GetCurrentWeapon();
             float weaponRange = weapon != null ? weapon.m_shared.m_aiAttackRange : 2f;
 
@@ -539,7 +549,7 @@ namespace Companions
                         if (_blockLogTimer <= 0f)
                         {
                             _blockLogTimer = 1f;
-                            CompanionsPlugin.Log.LogInfo(
+                            CompanionsPlugin.Log.LogDebug(
                                 $"[Combat] NEW THREAT — \"{c.m_name}\" InAttack at {d:F1}m " +
                                 $"(active threats: {_activeAttackers.Count})");
                         }
@@ -581,7 +591,7 @@ namespace Companions
                     _dodgeCooldown = cooldown;
                     _stamina?.UseStamina(DodgeStaminaCost);
 
-                    CompanionsPlugin.Log.LogInfo(
+                    CompanionsPlugin.Log.LogDebug(
                         $"[Combat] DODGE — attacker=\"{closestAttacker.m_name}\" " +
                         $"dist={closestAttackerDist:F1} cd={cooldown:F1}s");
                     return; // skip block/attack this frame
@@ -630,7 +640,7 @@ namespace Companions
                         // companion to counter-attack while enemies were mid-swing.
                         _blockHoldTimer = 0f;
                         ReflectionHelper.TrySetBlockTimer(_humanoid, 0f);
-                        CompanionsPlugin.Log.LogInfo(
+                        CompanionsPlugin.Log.LogDebug(
                             $"[Combat] Block SAFETY RESET ({BlockSafetyCap:F1}s) — threats still active, " +
                             $"continuing to block (threats={_activeAttackers.Count})");
                     }
@@ -645,7 +655,7 @@ namespace Companions
                         _counterWindow = CounterWindowDuration;
                         inCounterWindow = true;
 
-                        CompanionsPlugin.Log.LogInfo(
+                        CompanionsPlugin.Log.LogDebug(
                             $"[Combat] Block SAFETY CAP ({BlockSafetyCap:F1}s) — no threats, counter-attack window");
                     }
                 }
@@ -662,7 +672,7 @@ namespace Companions
                 _counterWindow = CounterWindowDuration;
                 inCounterWindow = true;
 
-                CompanionsPlugin.Log.LogInfo(
+                CompanionsPlugin.Log.LogDebug(
                     $"[Combat] Block ended (threats cleared) — entering {CounterWindowDuration:F1}s counter window");
             }
 
@@ -686,14 +696,14 @@ namespace Companions
                     if (newThreatDetected)
                     {
                         ReflectionHelper.TrySetBlockTimer(_humanoid, 0f);
-                        CompanionsPlugin.Log.LogInfo(
+                        CompanionsPlugin.Log.LogDebug(
                             $"[Combat] BLOCK — new threat detected, parry timer reset " +
                             $"(hold={_blockHoldTimer:F2}s threats={_activeAttackers.Count})");
                     }
                     else if (!wasAlreadyBlocking)
                     {
                         ReflectionHelper.TrySetBlockTimer(_humanoid, 0f);
-                        CompanionsPlugin.Log.LogInfo(
+                        CompanionsPlugin.Log.LogDebug(
                             $"[Combat] BLOCK RAISED — shield up, parry timer reset " +
                             $"(threats={_activeAttackers.Count})");
                     }
@@ -715,7 +725,7 @@ namespace Companions
                 _activeAttackers.Clear();
                 _counterWindow = CounterWindowDuration;
 
-                CompanionsPlugin.Log.LogInfo(
+                CompanionsPlugin.Log.LogDebug(
                     $"[Combat] Block ended (fallback) — entering {CounterWindowDuration:F1}s counter-attack window");
             }
 
@@ -732,7 +742,7 @@ namespace Companions
                     _wasBlocking = true;
                     _blockHoldTimer = 0f;
                     ReflectionHelper.TrySetBlockTimer(_humanoid, 0f);
-                    CompanionsPlugin.Log.LogInfo(
+                    CompanionsPlugin.Log.LogDebug(
                         $"[Combat] Counter window CANCELLED — threats reappeared, re-blocking " +
                         $"(threats={_activeAttackers.Count})");
                     return;
@@ -740,7 +750,9 @@ namespace Companions
 
                 // Close the gap after parry pushback — MoveTowards at full run speed
                 // bypasses blocking move-speed penalty and pathfinding delay.
-                if (dist > weaponRange && !_character.InAttack())
+                // Use stop range (half weapon range) to get within reliable hit distance.
+                float counterStopRange = Mathf.Max(weaponRange * 0.5f, 1.5f);
+                if (dist > counterStopRange && !_character.InAttack())
                 {
                     Vector3 dir = (target.transform.position - transform.position);
                     dir.y = 0f;
@@ -766,7 +778,7 @@ namespace Companions
                         _powerAttackTimer = PowerAttackCooldown;
                         _attackCooldownTimer = AttackCooldown;
                         _counterWindow = 0f;
-                        CompanionsPlugin.Log.LogInfo(
+                        CompanionsPlugin.Log.LogDebug(
                             $"[Combat] COUNTER POWER ATTACK on staggered \"{target.m_name}\" " +
                             $"dist={dist:F1} range={weaponRange:F1}");
                     }
@@ -786,7 +798,7 @@ namespace Companions
                         ? PowerAttackCooldown * 0.5f : PowerAttackCooldown;
                     _powerAttackTimer = paCooldown;
                     _attackCooldownTimer = AttackCooldown;
-                    CompanionsPlugin.Log.LogInfo(
+                    CompanionsPlugin.Log.LogDebug(
                         $"[Combat] POWER ATTACK on staggered \"{target.m_name}\" " +
                         $"dist={dist:F1} range={weaponRange:F1}");
                 }
@@ -860,7 +872,7 @@ namespace Companions
                     if (_blockLogTimer <= 0f)
                     {
                         _blockLogTimer = 2f;
-                        CompanionsPlugin.Log.LogInfo(
+                        CompanionsPlugin.Log.LogDebug(
                             $"[Combat] PROJECTILE threat — dist={Mathf.Sqrt(sqrDist):F1}m " +
                             $"dot={dot:F2} owner=\"{owner?.m_name ?? "?"}\"");
                     }
@@ -883,7 +895,7 @@ namespace Companions
             // Target out of range — give up and abandon
             if (dist > BowMaxRange)
             {
-                CompanionsPlugin.Log.LogInfo(
+                CompanionsPlugin.Log.LogDebug(
                     $"[Combat] Target \"{target.m_name}\" out of bow range ({dist:F1} > {BowMaxRange}) — abandoning");
                 AbandonTarget(target);
                 _ai.ClearTargets();
@@ -920,7 +932,7 @@ namespace Companions
             if (_rangedLogTimer <= 0f)
             {
                 _rangedLogTimer = 1f;
-                CompanionsPlugin.Log.LogInfo(
+                CompanionsPlugin.Log.LogDebug(
                     $"[Combat] BOW AIM — target=\"{target.m_name}\" dist={dist:F1} " +
                     $"draw={_bowDrawTimer:F2}/{BowDrawTime:F2} onTarget={onTarget} " +
                     $"fireCD={_bowFireCooldown:F1} inAttack={_character.InAttack()} " +
@@ -934,7 +946,7 @@ namespace Companions
                 _bowDrawTimer = 0f;
                 _bowFireCooldown = BowFireInterval;
 
-                CompanionsPlugin.Log.LogInfo(
+                CompanionsPlugin.Log.LogDebug(
                     $"[Combat] BOW FIRE at \"{target.m_name}\" dist={dist:F1} " +
                     $"fired={fired} onTarget={onTarget}");
             }
@@ -945,7 +957,7 @@ namespace Companions
             if (target == null) return;
             _abandonedTargetId = target.GetInstanceID();
             _abandonCooldown = 30f; // Don't re-engage this target for 30s
-            CompanionsPlugin.Log.LogInfo(
+            CompanionsPlugin.Log.LogDebug(
                 $"[Combat] Abandoned target \"{target.m_name}\" — 30s cooldown");
         }
 
@@ -989,7 +1001,7 @@ namespace Companions
                 float healthPct2 = _character.GetHealthPercentage();
                 float stamPct2 = _stamina != null ? _stamina.GetStaminaPercentage() : 1f;
                 float distTarget = Vector3.Distance(transform.position, target.transform.position);
-                CompanionsPlugin.Log.LogInfo(
+                CompanionsPlugin.Log.LogDebug(
                     $"[Combat] RETREATING — target=\"{target.m_name}\" dist={distTarget:F1} " +
                     $"hp={healthPct2:P0}/{HealthRecoverPct:P0} stam={stamPct2:P0}/{StaminaRecoverPct:P0} " +
                     $"retreatTimer={_retreatTimer:F1}s");
@@ -1006,7 +1018,7 @@ namespace Companions
                     if (TryConsumeMead(MeadType.Health))
                     {
                         _consumeTimer = ConsumeCooldown;
-                        CompanionsPlugin.Log.LogInfo("[Combat] Consumed health mead while retreating");
+                        CompanionsPlugin.Log.LogDebug("[Combat] Consumed health mead while retreating");
                     }
                 }
                 if (staminaPct < StaminaRetreatPct && _consumeTimer <= 0f)
@@ -1014,7 +1026,7 @@ namespace Companions
                     if (TryConsumeMead(MeadType.Stamina))
                     {
                         _consumeTimer = ConsumeCooldown;
-                        CompanionsPlugin.Log.LogInfo("[Combat] Consumed stamina mead while retreating");
+                        CompanionsPlugin.Log.LogDebug("[Combat] Consumed stamina mead while retreating");
                     }
                 }
             }
@@ -1067,7 +1079,7 @@ namespace Companions
                 _humanoid.EquipItem(bestBow);
                 EquipBestArrows();
                 _bowEquipped = true;
-                CompanionsPlugin.Log.LogInfo(
+                CompanionsPlugin.Log.LogDebug(
                     $"[Combat] Equipped bow \"{bestBow.m_shared.m_name}\" dmg={bestDmg:F0} + arrows");
             }
             else
@@ -1097,7 +1109,7 @@ namespace Companions
             if (bestAmmo != null && !_humanoid.IsItemEquiped(bestAmmo))
             {
                 _humanoid.EquipItem(bestAmmo);
-                CompanionsPlugin.Log.LogInfo(
+                CompanionsPlugin.Log.LogDebug(
                     $"[Combat] Equipped arrows \"{bestAmmo.m_shared.m_name}\" x{bestAmmo.m_stack}");
             }
         }
@@ -1120,7 +1132,7 @@ namespace Companions
             _setup.SyncEquipmentToInventory();
 
             var newRight = ReflectionHelper.GetRightItem(_humanoid);
-            CompanionsPlugin.Log.LogInfo(
+            CompanionsPlugin.Log.LogDebug(
                 $"[Combat] Restored melee — now wielding \"{newRight?.m_shared?.m_name ?? "NONE"}\"");
         }
 
@@ -1145,7 +1157,7 @@ namespace Companions
             // Stop charging if active
             if (_ai.IsCharging())
             {
-                CompanionsPlugin.Log.LogInfo("[Combat] ChargeStop — was charging on combat exit");
+                CompanionsPlugin.Log.LogDebug("[Combat] ChargeStop — was charging on combat exit");
                 _ai.ChargeStop();
             }
 
@@ -1174,7 +1186,7 @@ namespace Companions
             _bowDrawTimer = 0f;
             _bowFireCooldown = 0f;
 
-            CompanionsPlugin.Log.LogInfo(
+            CompanionsPlugin.Log.LogDebug(
                 $"[Combat] EXIT combat ({oldPhase} → Idle) — reason: {reason}");
         }
 
@@ -1216,7 +1228,7 @@ namespace Companions
                 _character.GetSEMan().AddStatusEffect(
                     item.m_shared.m_consumeStatusEffect, true);
                 inv.RemoveOneItem(item);
-                CompanionsPlugin.Log.LogInfo(
+                CompanionsPlugin.Log.LogDebug(
                     $"[Combat] Consumed \"{item.m_shared.m_name}\" ({type})");
                 return true;
             }
@@ -1251,7 +1263,7 @@ namespace Companions
         private void TransitionTo(CombatPhase newPhase)
         {
             if (_phase == newPhase) return;
-            CompanionsPlugin.Log.LogInfo($"[Combat] Phase: {_phase} → {newPhase}");
+            CompanionsPlugin.Log.LogDebug($"[Combat] Phase: {_phase} → {newPhase}");
             _phase = newPhase;
             if (newPhase != CombatPhase.Retreat) _retreatTimer = 0f;
             _isDodging = false;
@@ -1287,7 +1299,7 @@ namespace Companions
                 ? Vector3.Distance(transform.position, followTarget.transform.position)
                 : -1f;
 
-            CompanionsPlugin.Log.LogInfo(
+            CompanionsPlugin.Log.LogDebug(
                 $"[Combat] ♥ phase={_phase} " +
                 $"target=\"{target?.m_name ?? "null"}\" dist={distToTarget:F1} " +
                 $"follow=\"{followTarget?.name ?? "null"}\" followDist={distToFollow:F1} " +

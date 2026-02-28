@@ -97,7 +97,9 @@ namespace Companions
             static MethodBase TargetMethod()
             {
                 var t = Type.GetType("TraderOverhaul.TraderUI, TraderOverhaul");
-                return t?.GetMethod("BuildUI", BindingFlags.Instance | BindingFlags.NonPublic);
+                var m = t?.GetMethod("BuildUI", BindingFlags.Instance | BindingFlags.NonPublic);
+                if (m == null) CompanionsPlugin.Log?.LogWarning("[TraderUIPatches] BuildUI method not found — patch skipped.");
+                return m;
             }
 
             static void Postfix(object __instance)
@@ -250,7 +252,9 @@ namespace Companions
             static MethodBase TargetMethod()
             {
                 var t = Type.GetType("TraderOverhaul.TraderUI, TraderOverhaul");
-                return t?.GetMethod("SwitchTab", BindingFlags.Instance | BindingFlags.NonPublic);
+                var m = t?.GetMethod("SwitchTab", BindingFlags.Instance | BindingFlags.NonPublic);
+                if (m == null) CompanionsPlugin.Log?.LogWarning("[TraderUIPatches] SwitchTab method not found — patch skipped.");
+                return m;
             }
 
             static bool Prefix(object __instance, int newTab)
@@ -286,7 +290,9 @@ namespace Companions
             static MethodBase TargetMethod()
             {
                 var t = Type.GetType("TraderOverhaul.TraderUI, TraderOverhaul");
-                return t?.GetMethod("RefreshTabHighlights", BindingFlags.Instance | BindingFlags.NonPublic);
+                var m = t?.GetMethod("RefreshTabHighlights", BindingFlags.Instance | BindingFlags.NonPublic);
+                if (m == null) CompanionsPlugin.Log?.LogWarning("[TraderUIPatches] RefreshTabHighlights method not found — patch skipped.");
+                return m;
             }
 
             static void Postfix(object __instance)
@@ -319,7 +325,9 @@ namespace Companions
             static MethodBase TargetMethod()
             {
                 var t = Type.GetType("TraderOverhaul.TraderUI, TraderOverhaul");
-                return t?.GetMethod("RefreshTabPanels", BindingFlags.Instance | BindingFlags.NonPublic);
+                var m = t?.GetMethod("RefreshTabPanels", BindingFlags.Instance | BindingFlags.NonPublic);
+                if (m == null) CompanionsPlugin.Log?.LogWarning("[TraderUIPatches] RefreshTabPanels method not found — patch skipped.");
+                return m;
             }
 
             static void Postfix(object __instance)
@@ -351,7 +359,9 @@ namespace Companions
             static MethodBase TargetMethod()
             {
                 var t = Type.GetType("TraderOverhaul.TraderUI, TraderOverhaul");
-                return t?.GetMethod("Update", BindingFlags.Instance | BindingFlags.NonPublic);
+                var m = t?.GetMethod("Update", BindingFlags.Instance | BindingFlags.NonPublic);
+                if (m == null) CompanionsPlugin.Log?.LogWarning("[TraderUIPatches] Update method not found — patch skipped.");
+                return m;
             }
 
             static void Prefix(object __instance, ref int __state)

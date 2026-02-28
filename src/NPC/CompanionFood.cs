@@ -39,6 +39,7 @@ namespace Companions
         private SEMan           _seman;
         private ZSyncAnimation  _zanim;
         private CompanionStamina _stamina;
+        private CompanionSetup  _setup;
         private bool            _initialized;
 
         private float _saveTimer;
@@ -126,6 +127,7 @@ namespace Companions
             _seman     = _character != null ? _character.GetSEMan() : null;
             _zanim     = GetComponent<ZSyncAnimation>();
             _stamina   = GetComponent<CompanionStamina>();
+            _setup     = GetComponent<CompanionSetup>();
         }
 
         private void Start()
@@ -142,6 +144,14 @@ namespace Companions
             LoadFromZDO();
             ClampHealth();
             _initialized = true;
+
+            int activeCount = 0;
+            for (int i = 0; i < MaxFoodSlots; i++)
+                if (_foods[i].IsActive) activeCount++;
+            CompanionsPlugin.Log.LogDebug(
+                $"[Food] Initialized — {activeCount}/{MaxFoodSlots} active food slots " +
+                $"hpBonus={TotalHealthBonus:F0} stamBonus={TotalStaminaBonus:F0} " +
+                $"companion=\"{_character?.m_name ?? "?"}\"");
         }
 
         private void Update()
@@ -172,7 +182,7 @@ namespace Companions
                 f.RemainingTime -= dt;
                 if (f.RemainingTime <= 0f)
                 {
-                    CompanionsPlugin.Log.LogInfo(
+                    CompanionsPlugin.Log.LogDebug(
                         $"[Food] Slot {i} expired — \"{f.ItemName}\" " +
                         $"(hp={f.HealthBonus:F0} stam={f.StaminaBonus:F0} " +
                         $"eitr={f.EitrBonus:F0} regen={f.FoodRegen:F1}) " +
@@ -202,7 +212,7 @@ namespace Companions
                     float hpBefore = _character.GetHealth();
                     _character.Heal(regen);
                     float hpAfter = _character.GetHealth();
-                    CompanionsPlugin.Log.LogInfo(
+                    CompanionsPlugin.Log.LogDebug(
                         $"[Food] Regen tick — healed {regen:F1} HP " +
                         $"({hpBefore:F1} → {hpAfter:F1} / {_character.GetMaxHealth():F1}) " +
                         $"companion=\"{_character.m_name}\"");
@@ -248,7 +258,12 @@ namespace Companions
             float maxHp = BaseHealth + TotalHealthBonus;
             float curHp = _character.GetHealth();
             if (curHp > maxHp)
+            {
+                CompanionsPlugin.Log.LogDebug(
+                    $"[Food] ClampHealth — {curHp:F1} → {maxHp:F1} (food expired?) " +
+                    $"companion=\"{_character.m_name}\"");
                 _character.SetHealth(maxHp);
+            }
         }
 
         // ── Auto-consume from food inventory slots ──────────────────────────
@@ -268,7 +283,20 @@ namespace Companions
                 if (_foods[i].IsActive) continue;
 
                 var item = FindFoodForSlot(inv, i);
-                if (!CanConsumeFoodItem(item)) continue;
+                if (item == null)
+                {
+                    CompanionsPlugin.Log.LogDebug(
+                        $"[Food] AutoConsume — slot {i} empty, no food found in inventory " +
+                        $"(items={inv.GetAllItems().Count}) companion=\"{_character?.m_name ?? "?"}\"");
+                    continue;
+                }
+                if (!CanConsumeFoodItem(item))
+                {
+                    CompanionsPlugin.Log.LogDebug(
+                        $"[Food] AutoConsume — slot {i} empty, found \"{item.m_shared?.m_name}\" " +
+                        $"but CanConsume=false companion=\"{_character?.m_name ?? "?"}\"");
+                    continue;
+                }
                 if (ConsumeIntoSlot(inv, item, i))
                     consumedAny = true;
             }
@@ -280,7 +308,14 @@ namespace Companions
                 if (refreshSlot >= 0)
                 {
                     var item = FindFoodForSlot(inv, refreshSlot);
-                    if (CanConsumeFoodItem(item) && ConsumeIntoSlot(inv, item, refreshSlot))
+                    if (item != null)
+                    {
+                        CompanionsPlugin.Log.LogDebug(
+                            $"[Food] AutoConsume — refresh slot {refreshSlot} " +
+                            $"(\"{_foods[refreshSlot].ItemName}\" {_foods[refreshSlot].RemainingTime:F0}s left) " +
+                            $"with \"{item.m_shared?.m_name}\"");
+                    }
+                    if (CanConsumeFoodItem(item, isRefresh: true) && ConsumeIntoSlot(inv, item, refreshSlot))
                         consumedAny = true;
                 }
             }
@@ -316,7 +351,15 @@ namespace Companions
             if (_seman != null && item.m_shared.m_consumeStatusEffect != null)
                 _seman.AddStatusEffect(item.m_shared.m_consumeStatusEffect, true);
 
-            if (_zanim != null) _zanim.SetTrigger("eat");
+            string animTrigger = _setup != null && _setup.CanWearArmor() ? "eat" : "consume";
+            if (_zanim != null) _zanim.SetTrigger(animTrigger);
+            CompanionsPlugin.Log.LogDebug(
+                $"[Food] Consume anim trigger=\"{animTrigger}\" " +
+                $"canWearArmor={_setup?.CanWearArmor()} companion=\"{_character?.m_name}\"");
+
+            // Play eating sound effects (copied from Player prefab's m_consumeItemEffects).
+            if (_humanoid != null && _humanoid.m_consumeItemEffects != null)
+                _humanoid.m_consumeItemEffects.Create(transform.position, Quaternion.identity);
 
             // Heal up to new max health.
             float newMax = BaseHealth + TotalHealthBonus;
@@ -326,7 +369,7 @@ namespace Companions
 
             float hpAfter = _character.GetHealth();
             bool hasSE = item.m_shared.m_consumeStatusEffect != null;
-            CompanionsPlugin.Log.LogInfo(
+            CompanionsPlugin.Log.LogDebug(
                 $"[Food] Consumed \"{item.m_shared.m_name}\" → slot {slot} " +
                 $"hp={item.m_shared.m_food:F0} stam={item.m_shared.m_foodStamina:F0} " +
                 $"eitr={item.m_shared.m_foodEitr:F0} regen={item.m_shared.m_foodRegen:F1} " +
@@ -346,16 +389,47 @@ namespace Companions
 
             var inv = _humanoid.GetInventory();
             if (inv == null || !inv.ContainsItem(item)) return false;
-            if (!CanConsumeFoodItem(item)) return false;
 
+            string itemName = item.m_shared?.m_name ?? "?";
             int slot = FindEmptyFoodSlot();
-            if (slot < 0)
+            if (slot >= 0)
             {
+                // Empty slot — normal duplicate check applies
+                if (!CanConsumeFoodItem(item))
+                {
+                    CompanionsPlugin.Log.LogDebug(
+                        $"[Food] TryConsumeItem REJECTED \"{itemName}\" — " +
+                        $"empty slot {slot} available but CanConsume=false");
+                    return false;
+                }
+            }
+            else
+            {
+                // No empty slot — try refresh (same food in refreshable slot)
                 slot = FindRefreshableSlotForFood(item.m_shared?.m_name);
                 if (slot < 0)
                     slot = FindMostDepletedRefreshableSlot();
+                if (slot < 0)
+                {
+                    CompanionsPlugin.Log.LogDebug(
+                        $"[Food] TryConsumeItem REJECTED \"{itemName}\" — " +
+                        $"all 3 slots occupied, none refreshable");
+                    return false;
+                }
+                // Refresh path — skip duplicate check since we're replacing same slot
+                if (!CanConsumeFoodItem(item, isRefresh: true))
+                {
+                    CompanionsPlugin.Log.LogDebug(
+                        $"[Food] TryConsumeItem REJECTED \"{itemName}\" — " +
+                        $"refresh slot {slot} found but CanConsume(refresh)=false");
+                    return false;
+                }
             }
-            if (slot < 0) return false;
+
+            CompanionsPlugin.Log.LogDebug(
+                $"[Food] TryConsumeItem \"{itemName}\" → slot {slot} " +
+                $"companion=\"{_character?.m_name ?? "?"}\"");
+
             if (!ConsumeIntoSlot(inv, item, slot)) return false;
 
             ClampHealth();
@@ -408,13 +482,25 @@ namespace Companions
                    item.m_shared.m_foodEitr > 0f;
         }
 
-        private bool CanConsumeFoodItem(ItemDrop.ItemData item)
+        private bool CanConsumeFoodItem(ItemDrop.ItemData item, bool isRefresh = false)
         {
             if (!IsFoodItem(item)) return false;
+            string name = item.m_shared?.m_name ?? "?";
             if (_humanoid != null && !_humanoid.CanConsumeItem(item, checkWorldLevel: false))
+            {
+                CompanionsPlugin.Log.LogDebug($"[Food] CanConsume REJECTED \"{name}\" — CanConsumeItem=false (world level?)");
                 return false;
-            if (IsFoodAlreadyActive(item.m_shared.m_name)) return false;
-            if (!CanApplyConsumeStatus(item)) return false;
+            }
+            if (!isRefresh && IsFoodAlreadyActive(item.m_shared.m_name))
+            {
+                CompanionsPlugin.Log.LogDebug($"[Food] CanConsume REJECTED \"{name}\" — already active in another slot");
+                return false;
+            }
+            if (!CanApplyConsumeStatus(item))
+            {
+                CompanionsPlugin.Log.LogDebug($"[Food] CanConsume REJECTED \"{name}\" — status effect conflict");
+                return false;
+            }
             return true;
         }
 
@@ -424,8 +510,7 @@ namespace Companions
             for (int i = 0; i < MaxFoodSlots; i++)
             {
                 if (!_foods[i].IsActive) continue;
-                if (_foods[i].ItemName != itemName) continue;
-                if (!CanEatAgain(i)) return true;
+                if (_foods[i].ItemName == itemName) return true;
             }
             return false;
         }
@@ -453,11 +538,7 @@ namespace Companions
 
         private ItemDrop.ItemData FindFoodForSlot(Inventory inv, int slot)
         {
-            // Preferred behavior: consume from the dedicated food row first.
-            var slotted = inv.GetItemAt(slot, 0);
-            if (CanConsumeFoodItem(slotted)) return slotted;
-
-            // Fallback for reliability: consume valid food from any inventory slot.
+            // Scan all inventory slots for valid food (food slots are display-only).
             List<ItemDrop.ItemData> all = inv.GetAllItemsInGridOrder();
             for (int i = 0; i < all.Count; i++)
             {
@@ -494,16 +575,34 @@ namespace Companions
             if (hpPct < HealthMeadThreshold)
             {
                 var mead = FindMead(inv, MeadKind.Health);
-                if (mead != null && ConsumeMead(inv, mead, MeadKind.Health))
-                    return;
+                if (mead != null)
+                {
+                    if (ConsumeMead(inv, mead, MeadKind.Health))
+                        return;
+                }
+                else
+                {
+                    CompanionsPlugin.Log.LogDebug(
+                        $"[Food] Mead check — hp={hpPct * 100f:F0}% below threshold, " +
+                        $"no health mead in inventory companion=\"{_character?.m_name ?? "?"}\"");
+                }
             }
 
             // Then stamina
             if (stamPct < StaminaMeadThreshold)
             {
                 var mead = FindMead(inv, MeadKind.Stamina);
-                if (mead != null && ConsumeMead(inv, mead, MeadKind.Stamina))
-                    return;
+                if (mead != null)
+                {
+                    if (ConsumeMead(inv, mead, MeadKind.Stamina))
+                        return;
+                }
+                else
+                {
+                    CompanionsPlugin.Log.LogDebug(
+                        $"[Food] Mead check — stam={stamPct * 100f:F0}% below threshold, " +
+                        $"no stamina mead in inventory companion=\"{_character?.m_name ?? "?"}\"");
+                }
             }
         }
 
@@ -549,8 +648,14 @@ namespace Companions
                     _stamina.Restore(stats.m_staminaUpFront);
             }
 
-            // Play eat/drink animation
-            if (_zanim != null) _zanim.SetTrigger("eat");
+            // Play eat/drink animation + sound effects
+            string meadAnimTrigger = _setup != null && _setup.CanWearArmor() ? "eat" : "consume";
+            if (_zanim != null) _zanim.SetTrigger(meadAnimTrigger);
+            CompanionsPlugin.Log.LogDebug(
+                $"[Food] Mead anim trigger=\"{meadAnimTrigger}\" " +
+                $"canWearArmor={_setup?.CanWearArmor()} companion=\"{_character?.m_name}\"");
+            if (_humanoid != null && _humanoid.m_consumeItemEffects != null)
+                _humanoid.m_consumeItemEffects.Create(transform.position, Quaternion.identity);
 
             // Remove one from inventory
             inv.RemoveOneItem(item);
@@ -560,7 +665,7 @@ namespace Companions
                 : 0f;
             float stamPct = _stamina != null ? _stamina.GetStaminaPercentage() * 100f : 0f;
 
-            CompanionsPlugin.Log.LogInfo(
+            CompanionsPlugin.Log.LogDebug(
                 $"[Food] MEAD consumed \"{itemName}\" (prefab={prefabName}) kind={kind} " +
                 $"hp={hpPct:F0}% stam={stamPct:F0}% " +
                 $"hasSE={se != null} companion=\"{_character?.m_name ?? "?"}\"");
@@ -676,6 +781,13 @@ namespace Companions
             {
                 string data = zdo.GetString(FoodHashes[i], "");
                 _foods[i] = DeserializeFood(data);
+                if (_foods[i].IsActive)
+                {
+                    CompanionsPlugin.Log.LogDebug(
+                        $"[Food] ZDO load slot {i} — \"{_foods[i].ItemName}\" " +
+                        $"hp={_foods[i].HealthBonus:F0} stam={_foods[i].StaminaBonus:F0} " +
+                        $"remaining={_foods[i].RemainingTime:F0}/{_foods[i].TotalTime:F0}s");
+                }
             }
         }
     }

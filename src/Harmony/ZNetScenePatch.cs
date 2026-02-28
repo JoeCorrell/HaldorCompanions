@@ -15,10 +15,15 @@ namespace Companions
     }
 
     /// <summary>
-    /// Replaces the Container's auto-created inventory with Humanoid's existing
-    /// inventory so both components share the same Inventory instance.
-    /// Re-registers Container.OnContainerChanged on the shared inventory so
-    /// Container.Save() is called when items change (ZDO persistence).
+    /// For Player-clone companions: replaces the Container's auto-created inventory
+    /// with Humanoid's existing inventory so both components share the same Inventory
+    /// instance.  This lets items placed in the Container be equipped by the Humanoid.
+    ///
+    /// For Dverger variants: inventories are kept separate.  The Humanoid inventory
+    /// holds fixed default gear (staffs, suits) that GiveDefaultItems() adds at spawn.
+    /// Sharing would expose those items in the Container UI as invisible slots,
+    /// letting the player accidentally pick them up — which causes
+    /// IndexOutOfRangeException in InventoryGrid.UpdateGui and breaks the game UI.
     /// </summary>
     [HarmonyPatch(typeof(Container), "Awake")]
     public static class ContainerAwakePatch
@@ -40,6 +45,29 @@ namespace Companions
 
             var humanoid = __instance.GetComponent<Humanoid>();
             if (humanoid == null) return;
+
+            // Dverger variants: keep inventories separate.
+            // Their Humanoid inventory holds fixed default gear (staffs, suits, projectile
+            // attacks) from GiveDefaultItems().  The Container gets its own clean inventory
+            // for player storage.
+            var nview = __instance.GetComponent<ZNetView>();
+            if (nview != null && nview.GetZDO() != null &&
+                CompanionTierData.IsDvergerVariant(nview.GetZDO().GetPrefab()))
+            {
+                CompanionsPlugin.Log.LogDebug(
+                    $"[ContainerAwake] Dverger variant — keeping separate inventories");
+                return;
+            }
+            // Also check prefab name as fallback (ZDO may not be ready yet)
+            if (nview == null || nview.GetZDO() == null)
+            {
+                if (__instance.gameObject.name.Contains("Dverger"))
+                {
+                    CompanionsPlugin.Log.LogDebug(
+                        $"[ContainerAwake] Dverger variant (name check) — keeping separate inventories");
+                    return;
+                }
+            }
 
             var humanoidInv = humanoid.GetInventory();
             if (_inventoryField == null || humanoidInv == null) return;

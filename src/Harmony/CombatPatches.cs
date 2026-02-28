@@ -28,7 +28,7 @@ namespace Companions
 
                 if (timer >= 0f)
                 {
-                    CompanionsPlugin.Log.LogInfo(
+                    CompanionsPlugin.Log.LogDebug(
                         $"[Combat] PARRY — BlockAttack fired! timer={timer:F3}→0 " +
                         $"attacker=\"{attackerName}\" dmg={totalDmg:F0} " +
                         $"companion=\"{__instance.m_name}\"");
@@ -60,7 +60,7 @@ namespace Companions
                 if (UnityEngine.Time.time - _lastHealthLogTime > HealthLogInterval)
                 {
                     _lastHealthLogTime = UnityEngine.Time.time;
-                    CompanionsPlugin.Log.LogInfo(
+                    CompanionsPlugin.Log.LogDebug(
                         $"[Combat] GetMaxHealth — base={baseHp:F0} + food={foodBonus:F1} " +
                         $"= {newMax:F1} (vanilla was {__result:F1}) " +
                         $"companion=\"{__instance.m_name}\"");

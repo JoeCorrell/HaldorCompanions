@@ -88,7 +88,7 @@ namespace Companions
             _harvest  = GetComponent<HarvestController>();
             _repair   = GetComponent<RepairController>();
             _rest     = GetComponent<CompanionRest>();
-            CompanionsPlugin.Log.LogInfo("[DoorHandler] Initialized — door handling active");
+            CompanionsPlugin.Log.LogDebug("[DoorHandler] Initialized — door handling active");
         }
 
         private void Update()
@@ -112,7 +112,7 @@ namespace Companions
                     ? Vector3.Distance(transform.position, followTarget.transform.position) : -1f;
                 float distToDoor = _targetDoor != null
                     ? Vector3.Distance(transform.position, _doorPos) : -1f;
-                CompanionsPlugin.Log.LogInfo(
+                CompanionsPlugin.Log.LogDebug(
                     $"[DoorHandler] ♥ phase={_phase} " +
                     $"door=\"{(_targetDoor != null ? _targetDoor.m_name : "null")}\" " +
                     $"doorDist={distToDoor:F1} followDist={distToFollow:F1} " +
@@ -142,7 +142,7 @@ namespace Companions
             if (door == null) return;
             if (!IsValidClosedDoor(door))
             {
-                CompanionsPlugin.Log.LogInfo(
+                CompanionsPlugin.Log.LogDebug(
                     $"[DoorHandler] DirectOpenDoor — door \"{door.m_name}\" is not a valid closed door");
                 return;
             }
@@ -154,7 +154,7 @@ namespace Companions
             _stuckTimer = 0f;
             _cooldownTimer = 0f;
             ResetProactive();
-            CompanionsPlugin.Log.LogInfo(
+            CompanionsPlugin.Log.LogDebug(
                 $"[DoorHandler] DirectOpenDoor — approaching \"{door.m_name}\" " +
                 $"dist={Vector3.Distance(transform.position, _doorPos):F1}m");
         }
@@ -207,6 +207,9 @@ namespace Companions
             // In follow mode: must be 4m+ from player (otherwise it's resting normally).
             // In harvest/repair mode: the controller is trying to reach a target, so
             // being stuck (vel~0) for any reason — including a blocked door — matters.
+            // If follow is null but companion should be following (mode=Follow/Gather),
+            // still allow stuck detection — companion might be trapped after UI close
+            // or zone reload.
             bool controllerMoving = (_harvest != null && _harvest.IsActive) ||
                                     (_repair  != null && _repair.IsActive);
 
@@ -216,15 +219,24 @@ namespace Companions
             if (!controllerMoving)
             {
                 followTarget = _ai?.GetFollowTarget();
-                if (followTarget == null) return;
-
-                distToTarget = Vector3.Distance(transform.position, followTarget.transform.position);
-                if (distToTarget < FollowDistMin)
+                if (followTarget != null)
                 {
-                    _stuckTimer = 0f;
-                    _scanAttempts = 0;
-                    ResetProactive();
-                    return;
+                    distToTarget = Vector3.Distance(transform.position, followTarget.transform.position);
+                    if (distToTarget < FollowDistMin)
+                    {
+                        _stuckTimer = 0f;
+                        _scanAttempts = 0;
+                        ResetProactive();
+                        return;
+                    }
+                }
+                else
+                {
+                    // No follow target — still allow stuck detection for companions that
+                    // SHOULD be following but lost their target (e.g. after UI close, zone reload).
+                    // StayHome companions are intentionally stationary at home — skip them.
+                    if (_setup != null && _setup.GetStayHome() && _setup.HasHomePosition())
+                        return;
                 }
             }
 
@@ -330,7 +342,7 @@ namespace Companions
                         var dnv = door.GetComponent<ZNetView>();
                         int state = (dnv != null && dnv.GetZDO() != null)
                             ? dnv.GetZDO().GetInt(ZDOVars.s_state, 0) : -1;
-                        CompanionsPlugin.Log.LogInfo(
+                        CompanionsPlugin.Log.LogDebug(
                             $"[DoorHandler] Scan — rejected door \"{door.m_name}\" " +
                             $"state={state} locked={door.m_keyItem != null} " +
                             $"pos={door.transform.position:F1}");
@@ -355,14 +367,14 @@ namespace Companions
                 _phase = Phase.Approaching;
                 _approachTimer = 0f;
                 _stuckTimer = 0f;
-                CompanionsPlugin.Log.LogInfo(
+                CompanionsPlugin.Log.LogDebug(
                     $"[DoorHandler] Found closed door \"{closest.m_name}\" at dist={closestDist:F1}m " +
                     $"pos={_doorPos:F1} — approaching " +
                     $"({doorsSeen} doors nearby, {doorsValid} valid)");
             }
             else if (_scanAttempts <= 3 || _scanAttempts % 10 == 0)
             {
-                CompanionsPlugin.Log.LogInfo(
+                CompanionsPlugin.Log.LogDebug(
                     $"[DoorHandler] Scan #{_scanAttempts} — no valid doors " +
                     $"({doorsSeen} doors nearby, {doorsValid} valid) " +
                     $"stuck={_stuckTimer:F1}s pos={transform.position:F1}");
@@ -416,14 +428,14 @@ namespace Companions
                 _phase = Phase.Approaching;
                 _approachTimer = 0f;
                 _stuckTimer = 0f;
-                CompanionsPlugin.Log.LogInfo(
+                CompanionsPlugin.Log.LogDebug(
                     $"[DoorHandler] PROACTIVE — found door \"{best.m_name}\" " +
                     $"dist={bestDistToMe:F1}m playerDist={bestDistToPlayer:F1}m " +
                     $"score={bestScore:F1} ({doorsSeen} doors nearby) — approaching");
             }
             else
             {
-                CompanionsPlugin.Log.LogInfo(
+                CompanionsPlugin.Log.LogDebug(
                     $"[DoorHandler] PROACTIVE scan — no valid doors within {ProactiveScanRadius}m " +
                     $"({doorsSeen} doors seen)");
             }
@@ -466,11 +478,11 @@ namespace Companions
 
             if (dist < InteractDist)
             {
-                CompanionsPlugin.Log.LogInfo(
+                CompanionsPlugin.Log.LogDebug(
                     $"[DoorHandler] Within interact range ({dist:F1}m < {InteractDist}m) — opening door");
 
                 bool result = _targetDoor.Interact(_humanoid, false, false);
-                CompanionsPlugin.Log.LogInfo(
+                CompanionsPlugin.Log.LogDebug(
                     $"[DoorHandler] Door.Interact returned {result}");
 
                 _phase = Phase.WaitingForOpen;
@@ -498,7 +510,7 @@ namespace Companions
                 {
                     _phase = Phase.PassingThrough;
                     _passTimer = 0f;
-                    CompanionsPlugin.Log.LogInfo(
+                    CompanionsPlugin.Log.LogDebug(
                         $"[DoorHandler] Door opened (state={state}) — passing through");
                     return;
                 }
@@ -537,7 +549,7 @@ namespace Companions
             if (distFromDoor > CloseDistance || _passTimer > PassTimeout)
             {
                 _phase = Phase.Closing;
-                CompanionsPlugin.Log.LogInfo(
+                CompanionsPlugin.Log.LogDebug(
                     $"[DoorHandler] Past door (dist={distFromDoor:F1}m, timer={_passTimer:F1}s) — closing");
                 return;
             }
@@ -574,7 +586,7 @@ namespace Companions
             // Don't close if player or another companion is still near
             if (IsAnyoneNearDoor())
             {
-                CompanionsPlugin.Log.LogInfo("[DoorHandler] Someone near door — skipping close");
+                CompanionsPlugin.Log.LogDebug("[DoorHandler] Someone near door — skipping close");
                 ResetToIdle(withCooldown: true);
                 return;
             }
@@ -587,7 +599,7 @@ namespace Companions
                 if (state != 0)
                 {
                     _targetDoor.Interact(_humanoid, false, false);
-                    CompanionsPlugin.Log.LogInfo("[DoorHandler] Closed door behind us");
+                    CompanionsPlugin.Log.LogDebug("[DoorHandler] Closed door behind us");
                 }
             }
 
@@ -645,7 +657,7 @@ namespace Companions
         {
             if (_targetDoor == null || !_targetDoor)
             {
-                CompanionsPlugin.Log.LogInfo("[DoorHandler] Target door destroyed — resetting");
+                CompanionsPlugin.Log.LogDebug("[DoorHandler] Target door destroyed — resetting");
                 ResetToIdle();
                 return false;
             }

@@ -100,7 +100,7 @@ namespace Companions
         public void Say(string text)
         {
             if (Chat.instance == null || string.IsNullOrEmpty(text)) return;
-            CompanionsPlugin.Log.LogInfo($"[Talk] \"{text}\"");
+            CompanionsPlugin.Log.LogDebug($"[Talk] \"{text}\"");
             Chat.instance.SetNpcText(
                 gameObject, Vector3.up * SpeechOffset,
                 CullDistance, SpeechTTL, "", text, false);

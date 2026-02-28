@@ -41,7 +41,7 @@ namespace Companions
                 float maxDur = weapon.GetMaxDurability();
                 float pct = maxDur > 0f ? (weapon.m_durability / maxDur * 100f) : 0f;
 
-                CompanionsPlugin.Log.LogInfo(
+                CompanionsPlugin.Log.LogDebug(
                     $"[Durability] Weapon drain — \"{weapon.m_shared.m_name}\" " +
                     $"durability {before:F1} → {weapon.m_durability:F1} / {maxDur:F0} " +
                     $"({pct:F0}%) drain={drain:F1} " +
@@ -79,7 +79,7 @@ namespace Companions
                     float dmgBefore = hit.GetTotalDamage();
                     hit.ApplyArmor(armor);
                     float dmgAfter = hit.GetTotalDamage();
-                    CompanionsPlugin.Log.LogInfo(
+                    CompanionsPlugin.Log.LogDebug(
                         $"[Durability] Armor reduction — totalArmor={armor:F1} " +
                         $"dmg {dmgBefore:F1} → {dmgAfter:F1} " +
                         $"(blocked {dmgBefore - dmgAfter:F1}) " +
@@ -104,7 +104,7 @@ namespace Companions
 
                 if (pieces.Count == 0)
                 {
-                    CompanionsPlugin.Log.LogInfo(
+                    CompanionsPlugin.Log.LogDebug(
                         $"[Durability] No armor with durability equipped — skipping drain " +
                         $"companion=\"{__instance.m_name}\"");
                     return;
@@ -121,7 +121,7 @@ namespace Companions
                 float maxDur = piece.GetMaxDurability();
                 float pct = maxDur > 0f ? (piece.m_durability / maxDur * 100f) : 0f;
 
-                CompanionsPlugin.Log.LogInfo(
+                CompanionsPlugin.Log.LogDebug(
                     $"[Durability] Armor drain — \"{piece.m_shared.m_name}\" " +
                     $"durability {before:F1} → {piece.m_durability:F1} / {maxDur:F0} " +
                     $"({pct:F0}%) dmgTaken={totalDmg:F1} " +

@@ -15,6 +15,7 @@ namespace Companions
         private CompanionAI      _ai;
         private CompanionStamina _stamina;
         private ZSyncAnimation   _zanim;
+        private CompanionSetup   _setup;
 
         private bool  _isSitting;
         private float _checkTimer;
@@ -36,6 +37,9 @@ namespace Companions
         private readonly Collider[] _fireScanBuffer = new Collider[FireScanBufferSize];
         private readonly HashSet<int> _seenFireIds = new HashSet<int>();
 
+        /// <summary>True for Player-clone companions that have Player animation params.</summary>
+        private bool HasPlayerAnims => _setup != null && _setup.CanWearArmor();
+
         private void Awake()
         {
             _nview     = GetComponent<ZNetView>();
@@ -43,6 +47,7 @@ namespace Companions
             _ai        = GetComponent<CompanionAI>();
             _stamina   = GetComponent<CompanionStamina>();
             _zanim     = GetComponent<ZSyncAnimation>();
+            _setup     = GetComponent<CompanionSetup>();
         }
 
         private void Update()
@@ -143,14 +148,14 @@ namespace Companions
         {
             if (fire == null) return;
 
-            CompanionsPlugin.Log.LogInfo(
+            CompanionsPlugin.Log.LogDebug(
                 $"[Rest] DirectSit called — sitting={_isSitting}, sleeping={_isSleeping}, " +
                 $"directed={_isDirected}, navigating={_navigating}, fire=\"{fire.name}\"");
 
             // Toggle off if already sitting (directed) or navigating
             if ((_isSitting || _navigating) && _isDirected)
             {
-                CompanionsPlugin.Log.LogInfo("[Rest] DirectSit TOGGLE OFF — calling StopAll");
+                CompanionsPlugin.Log.LogDebug("[Rest] DirectSit TOGGLE OFF — calling StopAll");
                 StopAll();
                 return;
             }
@@ -173,7 +178,7 @@ namespace Companions
                 _navTarget = fire.transform.position;
                 _navTimeout = 15f;
                 if (_ai != null) _ai.SetFollowTarget(null);
-                CompanionsPlugin.Log.LogInfo(
+                CompanionsPlugin.Log.LogDebug(
                     $"[Rest] Navigating to fire — dist={dist:F1}m, timeout=15s");
             }
         }
@@ -183,14 +188,14 @@ namespace Companions
         {
             if (bed == null) return;
 
-            CompanionsPlugin.Log.LogInfo(
+            CompanionsPlugin.Log.LogDebug(
                 $"[Rest] DirectSleep called — sleeping={_isSleeping}, sitting={_isSitting}, " +
                 $"directed={_isDirected}, navigating={_navigating}, bed=\"{bed.name}\" myPos={transform.position:F2}");
 
             // Toggle off if already sleeping or navigating
             if ((_isSleeping || _navigating) && _isDirected)
             {
-                CompanionsPlugin.Log.LogInfo("[Rest] DirectSleep TOGGLE OFF — calling StopAll");
+                CompanionsPlugin.Log.LogDebug("[Rest] DirectSleep TOGGLE OFF — calling StopAll");
                 StopAll();
                 return;
             }
@@ -219,7 +224,7 @@ namespace Companions
                 _navTarget = bedPos;
                 _navTimeout = 15f;
                 if (_ai != null) _ai.SetFollowTarget(null);
-                CompanionsPlugin.Log.LogInfo(
+                CompanionsPlugin.Log.LogDebug(
                     $"[Rest] Navigating to bed — dist={dist:F1}m, timeout=15s");
             }
         }
@@ -237,7 +242,7 @@ namespace Companions
             if (!_navigating) return;
             _navigating = false;
 
-            CompanionsPlugin.Log.LogInfo(
+            CompanionsPlugin.Log.LogDebug(
                 $"[Rest] Arrived at nav target — bed={(_bedTarget != null)}, fire={(_fireTarget != null)}");
 
             if (_bedTarget != null)
@@ -253,7 +258,7 @@ namespace Companions
             // Timeout — give up navigating
             if (_navTimeout <= 0f)
             {
-                CompanionsPlugin.Log.LogInfo("[Rest] Navigation timed out — cancelling");
+                CompanionsPlugin.Log.LogDebug("[Rest] Navigation timed out — cancelling");
                 CancelNavigation();
                 return;
             }
@@ -261,7 +266,7 @@ namespace Companions
             // Target destroyed while navigating
             if (_bedTarget == null && _fireTarget == null)
             {
-                CompanionsPlugin.Log.LogInfo("[Rest] Navigation target destroyed — cancelling");
+                CompanionsPlugin.Log.LogDebug("[Rest] Navigation target destroyed — cancelling");
                 CancelNavigation();
                 return;
             }
@@ -312,10 +317,14 @@ namespace Companions
                 body.position = attachPoint.position;
                 body.velocity = Vector3.zero;
                 body.useGravity = false;
+                body.isKinematic = true;
             }
 
-            // Bed animation
-            if (_zanim != null) _zanim.SetBool("attach_bed", true);
+            // Bed animation (Player-model only — DvergerMage lacks this param)
+            CompanionsPlugin.Log.LogDebug(
+                $"[Rest] FinalizeSleep anim — HasPlayerAnims={HasPlayerAnims} " +
+                $"canWearArmor={_setup?.CanWearArmor()} zanim={_zanim != null}");
+            if (_zanim != null && HasPlayerAnims) _zanim.SetBool("attach_bed", true);
 
             // ZDO inBed flag
             if (_nview?.GetZDO() != null) _nview.GetZDO().Set(ZDOVars.s_inBed, true);
@@ -323,13 +332,13 @@ namespace Companions
             // Enable resting regen
             if (_stamina != null) _stamina.IsResting = true;
 
-            CompanionsPlugin.Log.LogInfo(
+            CompanionsPlugin.Log.LogDebug(
                 $"[Rest] FinalizeSleep — positioned at {attachPoint.position:F2}");
         }
 
         private void StopAll()
         {
-            CompanionsPlugin.Log.LogInfo(
+            CompanionsPlugin.Log.LogDebug(
                 $"[Rest] StopAll — sitting={_isSitting}, sleeping={_isSleeping}, " +
                 $"directed={_isDirected}, navigating={_navigating}, pos={transform.position:F2}");
             _navigating = false;
@@ -343,17 +352,18 @@ namespace Companions
             _isSleeping = false;
             _bedTarget  = null;
 
-            CompanionsPlugin.Log.LogInfo("[Rest] Stopped sleeping — resuming normal behavior");
+            CompanionsPlugin.Log.LogDebug("[Rest] Stopped sleeping — resuming normal behavior");
 
             // Character.AttachStop is a no-op on non-Player characters (empty virtual).
             // Manually reverse the attach: animation, rigidbody, ZDO, position offset.
-            if (_zanim != null) _zanim.SetBool("attach_bed", false);
+            if (_zanim != null && HasPlayerAnims) _zanim.SetBool("attach_bed", false);
             if (_nview?.GetZDO() != null) _nview.GetZDO().Set(ZDOVars.s_inBed, false);
 
-            // Re-enable gravity so the companion can walk
+            // Re-enable physics so the companion can walk
             var body = GetComponent<Rigidbody>();
             if (body != null)
             {
+                body.isKinematic = false;
                 body.useGravity = true;
                 body.velocity = Vector3.zero;
             }
@@ -386,7 +396,7 @@ namespace Companions
             _fireTarget  = fire;
             _healTimer   = 0f;
 
-            CompanionsPlugin.Log.LogInfo(
+            CompanionsPlugin.Log.LogDebug(
                 $"[Rest] Sitting near fire \"{fire.name}\" — starting heal + stamina regen " +
                 $"pos={transform.position:F2}");
 
@@ -402,8 +412,11 @@ namespace Companions
             if (dir.sqrMagnitude > 0.01f)
                 transform.rotation = Quaternion.LookRotation(dir.normalized);
 
-            // Trigger sit animation
-            if (_zanim != null) _zanim.SetTrigger("emote_sit");
+            // Trigger sit animation (Player-model only)
+            CompanionsPlugin.Log.LogDebug(
+                $"[Rest] StartSitting anim — HasPlayerAnims={HasPlayerAnims} " +
+                $"canWearArmor={_setup?.CanWearArmor()} zanim={_zanim != null}");
+            if (_zanim != null && HasPlayerAnims) _zanim.SetTrigger("emote_sit");
 
             // Enable resting regen bonus
             if (_stamina != null) _stamina.IsResting = true;
@@ -475,7 +488,7 @@ namespace Companions
             // Enemy appeared — wake up
             if (HasEnemyNearby())
             {
-                CompanionsPlugin.Log.LogInfo("[Rest] UpdateSleeping — enemy nearby, waking up!");
+                CompanionsPlugin.Log.LogDebug("[Rest] UpdateSleeping — enemy nearby, waking up!");
                 StopSleeping();
                 _isDirected = false;
                 return;
@@ -484,10 +497,26 @@ namespace Companions
             // Bed destroyed
             if (_bedTarget == null || !_bedTarget)
             {
-                CompanionsPlugin.Log.LogInfo("[Rest] UpdateSleeping — bed destroyed/null, waking up!");
+                CompanionsPlugin.Log.LogDebug("[Rest] UpdateSleeping — bed destroyed/null, waking up!");
                 StopSleeping();
                 _isDirected = false;
                 return;
+            }
+
+            // Continuously enforce position and rotation at the bed attach point.
+            // Vanilla Player.UpdateAttach() does this every frame to prevent
+            // animation root motion and physics from drifting the character.
+            // Without this, the companion can end up sleeping sideways.
+            Transform attachPoint = _bedTarget.m_spawnPoint != null
+                ? _bedTarget.m_spawnPoint : _bedTarget.transform;
+            transform.position = attachPoint.position;
+            transform.rotation = attachPoint.rotation;
+
+            var body = GetComponent<Rigidbody>();
+            if (body != null)
+            {
+                body.position = attachPoint.position;
+                body.velocity = Vector3.zero;
             }
 
             // Heal while sleeping (same rate as sitting)
@@ -508,12 +537,12 @@ namespace Companions
             _fireTarget  = null;
             _isDirected  = false;
 
-            CompanionsPlugin.Log.LogInfo("[Rest] Stopped sitting — resuming normal behavior");
+            CompanionsPlugin.Log.LogDebug("[Rest] Stopped sitting — resuming normal behavior");
 
             // Stop sit animation — use both trigger and bool clear to handle
             // all animator state paths. Trigger alone may not fire if the
             // animator didn't consume the previous sit trigger.
-            if (_zanim != null)
+            if (_zanim != null && HasPlayerAnims)
             {
                 _zanim.SetTrigger("emote_stop");
                 _zanim.SetBool("emote_sit", false);

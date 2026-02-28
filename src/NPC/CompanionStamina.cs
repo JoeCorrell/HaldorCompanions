@@ -73,6 +73,9 @@ namespace Companions
             float saved = _nview.GetZDO().GetFloat(CompanionSetup.StaminaHash, MaxStamina);
             Stamina = Mathf.Clamp(saved, 0f, MaxStamina);
             _initialized = true;
+            CompanionsPlugin.Log.LogDebug(
+                $"[Stamina] Initialized — {Stamina:F1}/{MaxStamina:F1} " +
+                $"(saved={saved:F1}) companion=\"{_character?.m_name ?? "?"}\"");
         }
 
         private void Update()
@@ -157,8 +160,13 @@ namespace Companions
         public void Drain(float amount)
         {
             if (float.IsNaN(amount) || amount <= 0f) return;
+            float before = Stamina;
             Stamina = Mathf.Max(0f, Stamina - amount);
             _regenDelayTimer = RegenDelay;
+            if (before > 0f && Stamina <= 0f)
+                CompanionsPlugin.Log.LogDebug(
+                    $"[Stamina] DEPLETED — drained {amount:F1} (was {before:F1}) " +
+                    $"companion=\"{_character?.m_name ?? "?"}\"");
         }
 
         /// <summary>
@@ -168,7 +176,13 @@ namespace Companions
         public bool UseStamina(float amount)
         {
             if (float.IsNaN(amount) || amount <= 0f) return true;
-            if (Stamina < amount) return false;
+            if (Stamina < amount)
+            {
+                CompanionsPlugin.Log.LogDebug(
+                    $"[Stamina] UseStamina FAILED — need {amount:F1} have {Stamina:F1} " +
+                    $"companion=\"{_character?.m_name ?? "?"}\"");
+                return false;
+            }
             Stamina -= amount;
             _regenDelayTimer = RegenDelay;
             return true;
@@ -182,7 +196,11 @@ namespace Companions
         public void Restore(float amount)
         {
             if (float.IsNaN(amount) || amount <= 0f) return;
+            float before = Stamina;
             Stamina = Mathf.Min(MaxStamina, Stamina + amount);
+            CompanionsPlugin.Log.LogDebug(
+                $"[Stamina] Restored {amount:F1} — {before:F1} → {Stamina:F1}/{MaxStamina:F1} " +
+                $"companion=\"{_character?.m_name ?? "?"}\"");
         }
 
         public float GetStaminaPercentage()

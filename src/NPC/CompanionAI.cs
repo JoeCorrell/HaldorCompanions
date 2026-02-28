@@ -70,12 +70,25 @@ namespace Companions
         private float m_timeSinceAttacking;
         private float m_timeSinceSensedTargetCreature;
         private float m_updateTargetTimer;
+        private float _attackRetryTime;      // cooldown after failed DoAttack (stamina, etc.)
+        private bool  _inCombatStopRange;    // hysteresis flag — prevents stop-range oscillation
 
         /// <summary>
         /// When > 0, all AI movement is suppressed. Used to hold position
         /// after snapping to a bed/cart so animation starts at correct spot.
         /// </summary>
         internal float FreezeTimer;
+
+        // ══════════════════════════════════════════════════════════════════════
+        //  Heal System (Support Dverger)
+        // ══════════════════════════════════════════════════════════════════════
+
+        private bool _isDvergerSupport;
+        private Character _healTarget;
+        private float _healScanTimer;
+        private float _healEquipTimer;
+        private const float HealThreshold = 0.7f;
+        private const float HealScanInterval = 1f;
 
         // ══════════════════════════════════════════════════════════════════════
         //  Pending Cart Navigation
@@ -170,7 +183,8 @@ namespace Companions
             if (zdo != null)
             {
                 m_sleeping = zdo.GetBool(ZDOVars.s_sleeping, m_sleeping);
-                m_animator.SetBool(s_sleeping, IsSleeping());
+                if (m_animator != null)
+                    m_animator.SetBool(s_sleeping, IsSleeping());
             }
 
             // Randomize initial target scan delay
@@ -184,7 +198,20 @@ namespace Companions
             m_nview.Register("RPC_Wakeup", new Action<long>(RPC_Wakeup));
             m_nview.Register("RPC_Sleep", new Action<long>(RPC_Sleep));
 
-            CompanionsPlugin.Log.LogInfo("[CompanionAI] Awake complete");
+            // Log animator details for debugging Dverger animation issues.
+            // Note: CanWearArmor() uses ZDO.GetPrefab() which may not be ready at Awake.
+            // Use the prefab name directly for the log instead.
+            var unityAnimator = GetComponentInChildren<Animator>();
+            string animCtrl = unityAnimator != null && unityAnimator.runtimeAnimatorController != null
+                ? unityAnimator.runtimeAnimatorController.name : "NONE";
+            int animParams = unityAnimator != null ? unityAnimator.parameterCount : 0;
+            bool isDverger = gameObject.name.Contains("Dverger");
+            _isDvergerSupport = gameObject.name.Contains("DvergerSupport");
+            CompanionsPlugin.Log.LogInfo(
+                $"[CompanionAI] Awake complete — name=\"{m_character?.m_name}\" " +
+                $"isDverger={isDverger} isSupport={_isDvergerSupport} " +
+                $"animator=\"{animCtrl}\" params={animParams} " +
+                $"zanim={m_animator != null}");
         }
 
         // ══════════════════════════════════════════════════════════════════════
@@ -207,12 +234,14 @@ namespace Companions
         {
             if (m_targetCreature != null || m_targetStatic != null)
             {
-                CompanionsPlugin.Log.LogInfo(
+                CompanionsPlugin.Log.LogDebug(
                     $"[CompanionAI] ClearTargets — creature=\"{m_targetCreature?.m_name ?? ""}\" " +
                     $"static=\"{m_targetStatic?.name ?? ""}\"");
             }
             m_targetCreature = null;
             m_targetStatic = null;
+            _inCombatStopRange = false;
+            _attackRetryTime = 0f;
         }
 
         // ══════════════════════════════════════════════════════════════════════
@@ -261,7 +290,7 @@ namespace Companions
 
         internal void SetMoveTarget(Vector3 pos)
         {
-            CompanionsPlugin.Log.LogInfo(
+            CompanionsPlugin.Log.LogDebug(
                 $"[AI] SetMoveTarget — target={pos:F1} dist={Vector3.Distance(transform.position, pos):F1}");
             PendingMoveTarget = pos;
             _pendingMoveTimeout = 30f;
@@ -271,7 +300,7 @@ namespace Companions
         internal void CancelMoveTarget()
         {
             if (PendingMoveTarget == null) return;
-            CompanionsPlugin.Log.LogInfo(
+            CompanionsPlugin.Log.LogDebug(
                 $"[AI] CancelMoveTarget — was={PendingMoveTarget.Value:F1}");
             PendingMoveTarget = null;
             RestoreFollowOrPatrol();
@@ -283,7 +312,7 @@ namespace Companions
             PendingDepositHumanoid = humanoid;
             _pendingDepositTimeout = 20f;
             SetFollowTarget(null);
-            CompanionsPlugin.Log.LogInfo(
+            CompanionsPlugin.Log.LogDebug(
                 $"[AI] SetPendingDeposit — chest=\"{chest.m_name}\" " +
                 $"dist={Vector3.Distance(transform.position, chest.transform.position):F1}");
         }
@@ -291,7 +320,7 @@ namespace Companions
         internal void CancelPendingDeposit()
         {
             if (PendingDepositContainer == null) return;
-            CompanionsPlugin.Log.LogInfo("[AI] CancelPendingDeposit");
+            CompanionsPlugin.Log.LogDebug("[AI] CancelPendingDeposit");
 
             // Close chest if we opened it
             if (_depositChestOpen && PendingDepositContainer != null)
@@ -318,13 +347,13 @@ namespace Companions
             {
                 SetFollowTarget(null);
                 SetPatrolPointAt(_setup.GetHomePosition());
-                CompanionsPlugin.Log.LogInfo(
+                CompanionsPlugin.Log.LogDebug(
                     $"[AI] RestoreFollowOrPatrol → patrol at home {_setup.GetHomePosition():F1}");
             }
             else if (Player.m_localPlayer != null)
             {
                 SetFollowTarget(Player.m_localPlayer.gameObject);
-                CompanionsPlugin.Log.LogInfo("[AI] RestoreFollowOrPatrol → follow player");
+                CompanionsPlugin.Log.LogDebug("[AI] RestoreFollowOrPatrol → follow player");
             }
         }
 
@@ -377,7 +406,7 @@ namespace Companions
             {
                 FreezeTimer -= dt;
                 if (FreezeTimer <= 0f)
-                    CompanionsPlugin.Log.LogInfo($"[AI] FreezeTimer expired — resuming movement");
+                    CompanionsPlugin.Log.LogDebug($"[AI] FreezeTimer expired — resuming movement");
                 return true;
             }
 
@@ -411,7 +440,7 @@ namespace Companions
                 _pendingCartTimeout -= dt;
                 if (_pendingCartTimeout <= 0f || PendingCartAttach == null)
                 {
-                    CompanionsPlugin.Log.LogInfo("[AI] Cart navigation timed out — cancelling");
+                    CompanionsPlugin.Log.LogDebug("[AI] Cart navigation timed out — cancelling");
                     CancelPendingCart();
                 }
                 else
@@ -442,7 +471,7 @@ namespace Companions
                         SetFollowTarget(PendingCartAttach.gameObject);
                         PendingCartAttach.Interact(PendingCartHumanoid, false, false);
 
-                        CompanionsPlugin.Log.LogInfo(
+                        CompanionsPlugin.Log.LogDebug(
                             $"[AI] Cart navigation arrived — snapped to {attachWorldPos:F2}, calling Interact");
 
                         PendingCartAttach = null;
@@ -462,7 +491,7 @@ namespace Companions
                 _pendingMoveTimeout -= dt;
                 if (_pendingMoveTimeout <= 0f)
                 {
-                    CompanionsPlugin.Log.LogInfo("[AI] Move-to timed out — cancelling");
+                    CompanionsPlugin.Log.LogDebug("[AI] Move-to timed out — cancelling");
                     CancelMoveTarget();
                 }
                 else
@@ -470,7 +499,7 @@ namespace Companions
                     float distToMove = Vector3.Distance(transform.position, PendingMoveTarget.Value);
                     if (distToMove < 2f)
                     {
-                        CompanionsPlugin.Log.LogInfo(
+                        CompanionsPlugin.Log.LogDebug(
                             $"[AI] Move-to arrived at {PendingMoveTarget.Value:F1} — resuming follow");
                         CancelMoveTarget();
                     }
@@ -489,7 +518,7 @@ namespace Companions
                 _pendingDepositTimeout -= dt;
                 if (_pendingDepositTimeout <= 0f || PendingDepositContainer == null)
                 {
-                    CompanionsPlugin.Log.LogInfo("[AI] Deposit navigation timed out — cancelling");
+                    CompanionsPlugin.Log.LogDebug("[AI] Deposit navigation timed out — cancelling");
                     CancelPendingDeposit();
                 }
                 else if (_depositChestOpen)
@@ -514,8 +543,6 @@ namespace Companions
                             {
                                 compInv.RemoveItem(item);
                                 _depositCount++;
-                                chestInv.m_onChanged?.Invoke();
-                                compInv.m_onChanged?.Invoke();
                             }
                         }
                     }
@@ -526,7 +553,7 @@ namespace Companions
                         PendingDepositContainer.SetInUse(false);
                         _depositChestOpen = false;
 
-                        CompanionsPlugin.Log.LogInfo(
+                        CompanionsPlugin.Log.LogDebug(
                             $"[AI] Deposit complete — {_depositCount} item(s) into \"{PendingDepositContainer.m_name}\"");
 
                         var talk = GetComponent<CompanionTalk>();
@@ -569,7 +596,7 @@ namespace Companions
                             }
                         }
 
-                        CompanionsPlugin.Log.LogInfo(
+                        CompanionsPlugin.Log.LogDebug(
                             $"[AI] Deposit opened \"{PendingDepositContainer.m_name}\" — {_depositQueue.Count} items to transfer");
 
                         // If nothing to deposit, close immediately
@@ -623,8 +650,51 @@ namespace Companions
                 return true;
             }
 
-            // Target acquisition with companion-specific suppression
+            // Humanoid ref needed by heal check and combat below
             Humanoid humanoid = m_character as Humanoid;
+
+            // ── Support Dverger healing — prioritize hurt allies over enemies ──
+            if (_isDvergerSupport && humanoid != null)
+            {
+                _healScanTimer -= dt;
+                if (_healScanTimer <= 0f)
+                {
+                    _healScanTimer = HealScanInterval;
+                    _healTarget = FindHurtAlly();
+                }
+
+                // Invalidate stale target
+                if (_healTarget != null &&
+                    (_healTarget.IsDead() ||
+                     _healTarget.GetHealth() / _healTarget.GetMaxHealth() >= HealThreshold))
+                    _healTarget = null;
+
+                if (_healTarget != null)
+                {
+                    // Equip heal staff (FriendHurt weapon) periodically
+                    _healEquipTimer -= dt;
+                    if (_healEquipTimer <= 0f && !m_character.InAttack())
+                    {
+                        _healEquipTimer = 1f;
+                        humanoid.EquipBestWeapon(null, null, _healTarget, null);
+                    }
+
+                    UpdateHealBehavior(humanoid, dt);
+                    return true;
+                }
+                else
+                {
+                    // No hurt ally — re-equip enemy weapon if needed
+                    _healEquipTimer -= dt;
+                    if (_healEquipTimer <= 0f && !m_character.InAttack())
+                    {
+                        _healEquipTimer = 1f;
+                        humanoid.EquipBestWeapon(m_targetCreature, m_targetStatic, null, null);
+                    }
+                }
+            }
+
+            // Target acquisition with companion-specific suppression
             UpdateTarget(humanoid, dt, stance);
 
             // Debug logging (replaces TargetPatches.UpdateAI_DebugLog)
@@ -716,7 +786,7 @@ namespace Companions
                 if (_targetLogTimer <= 0f)
                 {
                     _targetLogTimer = 2f;
-                    CompanionsPlugin.Log.LogInfo(
+                    CompanionsPlugin.Log.LogDebug(
                         $"[CompanionAI] SELF-DEFENSE ALLOW — nearest enemy \"{nearestEnemy?.m_name ?? "?"}\" " +
                         $"at {nearestDist:F1}m — currentTarget=\"{m_targetCreature?.m_name ?? "null"}\"");
                 }
@@ -851,7 +921,7 @@ namespace Companions
             if (_suppressLogTimer <= 0f)
             {
                 _suppressLogTimer = 3f;
-                CompanionsPlugin.Log.LogInfo(
+                CompanionsPlugin.Log.LogDebug(
                     $"[CompanionAI] Suppressing targeting — reason={reason}");
             }
         }
@@ -889,11 +959,28 @@ namespace Companions
                     SetAlerted(true);
 
                 float weaponRange = weapon.m_shared.m_aiAttackRange;
-                bool inRange = dist < weaponRange;
+                bool inAttackRange = dist < weaponRange;
 
-                if (!inRange || !canSee || !IsAlerted())
+                // Stop range: keep closing distance past weaponRange to ensure
+                // melee swings actually connect. The AI's m_aiAttackRange is
+                // center-to-surface, but the melee sphere-cast originates from
+                // the weapon bone (offset from center), so stopping at
+                // weaponRange often leaves the companion swinging at air.
+                float stopRange = Mathf.Max(weaponRange * 0.5f, 1.5f);
+
+                // Hysteresis: once in stop range, require a larger distance
+                // before moving again. Prevents oscillation at boundary
+                // (which causes visible jitter when stuck at stop range).
+                float stopThreshold = _inCombatStopRange
+                    ? stopRange + 0.3f
+                    : stopRange;
+                bool shouldStop = dist < stopThreshold && canSee && IsAlerted();
+
+                if (!shouldStop)
                 {
-                    // Out of range — move toward target (with flanking for melee)
+                    _inCombatStopRange = false;
+
+                    // Not close enough to stop — move toward target
                     Vector3 moveTarget = m_lastKnownTargetPos;
 
                     // Flanking: approach from opposite side of player
@@ -916,21 +1003,30 @@ namespace Companions
                 }
                 else
                 {
-                    // In range — stop and face target
+                    _inCombatStopRange = true;
+
+                    // Close enough — stop and face target
                     StopMoving();
                 }
 
-                // Attack if in range, can see, and alerted
-                if (inRange && canSee && IsAlerted())
+                // Attack if in weapon range, can see, and alerted
+                if (inAttackRange && canSee && IsAlerted())
                 {
                     LookAt(m_targetCreature.GetTopPoint());
 
-                    bool canAttack = CanAttackNow(weapon);
-                    if (canAttack && IsLookingAt(m_lastKnownTargetPos,
-                            weapon.m_shared.m_aiAttackMaxAngle,
-                            weapon.m_shared.m_aiInvertAngleCheck))
+                    // Retry cooldown: when DoAttack fails (e.g. insufficient
+                    // stamina), wait before retrying to prevent per-frame
+                    // attack spam that causes jitter and log noise.
+                    if (Time.time >= _attackRetryTime)
                     {
-                        DoAttack(m_targetCreature);
+                        bool canAttack = CanAttackNow(weapon);
+                        if (canAttack && IsLookingAt(m_lastKnownTargetPos,
+                                weapon.m_shared.m_aiAttackMaxAngle,
+                                weapon.m_shared.m_aiInvertAngleCheck))
+                        {
+                            if (!DoAttack(m_targetCreature))
+                                _attackRetryTime = Time.time + 0.5f;
+                        }
                     }
                 }
             }
@@ -980,7 +1076,7 @@ namespace Companions
                 m_timeSinceAttacking = 0f;
 
                 if (secondary)
-                    CompanionsPlugin.Log.LogInfo(
+                    CompanionsPlugin.Log.LogDebug(
                         $"[CompanionAI] Power attack on staggered \"{target.m_name}\"");
             }
 
@@ -1051,6 +1147,94 @@ namespace Companions
                     float angle = (slot - 4) * 45f + 135f;
                     float rad = angle * Mathf.Deg2Rad;
                     return (right * Mathf.Cos(rad) + fwd * Mathf.Sin(rad)) * FormationOffset;
+            }
+        }
+
+        // ══════════════════════════════════════════════════════════════════════
+        //  Heal Targeting (Support Dverger)
+        // ══════════════════════════════════════════════════════════════════════
+
+        /// <summary>
+        /// Scans for hurt player or player-owned companions within view range.
+        /// Returns the lowest-HP-ratio valid ally, or null if none below threshold.
+        /// </summary>
+        private Character FindHurtAlly()
+        {
+            Character best = null;
+            float bestRatio = HealThreshold;
+
+            foreach (Character c in Character.GetAllCharacters())
+            {
+                if (c == m_character || c.IsDead()) continue;
+
+                float maxHp = c.GetMaxHealth();
+                if (maxHp <= 0f) continue;
+
+                float ratio = c.GetHealth() / maxHp;
+                if (ratio >= HealThreshold) continue;
+
+                float dist = Vector3.Distance(transform.position, c.transform.position);
+                if (dist > m_viewRange) continue;
+
+                // Only heal the player or player-owned companions
+                bool isPlayer = c.IsPlayer();
+                bool isCompanion = c.GetComponent<CompanionSetup>() != null;
+                if (!isPlayer && !isCompanion) continue;
+
+                if (ratio < bestRatio)
+                {
+                    bestRatio = ratio;
+                    best = c;
+                }
+            }
+
+            return best;
+        }
+
+        /// <summary>
+        /// Moves toward the heal target and uses the heal staff when in range.
+        /// </summary>
+        private void UpdateHealBehavior(Humanoid humanoid, float dt)
+        {
+            if (_healTarget == null || _healTarget.IsDead()) return;
+
+            ItemDrop.ItemData weapon = humanoid.GetCurrentWeapon();
+            if (weapon == null) return;
+
+            float dist = Vector3.Distance(transform.position, _healTarget.transform.position)
+                         - _healTarget.GetRadius();
+            float attackRange = weapon.m_shared.m_aiAttackRange;
+
+            if (dist < attackRange)
+            {
+                StopMoving();
+                LookAt(_healTarget.GetTopPoint());
+
+                if (Time.time >= _attackRetryTime && CanAttackNow(weapon) &&
+                    IsLookingAt(_healTarget.transform.position,
+                        weapon.m_shared.m_aiAttackMaxAngle,
+                        weapon.m_shared.m_aiInvertAngleCheck))
+                {
+                    if (SuppressAttack) return;
+
+                    bool success = m_character.StartAttack(_healTarget, false);
+                    if (success)
+                    {
+                        m_timeSinceAttacking = 0f;
+                        CompanionsPlugin.Log.LogDebug(
+                            $"[CompanionAI] Heal attack on \"{_healTarget.m_name}\" " +
+                            $"(HP: {_healTarget.GetHealth():F0}/{_healTarget.GetMaxHealth():F0})");
+                    }
+                    else
+                    {
+                        _attackRetryTime = Time.time + 0.5f;
+                    }
+                }
+            }
+            else
+            {
+                // Move toward heal target — run if far
+                MoveTo(dt, _healTarget.transform.position, 0f, dist > 10f);
             }
         }
 
@@ -1146,7 +1330,8 @@ namespace Companions
         private void Wakeup()
         {
             if (!IsSleeping()) return;
-            m_animator.SetBool(s_sleeping, false);
+            if (m_animator != null)
+                m_animator.SetBool(s_sleeping, false);
             m_nview.GetZDO().Set(ZDOVars.s_sleeping, false);
             m_wakeupEffects.Create(transform.position, transform.rotation);
             m_sleeping = false;
@@ -1159,7 +1344,8 @@ namespace Companions
             SetAlerted(false);
             m_sleepTimer = 0f;
             m_targetCreature = null;
-            m_animator.SetBool(s_sleeping, true);
+            if (m_animator != null)
+                m_animator.SetBool(s_sleeping, true);
             m_nview.GetZDO().Set(ZDOVars.s_sleeping, true);
             m_sleepEffects.Create(transform.position, transform.rotation);
             m_sleeping = true;
@@ -1236,7 +1422,7 @@ namespace Companions
                 body.linearVelocity = Vector3.zero;
             }
 
-            CompanionsPlugin.Log.LogInfo(
+            CompanionsPlugin.Log.LogDebug(
                 $"[CompanionAI] Unstuck from bed \"{bed.name}\" — nudged to {targetPos:F1}");
         }
 
@@ -1302,7 +1488,7 @@ namespace Companions
                 var weapon = (m_character as Humanoid)?.GetCurrentWeapon();
                 var combat = _combat;
 
-                CompanionsPlugin.Log.LogInfo(
+                CompanionsPlugin.Log.LogDebug(
                     $"[CompanionAI] target=\"{m_targetCreature?.m_name ?? "null"}\"({distToTarget:F1}) " +
                     $"follow=\"{follow?.name ?? "null"}\"({distToFollow:F1}) " +
                     $"weapon=\"{weapon?.m_shared?.m_name ?? "null"}\" " +

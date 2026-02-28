@@ -21,12 +21,11 @@ namespace Companions
         private GameObject     _clone;
         private GameObject     _lightRig;
         private RawImage       _previewImg;
-        private static readonly Vector3 PreviewCameraOffsetDir =
-            new Vector3(0f, 0.18f, 1f).normalized;
-        private Vector3 _previewCenter = PreviewPos + Vector3.up * 0.95f;
-        private float   _previewDistance = 3.6f;
-        private float   _previewBoundsTimer;
-        private const float PreviewBoundsRefreshInterval = 0.5f;
+        private float _rotation;
+        private bool  _dragging;
+        private float _lastMouseX;
+        private const float AutoRotSpeed    = 15f;
+        private const float DragSensitivity = 0.4f;
 
         // Ambient override state
         private Color                             _savedAmbient;
@@ -35,6 +34,7 @@ namespace Companions
 
         // ── Customisation state ───────────────────────────────────────────────
         private CompanionAppearance _current;
+        private CompanionTierDef _selectedTier;
         private List<string> _hairs  = new List<string>();
         private List<string> _beards = new List<string>();
         private int  _hairIndex;
@@ -50,9 +50,15 @@ namespace Companions
         private TMP_Text        _buyButtonLabel;
         private Button          _maleBtn;
         private Button          _femaleBtn;
+        private Button          _companionTypeBtn;
+        private Button          _dvergerTypeBtn;
+        private GameObject      _appearanceGroup;
         private Slider          _skinSlider;
         private Slider          _hairHueSlider;
         private Slider          _hairBrightSlider;
+        private GameObject      _dvergerGroup;
+        private CompanionTierDef _selectedDvergerVariant;
+        private readonly List<Button> _variantButtons = new List<Button>();
 
         // ── Reflection ────────────────────────────────────────────────────────
         private static readonly System.Reflection.MethodInfo _updateVisuals =
@@ -131,6 +137,7 @@ namespace Companions
                           float rightXL, float rightXR, float panelHeight)
         {
             _current = CompanionAppearance.Default();
+            _selectedTier = CompanionTierData.Companion;
             if (buttonHeight <= 0f) buttonHeight = 30f;
 
             // Root — invisible container, columns have their own backgrounds
@@ -226,7 +233,7 @@ namespace Companions
             if (buttonTemplate != null)
             {
                 var btnGO = CreateActionButton(buttonTemplate, col, "BuyButton",
-                    $"Buy ({CompanionTierData.Price:N0})");
+                    $"Buy Companion ({CompanionTierData.Price:N0})");
 
                 _buyButton = btnGO.GetComponent<Button>();
                 if (_buyButton != null)
@@ -316,7 +323,7 @@ namespace Companions
 
             _previewImg               = imgGO.AddComponent<RawImage>();
             _previewImg.color         = Color.white;
-            _previewImg.raycastTarget = false;
+            _previewImg.raycastTarget = true; // needed for drag-to-rotate
 
             // RenderTexture — proportional to column dimensions, not square
             int rtScale = 4;
@@ -394,31 +401,51 @@ namespace Companions
             float pickerH = 36f;
             float sliderH = 24f;
 
-            // ── Gender ──────────────────────────────────────────────────────
-            y = PlacePlainLabel(p, font, "Gender", y, labelH);
+            // ── Type ────────────────────────────────────────────────────────
+            y = PlacePlainLabel(p, font, "Type", y, labelH);
             y -= gap;
 
-            var gRow = MakeAnchoredRow(p, y, genderH);
+            var tRow = MakeAnchoredRow(p, y, genderH);
             y -= genderH + secGap;
+            _companionTypeBtn = AddToggleButton(tRow, "Companion", buttonTemplate, new Vector2(0.01f, 0f), new Vector2(0.49f, 1f), () => SetType(CompanionTierData.Companion));
+            _dvergerTypeBtn   = AddToggleButton(tRow, "Dverger",   buttonTemplate, new Vector2(0.51f, 0f), new Vector2(0.99f, 1f), () => SetType(CompanionTierData.Dverger));
+
+            // ── Appearance group (hidden for Dverger — they use vanilla model) ──
+            _appearanceGroup = new GameObject("AppearanceGroup", typeof(RectTransform));
+            _appearanceGroup.transform.SetParent(p, false);
+            var agRT = _appearanceGroup.GetComponent<RectTransform>();
+            agRT.anchorMin        = new Vector2(0f, 1f);
+            agRT.anchorMax        = new Vector2(1f, 1f);
+            agRT.pivot            = new Vector2(0f, 1f);
+            agRT.anchoredPosition = new Vector2(0f, y);
+
+            float ay = 0f; // local Y within appearance group
+
+            // ── Gender ──────────────────────────────────────────────────────
+            ay = PlacePlainLabel(_appearanceGroup.transform, font, "Gender", ay, labelH);
+            ay -= gap;
+
+            var gRow = MakeAnchoredRow(_appearanceGroup.transform, ay, genderH);
+            ay -= genderH + secGap;
             _maleBtn   = AddToggleButton(gRow, "Male",   buttonTemplate, new Vector2(0.01f, 0f), new Vector2(0.49f, 1f), () => SetGender(0));
             _femaleBtn = AddToggleButton(gRow, "Female", buttonTemplate, new Vector2(0.51f, 0f), new Vector2(0.99f, 1f), () => SetGender(1));
 
             // ── Hair Style ──────────────────────────────────────────────────
-            y = PlacePlainLabel(p, font, "Hair Style", y, labelH);
-            y -= gap;
+            ay = PlacePlainLabel(_appearanceGroup.transform, font, "Hair Style", ay, labelH);
+            ay -= gap;
 
-            BuildPickerRow(p, out _hairNameText, "Hair1", y, pickerH, font, buttonTemplate,
+            BuildPickerRow(_appearanceGroup.transform, out _hairNameText, "Hair1", ay, pickerH, font, buttonTemplate,
                 () => CycleHair(-1), () => CycleHair(1));
-            y -= pickerH + secGap;
+            ay -= pickerH + secGap;
 
             // ── Beard Style (hidden for female) ─────────────────────────────
             _beardGroup = new GameObject("BeardGroup", typeof(RectTransform));
-            _beardGroup.transform.SetParent(p, false);
+            _beardGroup.transform.SetParent(_appearanceGroup.transform, false);
             var bgRT = _beardGroup.GetComponent<RectTransform>();
             bgRT.anchorMin        = new Vector2(0f, 1f);
             bgRT.anchorMax        = new Vector2(1f, 1f);
             bgRT.pivot            = new Vector2(0f, 1f);
-            bgRT.anchoredPosition = new Vector2(0f, y);
+            bgRT.anchoredPosition = new Vector2(0f, ay);
 
             float by = 0f;
             by = PlacePlainLabel(_beardGroup.transform, font, "Beard Style", by, labelH);
@@ -429,29 +456,90 @@ namespace Companions
 
             float beardGroupH = -by;
             bgRT.sizeDelta = new Vector2(0f, beardGroupH);
-            y -= beardGroupH;
+            ay -= beardGroupH;
 
             // ── Skin Tone ───────────────────────────────────────────────────
-            y = PlacePlainLabel(p, font, "Skin Tone", y, labelH);
-            y -= gap;
-            _skinSlider = MakeSlider(p, "SkinSlider", y, sliderH, 0.05f, v =>
+            ay = PlacePlainLabel(_appearanceGroup.transform, font, "Skin Tone", ay, labelH);
+            ay -= gap;
+            _skinSlider = MakeSlider(_appearanceGroup.transform, "SkinSlider", ay, sliderH, 0.05f, v =>
             {
                 _current.SkinColor = Utils.ColorToVec3(Color.Lerp(SkinLight, SkinDark, v));
                 RefreshPreviewAppearance();
             });
-            y -= sliderH + secGap;
+            ay -= sliderH + secGap;
 
             // ── Hair Tone ───────────────────────────────────────────────────
-            y = PlacePlainLabel(p, font, "Hair Tone", y, labelH);
-            y -= gap;
-            _hairHueSlider = MakeSlider(p, "HairHue", y, sliderH, 0.45f, _ => UpdateHairColor());
-            y -= sliderH + secGap;
+            ay = PlacePlainLabel(_appearanceGroup.transform, font, "Hair Tone", ay, labelH);
+            ay -= gap;
+            _hairHueSlider = MakeSlider(_appearanceGroup.transform, "HairHue", ay, sliderH, 0.45f, _ => UpdateHairColor());
+            ay -= sliderH + secGap;
 
             // ── Hair Shade ──────────────────────────────────────────────────
-            y = PlacePlainLabel(p, font, "Hair Shade", y, labelH);
-            y -= gap;
-            _hairBrightSlider = MakeSlider(p, "HairBright", y, sliderH, 0.85f, _ => UpdateHairColor());
-            y -= sliderH + secGap;
+            ay = PlacePlainLabel(_appearanceGroup.transform, font, "Hair Shade", ay, labelH);
+            ay -= gap;
+            _hairBrightSlider = MakeSlider(_appearanceGroup.transform, "HairBright", ay, sliderH, 0.85f, _ => UpdateHairColor());
+            ay -= sliderH + secGap;
+
+            float appearanceGroupH = -ay;
+            agRT.sizeDelta = new Vector2(0f, appearanceGroupH);
+
+            // ── Dverger sub-type group (shown instead of appearance when Dverger selected) ──
+            _dvergerGroup = new GameObject("DvergerGroup", typeof(RectTransform));
+            _dvergerGroup.transform.SetParent(p, false);
+            var dgRT = _dvergerGroup.GetComponent<RectTransform>();
+            dgRT.anchorMin        = new Vector2(0f, 1f);
+            dgRT.anchorMax        = new Vector2(1f, 1f);
+            dgRT.pivot            = new Vector2(0f, 1f);
+            dgRT.anchoredPosition = new Vector2(0f, y);
+
+            float dy = 0f;
+            dy = PlacePlainLabel(_dvergerGroup.transform, font, "Sub-Type", dy, labelH);
+            dy -= gap;
+
+            _variantButtons.Clear();
+            _selectedDvergerVariant = CompanionTierData.DvergerVariants[0];
+            var variants = CompanionTierData.DvergerVariants;
+
+            // Row 1: first 3 variants
+            int row1Count = Mathf.Min(3, variants.Length);
+            var vRow1 = MakeAnchoredRow(_dvergerGroup.transform, dy, genderH);
+            dy -= genderH + gap;
+            for (int i = 0; i < row1Count; i++)
+            {
+                var v = variants[i];
+                float xMin = (float)i / row1Count + 0.01f;
+                float xMax = (float)(i + 1) / row1Count - 0.01f;
+                var btn = AddToggleButton(vRow1, v.DisplayName, buttonTemplate,
+                    new Vector2(xMin, 0f), new Vector2(xMax, 1f),
+                    () => SetDvergerVariant(v));
+                _variantButtons.Add(btn);
+            }
+
+            // Row 2: remaining variants (if any)
+            if (variants.Length > 3)
+            {
+                int row2Count = variants.Length - 3;
+                var vRow2 = MakeAnchoredRow(_dvergerGroup.transform, dy, genderH);
+                dy -= genderH + gap;
+                for (int i = 0; i < row2Count; i++)
+                {
+                    var v = variants[3 + i];
+                    float xMin = (float)i / row2Count + 0.01f;
+                    float xMax = (float)(i + 1) / row2Count - 0.01f;
+                    var btn = AddToggleButton(vRow2, v.DisplayName, buttonTemplate,
+                        new Vector2(xMin, 0f), new Vector2(xMax, 1f),
+                        () => SetDvergerVariant(v));
+                    _variantButtons.Add(btn);
+                }
+            }
+
+            float dvergerGroupH = -dy;
+            dgRT.sizeDelta = new Vector2(0f, dvergerGroupH);
+            _dvergerGroup.SetActive(false);
+
+            // Use the taller group for content height calculation
+            float groupH = Mathf.Max(appearanceGroupH, dvergerGroupH);
+            y -= groupH;
 
             // Set content height
             contentRT.sizeDelta = new Vector2(0f, -y + 8f);
@@ -462,6 +550,7 @@ namespace Companions
             UpdateHairColor();
 
             // Initial visual state
+            RefreshTypeButtons();
             RefreshGenderButtons();
         }
 
@@ -478,9 +567,8 @@ namespace Companions
 
         public void UpdatePerFrame()
         {
-            UpdatePreviewBounds();
+            UpdatePreviewRotation();
             UpdatePreviewCamera();
-            LockPreviewCloneFacing();
             RefreshBankDisplay();
 
             if (_cam == null) return;
@@ -524,8 +612,16 @@ namespace Companions
         {
             ClearPreviewClone();
 
-            var prefab = ZNetScene.instance?.GetPrefab("Player");
-            if (prefab == null) return;
+            // Use the tier's source prefab for the preview model
+            string prefabName = _selectedTier.SourcePrefab ?? "Player";
+            var prefab = ZNetScene.instance?.GetPrefab(prefabName);
+            if (prefab == null)
+            {
+                CompanionsPlugin.Log.LogWarning(
+                    $"[Panel] SetupPreviewClone — prefab \"{prefabName}\" not found! " +
+                    $"tier={_selectedTier.DisplayName}");
+                return;
+            }
 
             ZNetView.m_forceDisableInit = true;
             try   { _clone = UnityEngine.Object.Instantiate(prefab, PreviewPos, Quaternion.identity); }
@@ -544,10 +640,7 @@ namespace Companions
 
             foreach (var anim in _clone.GetComponentsInChildren<Animator>())
             {
-                anim.updateMode     = AnimatorUpdateMode.Normal;
-                anim.cullingMode    = AnimatorCullingMode.AlwaysAnimate;
-                anim.applyRootMotion = false;
-                anim.Rebind();
+                ConfigurePreviewAnimator(anim);
             }
 
             int charLayer = LayerMask.NameToLayer("character");
@@ -557,24 +650,31 @@ namespace Companions
 
             SetupLightRig();
 
-            _previewBoundsTimer = 0f;
-            RecalculatePreviewBounds();
-            UpdatePreviewCamera();
-            LockPreviewCloneFacing();
+            Vector3 center = PreviewPos + Vector3.up * 0.9f;
+            _camGO.transform.position = center + new Vector3(0f, 0.3f, 5.0f);
+            _camGO.transform.LookAt(center);
+
+            // Log preview clone details for debugging
+            var ve = _clone.GetComponent<VisEquipment>();
+            var humanoid = _clone.GetComponent<Humanoid>();
+            int rendererCount = _clone.GetComponentsInChildren<Renderer>(true).Length;
+            int defaultItems = humanoid?.m_defaultItems?.Length ?? 0;
+            int randomWeapons = humanoid?.m_randomWeapon?.Length ?? 0;
+            CompanionsPlugin.Log.LogInfo(
+                $"[Panel] SetupPreviewClone — tier=\"{_selectedTier.DisplayName}\" " +
+                $"source=\"{prefabName}\" visEquip={ve != null} humanoid={humanoid != null} " +
+                $"renderers={rendererCount} defaultItems={defaultItems} randomWeapons={randomWeapons} " +
+                $"pos={_clone.transform.position:F1}");
 
             ApplyCurrentToClone();
-            RecalculatePreviewBounds();
-            UpdatePreviewCamera();
-            LockPreviewCloneFacing();
         }
 
         private void ClearPreviewClone()
         {
             if (_lightRig != null) { UnityEngine.Object.Destroy(_lightRig); _lightRig = null; }
             if (_clone    != null) { UnityEngine.Object.Destroy(_clone);    _clone    = null; }
-            _previewCenter = PreviewPos + Vector3.up * 0.95f;
-            _previewDistance = 3.6f;
-            _previewBoundsTimer = 0f;
+            _rotation = 0f;
+            _dragging = false;
         }
 
         private void SetupLightRig()
@@ -611,68 +711,47 @@ namespace Companions
             lt.cullingMask = mask;
         }
 
-        private void UpdatePreviewCamera()
+        private void UpdatePreviewRotation()
         {
-            if (_camGO == null) return;
-            Vector3 offset = PreviewCameraOffsetDir * _previewDistance;
-            _camGO.transform.position = _previewCenter + offset;
-            _camGO.transform.LookAt(_previewCenter);
-        }
+            if (_previewImg == null || !_previewImg.gameObject.activeInHierarchy) return;
 
-        private void LockPreviewCloneFacing()
-        {
-            if (_clone == null) return;
-
-            _clone.transform.position = PreviewPos;
-            _clone.transform.rotation = Quaternion.LookRotation(Vector3.forward, Vector3.up);
-        }
-
-        private void UpdatePreviewBounds()
-        {
-            if (_clone == null || _cam == null) return;
-            _previewBoundsTimer -= Time.deltaTime;
-            if (_previewBoundsTimer > 0f) return;
-            _previewBoundsTimer = PreviewBoundsRefreshInterval;
-            RecalculatePreviewBounds();
-        }
-
-        private void RecalculatePreviewBounds()
-        {
-            if (_clone == null || _cam == null) return;
-
-            bool hasBounds = false;
-            Bounds bounds = default;
-            foreach (var renderer in _clone.GetComponentsInChildren<Renderer>(true))
+            if (!_dragging && Input.GetMouseButtonDown(0))
             {
-                if (renderer == null || !renderer.enabled) continue;
-                if (!hasBounds)
+                if (RectTransformUtility.RectangleContainsScreenPoint(
+                        _previewImg.rectTransform, Input.mousePosition, null))
                 {
-                    bounds = renderer.bounds;
-                    hasBounds = true;
+                    _dragging = true;
+                    _lastMouseX = Input.mousePosition.x;
+                }
+            }
+
+            if (_dragging)
+            {
+                if (Input.GetMouseButton(0))
+                {
+                    float delta = Input.mousePosition.x - _lastMouseX;
+                    _rotation = (_rotation + delta * DragSensitivity) % 360f;
+                    _lastMouseX = Input.mousePosition.x;
                 }
                 else
                 {
-                    bounds.Encapsulate(renderer.bounds);
+                    _dragging = false;
                 }
             }
-
-            if (!hasBounds)
+            else
             {
-                _previewCenter = PreviewPos + Vector3.up * 0.95f;
-                _previewDistance = 3.6f;
-                return;
+                _rotation = (_rotation + AutoRotSpeed * Time.deltaTime) % 360f;
             }
+        }
 
-            _previewCenter = bounds.center + Vector3.up * (bounds.extents.y * 0.05f);
-            float radius = Mathf.Max(0.6f, bounds.extents.magnitude * 1.05f);
-            float aspect = (_rt != null && _rt.height > 0) ? (float)_rt.width / _rt.height : 1f;
-            float halfFovV = _cam.fieldOfView * 0.5f * Mathf.Deg2Rad;
-            float halfFovH = Mathf.Atan(Mathf.Tan(halfFovV) * aspect);
-            float limitingHalfFov = Mathf.Min(halfFovV, halfFovH);
-            float safeHalfFov = Mathf.Max(0.2f, limitingHalfFov);
-
-            _previewDistance = Mathf.Clamp(radius / Mathf.Sin(safeHalfFov), 2.2f, 6f);
-            _cam.farClipPlane = Mathf.Max(10f, _previewDistance + 8f);
+        private void UpdatePreviewCamera()
+        {
+            if (_camGO == null) return;
+            Vector3 center = PreviewPos + Vector3.up * 0.9f;
+            float rad = _rotation * Mathf.Deg2Rad;
+            Vector3 offset = new Vector3(Mathf.Sin(rad), 0.3f, Mathf.Cos(rad)) * 5.0f;
+            _camGO.transform.position = center + offset;
+            _camGO.transform.LookAt(center);
         }
 
         // ═════════════════════════════════════════════════════════════════════
@@ -685,26 +764,194 @@ namespace Companions
             var ve = _clone.GetComponent<VisEquipment>();
             if (ve == null) return;
 
-            // Force-reset internal hash state so UpdateVisuals does a full rebuild
-            // (otherwise SetModel(0) is a no-op when the prefab default is already 0,
-            //  and UpdateBaseModel skips applying body textures)
-            _currentModelIndex?.SetValue(ve, -1);
+            if (!_selectedTier.CanWearArmor)
+            {
+                // Dverger variants: apply default gear visuals from the Humanoid configuration.
+                // The preview clone uses the VANILLA prefab (not HC_ prefab) so all
+                // original item arrays are intact.
+                var humanoid = _clone.GetComponent<Humanoid>();
+                if (humanoid != null)
+                {
+                    int dCount = humanoid.m_defaultItems?.Length ?? 0;
+                    int wCount = humanoid.m_randomWeapon?.Length ?? 0;
+                    int sCount = humanoid.m_randomShield?.Length ?? 0;
+                    int aCount = humanoid.m_randomArmor?.Length ?? 0;
+                    int setCount = humanoid.m_randomSets?.Length ?? 0;
+                    CompanionsPlugin.Log.LogDebug(
+                        $"[Panel] ApplyCurrentToClone — dverger gear: " +
+                        $"defaults={dCount} weapons={wCount} shields={sCount} " +
+                        $"armor={aCount} sets={setCount}");
 
-            ve.SetModel(_current.ModelIndex);
-            ve.SetHairItem(string.IsNullOrEmpty(_current.HairItem) ? "Hair1" : _current.HairItem);
-            ve.SetBeardItem(_current.ModelIndex == 0 ? (_current.BeardItem ?? "") : "");
-            ve.SetSkinColor(_current.SkinColor);
-            ve.SetHairColor(_current.HairColor);
+                    ApplyDefaultGearToVis(ve, humanoid.m_defaultItems);
+                    ApplyFirstItemToVis(ve, humanoid.m_randomWeapon);
+                    ApplyFirstItemToVis(ve, humanoid.m_randomShield);
+                    ApplyFirstItemToVis(ve, humanoid.m_randomArmor);
+                    if (humanoid.m_randomSets != null)
+                    {
+                        foreach (var set in humanoid.m_randomSets)
+                        {
+                            if (set.m_items != null && set.m_items.Length > 0)
+                            {
+                                ApplyDefaultGearToVis(ve, set.m_items);
+                                break; // apply first set for preview
+                            }
+                        }
+                    }
+                }
+                else
+                {
+                    CompanionsPlugin.Log.LogWarning(
+                        $"[Panel] ApplyCurrentToClone — NO Humanoid on clone!");
+                }
+            }
+            else
+            {
+                // Companion (Player clone): apply full appearance customization
+                // Force-reset internal hash state so UpdateVisuals does a full rebuild
+                // (otherwise SetModel(0) is a no-op when the prefab default is already 0,
+                //  and UpdateBaseModel skips applying body textures)
+                _currentModelIndex?.SetValue(ve, -1);
+
+                ve.SetModel(_current.ModelIndex);
+                ve.SetHairItem(string.IsNullOrEmpty(_current.HairItem) ? "Hair1" : _current.HairItem);
+                ve.SetBeardItem(_current.ModelIndex == 0 ? (_current.BeardItem ?? "") : "");
+                ve.SetSkinColor(_current.SkinColor);
+                ve.SetHairColor(_current.HairColor);
+            }
 
             _updateVisuals?.Invoke(ve, null);
 
             var anim = _clone.GetComponentInChildren<Animator>(true);
-            if (anim != null) anim.Update(0f);
+            if (anim != null)
+            {
+                // Keep preview pose static while still forcing one skeleton evaluation
+                // so newly swapped meshes bind correctly.
+                anim.Update(0f);
+                anim.speed = 0f;
+            }
 
             int charLayer = LayerMask.NameToLayer("character");
             if (charLayer < 0) charLayer = 9;
             foreach (var t in _clone.GetComponentsInChildren<Transform>(true))
                 t.gameObject.layer = charLayer;
+        }
+
+        private static void ApplyDefaultGearToVis(VisEquipment ve, GameObject[] items)
+        {
+            if (items == null) return;
+            foreach (var go in items)
+            {
+                if (go == null) continue;
+                ApplyItemToVis(ve, go);
+            }
+        }
+
+        private static void ApplyFirstItemToVis(VisEquipment ve, GameObject[] items)
+        {
+            if (items == null || items.Length == 0) return;
+            if (items[0] != null) ApplyItemToVis(ve, items[0]);
+        }
+
+        private static void ApplyItemToVis(VisEquipment ve, GameObject itemGo)
+        {
+            var drop = itemGo.GetComponent<ItemDrop>();
+            if (drop == null) return;
+            string name = itemGo.name;
+            CompanionsPlugin.Log.LogDebug(
+                $"[Panel] ApplyItemToVis — \"{name}\" type={drop.m_itemData.m_shared.m_itemType}");
+            switch (drop.m_itemData.m_shared.m_itemType)
+            {
+                case ItemDrop.ItemData.ItemType.OneHandedWeapon:
+                case ItemDrop.ItemData.ItemType.TwoHandedWeapon:
+                case ItemDrop.ItemData.ItemType.TwoHandedWeaponLeft:
+                case ItemDrop.ItemData.ItemType.Bow:
+                    ve.SetRightItem(name); break;
+                case ItemDrop.ItemData.ItemType.Shield:
+                    ve.SetLeftItem(name, 0); break;
+                case ItemDrop.ItemData.ItemType.Chest:
+                    ve.SetChestItem(name); break;
+                case ItemDrop.ItemData.ItemType.Legs:
+                    ve.SetLegItem(name); break;
+                case ItemDrop.ItemData.ItemType.Helmet:
+                    ve.SetHelmetItem(name); break;
+                case ItemDrop.ItemData.ItemType.Shoulder:
+                    ve.SetShoulderItem(name, 0); break;
+                case ItemDrop.ItemData.ItemType.Utility:
+                    ve.SetUtilityItem(name); break;
+            }
+        }
+
+        private static void ConfigurePreviewAnimator(Animator anim)
+        {
+            if (anim == null) return;
+
+            anim.updateMode = AnimatorUpdateMode.Normal;
+            anim.cullingMode = AnimatorCullingMode.AlwaysAnimate;
+            anim.applyRootMotion = false;
+            anim.enabled = true;
+            anim.speed = 1f;
+            anim.Rebind();
+            anim.Update(0f);
+
+            // Clear common rest/sit flags so preview opens in a standing pose.
+            SetBoolIfExists(anim, "emote_sit", false);
+            SetBoolIfExists(anim, "attach_bed", false);
+            SetBoolIfExists(anim, "sleeping", false);
+            SetBoolIfExists(anim, "sit", false);
+            SetBoolIfExists(anim, "sitting", false);
+            SetBoolIfExists(anim, "crouch", false);
+            SetBoolIfExists(anim, "inBed", false);
+            SetBoolIfExists(anim, "in_bed", false);
+
+            TriggerIfExists(anim, "emote_stop");
+            TriggerIfExists(anim, "wakeup");
+            TriggerIfExists(anim, "wake");
+
+            // Try forcing a standing/idle state when available.
+            TryPlayState(anim, "Idle");
+            TryPlayState(anim, "idle");
+            TryPlayState(anim, "Movement");
+            TryPlayState(anim, "Move");
+            TryPlayState(anim, "Base Layer.Idle");
+            TryPlayState(anim, "Base Layer.Movement");
+
+            // Advance enough time for any entry transition to settle.
+            for (int i = 0; i < 20; i++)
+                anim.Update(0.1f);
+
+            anim.speed = 0f;
+        }
+
+        private static void SetBoolIfExists(Animator anim, string name, bool value)
+        {
+            if (anim == null || string.IsNullOrEmpty(name)) return;
+            foreach (var p in anim.parameters)
+            {
+                if (p.type != AnimatorControllerParameterType.Bool) continue;
+                if (!string.Equals(p.name, name, StringComparison.Ordinal)) continue;
+                anim.SetBool(name, value);
+                return;
+            }
+        }
+
+        private static void TriggerIfExists(Animator anim, string name)
+        {
+            if (anim == null || string.IsNullOrEmpty(name)) return;
+            foreach (var p in anim.parameters)
+            {
+                if (p.type != AnimatorControllerParameterType.Trigger) continue;
+                if (!string.Equals(p.name, name, StringComparison.Ordinal)) continue;
+                anim.SetTrigger(name);
+                return;
+            }
+        }
+
+        private static void TryPlayState(Animator anim, string stateName)
+        {
+            if (anim == null || string.IsNullOrEmpty(stateName)) return;
+            int hash = Animator.StringToHash(stateName);
+            if (!anim.HasState(0, hash)) return;
+            anim.Play(hash, 0, 0f);
         }
 
         private void RefreshPreviewAppearance() => ApplyCurrentToClone();
@@ -743,6 +990,66 @@ namespace Companions
         // ═════════════════════════════════════════════════════════════════════
         //  Customisation callbacks
         // ═════════════════════════════════════════════════════════════════════
+
+        private void SetType(CompanionTierDef tier)
+        {
+            bool isDverger = !tier.CanWearArmor;
+            if (isDverger)
+            {
+                // When switching to Dverger, use the previously selected variant
+                // (or the default first variant if none was selected yet)
+                if (_selectedDvergerVariant == null)
+                    _selectedDvergerVariant = CompanionTierData.DvergerVariants[0];
+                _selectedTier = _selectedDvergerVariant;
+            }
+            else
+            {
+                _selectedTier = tier;
+            }
+
+            RefreshTypeButtons();
+            RefreshBuyButtonLabel();
+
+            // Toggle appearance group vs dverger sub-type group
+            if (_appearanceGroup != null)
+                _appearanceGroup.SetActive(!isDverger);
+            if (_dvergerGroup != null)
+                _dvergerGroup.SetActive(isDverger);
+            if (isDverger)
+                RefreshVariantButtons();
+
+            // Refresh preview to show the correct model
+            SetupPreviewClone();
+        }
+
+        private void SetDvergerVariant(CompanionTierDef variant)
+        {
+            _selectedDvergerVariant = variant;
+            _selectedTier = variant;
+            RefreshVariantButtons();
+            RefreshBuyButtonLabel();
+            SetupPreviewClone();
+        }
+
+        private void RefreshVariantButtons()
+        {
+            var variants = CompanionTierData.DvergerVariants;
+            for (int i = 0; i < _variantButtons.Count && i < variants.Length; i++)
+                SetToggleActive(_variantButtons[i], variants[i] == _selectedDvergerVariant);
+        }
+
+        private void RefreshTypeButtons()
+        {
+            bool isCompanion = _selectedTier.CanWearArmor;
+            SetToggleActive(_companionTypeBtn, isCompanion);
+            SetToggleActive(_dvergerTypeBtn,   !isCompanion);
+        }
+
+        private void RefreshBuyButtonLabel()
+        {
+            if (_buyButtonLabel != null)
+                _buyButtonLabel.text = $"Buy {_selectedTier.DisplayName} ({CompanionTierData.Price:N0})";
+        }
 
         private void SetGender(int model)
         {
@@ -783,7 +1090,7 @@ namespace Companions
 
         private void OnBuyClicked()
         {
-            CompanionManager.Purchase(_current);
+            CompanionManager.Purchase(_current, _selectedTier);
             RefreshBankDisplay();
         }
 
@@ -831,9 +1138,12 @@ namespace Companions
                 _buyButton.interactable = balance >= price;
 
             if (_buyButtonLabel != null)
+            {
+                string typeName = _selectedTier?.DisplayName ?? "Companion";
                 _buyButtonLabel.text = balance >= price
-                    ? $"Buy ({price:N0})"
+                    ? $"Buy {typeName} ({price:N0})"
                     : $"Need {price:N0}";
+            }
         }
 
         // ═════════════════════════════════════════════════════════════════════
@@ -1331,15 +1641,24 @@ namespace Companions
                 if (fillImg != null) fillImg.color = GoldColor;
             }
 
-            // Dark tint overlay — inset horizontally to match the visible slider track
+            // Dark tint overlay — match the actual slider track area (fill/background),
+            // not a fixed inset, so the overlay always lines up with the slider visuals.
+            RectTransform tintParentRT = slider.fillRect != null
+                ? slider.fillRect.parent as RectTransform
+                : null;
+            if (tintParentRT == null)
+                tintParentRT = go.transform.Find("Background") as RectTransform;
+            if (tintParentRT == null)
+                tintParentRT = go.GetComponent<RectTransform>();
+
             var tintGO = new GameObject("Tint", typeof(RectTransform), typeof(Image));
-            tintGO.transform.SetParent(go.transform, false);
+            tintGO.transform.SetParent(tintParentRT, false);
             tintGO.transform.SetAsFirstSibling();
             var tintRT = tintGO.GetComponent<RectTransform>();
             tintRT.anchorMin = Vector2.zero;
             tintRT.anchorMax = Vector2.one;
-            tintRT.offsetMin = new Vector2(8f, 0f);
-            tintRT.offsetMax = new Vector2(-8f, 0f);
+            tintRT.offsetMin = Vector2.zero;
+            tintRT.offsetMax = Vector2.zero;
             tintGO.GetComponent<Image>().color         = BtnTint;
             tintGO.GetComponent<Image>().raycastTarget = false;
 

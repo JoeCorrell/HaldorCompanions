@@ -5,15 +5,48 @@ using UnityEngine;
 namespace Companions
 {
     /// <summary>
-    /// Adds a yellow stamina bar below the health bar on companion overhead HUDs.
-    /// Clones the vanilla Health bar section, recolors it, and updates it each frame
-    /// from CompanionStamina.
+    /// Adds stamina (yellow) and weight (brown) bars below the health bar on
+    /// companion overhead HUDs. Clones the vanilla Health bar section, recolors
+    /// it, and updates each frame from CompanionStamina / Inventory weight.
     /// </summary>
     public static class EnemyHudPatches
     {
         private static readonly Color StaminaYellow = new Color(1f, 0.8f, 0.1f, 1f);
-        private static readonly Dictionary<Character, GuiBar> _staminaBars =
-            new Dictionary<Character, GuiBar>();
+        private static readonly Color WeightBrown   = new Color(0.72f, 0.53f, 0.26f, 1f);
+
+        private struct CompanionBars
+        {
+            public GuiBar StaminaBar;
+            public GuiBar WeightBar;
+        }
+
+        private static readonly Dictionary<Character, CompanionBars> _bars =
+            new Dictionary<Character, CompanionBars>();
+
+        private static GuiBar CreateBar(Transform healthTransform, Transform guiParent,
+            string name, Color color, float yOffset)
+        {
+            var barGO = Object.Instantiate(healthTransform.gameObject, guiParent);
+            barGO.name = name;
+
+            var healthRT = healthTransform.GetComponent<RectTransform>();
+            var barRT = barGO.GetComponent<RectTransform>();
+            barRT.localPosition = healthRT.localPosition - new Vector3(0f, yOffset, 0f);
+
+            var slowBar = barGO.transform.Find("health_slow");
+            if (slowBar != null) slowBar.gameObject.SetActive(false);
+            var friendlyBar = barGO.transform.Find("health_fast_friendly");
+            if (friendlyBar != null) friendlyBar.gameObject.SetActive(false);
+
+            var fastBarT = barGO.transform.Find("health_fast");
+            if (fastBarT == null) return null;
+
+            var guiBar = fastBarT.GetComponent<GuiBar>();
+            if (guiBar == null) return null;
+
+            guiBar.SetColor(color);
+            return guiBar;
+        }
 
         [HarmonyPatch(typeof(EnemyHud), "ShowHud")]
         private static class ShowHud_Patch
@@ -21,9 +54,8 @@ namespace Companions
             static void Postfix(EnemyHud __instance, Character c)
             {
                 if (c == null || c.GetComponent<CompanionStamina>() == null) return;
-                if (_staminaBars.ContainsKey(c)) return;
+                if (_bars.ContainsKey(c)) return;
 
-                // Access private m_huds to get the HudData just created for this character
                 var huds = Traverse.Create(__instance).Field("m_huds")
                     .GetValue() as System.Collections.IDictionary;
                 if (huds == null || !huds.Contains(c)) return;
@@ -36,36 +68,47 @@ namespace Companions
                 var healthTransform = gui.transform.Find("Health");
                 if (healthTransform == null) return;
 
-                // Clone the Health section as our stamina bar
-                var staminaGO = Object.Instantiate(healthTransform.gameObject, gui.transform);
-                staminaGO.name = "CompanionStamina";
-
-                // Position below the health bar
-                var healthRT = healthTransform.GetComponent<RectTransform>();
-                var staminaRT = staminaGO.GetComponent<RectTransform>();
-                float healthH = healthRT.rect.height;
+                float healthH = healthTransform.GetComponent<RectTransform>().rect.height;
                 if (healthH <= 0f) healthH = 8f;
-                staminaRT.localPosition = healthRT.localPosition - new Vector3(0f, healthH + 2f, 0f);
 
-                // Disable slow-drain and friendly bars — only keep the fast fill
-                var slowBar = staminaGO.transform.Find("health_slow");
-                if (slowBar != null) slowBar.gameObject.SetActive(false);
-                var friendlyBar = staminaGO.transform.Find("health_fast_friendly");
-                if (friendlyBar != null) friendlyBar.gameObject.SetActive(false);
+                // Stamina bar — directly below health
+                float staminaY = healthH + 2f;
+                var staminaBar = CreateBar(healthTransform, gui.transform,
+                    "CompanionStamina", StaminaYellow, staminaY);
 
-                // Get the fast bar, recolor to yellow
-                var fastBarT = staminaGO.transform.Find("health_fast");
-                if (fastBarT == null) return;
+                // Weight bar — below stamina
+                float weightY = staminaY + healthH + 2f;
+                var weightBar = CreateBar(healthTransform, gui.transform,
+                    "CompanionWeight", WeightBrown, weightY);
 
-                var guiBar = fastBarT.GetComponent<GuiBar>();
-                if (guiBar == null) return;
+                if (staminaBar != null)
+                {
+                    var stamina = c.GetComponent<CompanionStamina>();
+                    staminaBar.SetValue(stamina.GetStaminaPercentage());
+                }
 
-                guiBar.SetColor(StaminaYellow);
+                if (weightBar != null)
+                {
+                    var humanoid = c.GetComponent<Humanoid>();
+                    if (humanoid != null)
+                    {
+                        var inv = humanoid.GetInventory();
+                        float pct = inv != null
+                            ? Mathf.Clamp01(inv.GetTotalWeight() / CompanionTierData.MaxCarryWeight)
+                            : 0f;
+                        weightBar.SetValue(pct);
+                    }
+                }
 
-                var companionStamina = c.GetComponent<CompanionStamina>();
-                guiBar.SetValue(companionStamina.GetStaminaPercentage());
+                _bars[c] = new CompanionBars
+                {
+                    StaminaBar = staminaBar,
+                    WeightBar  = weightBar
+                };
 
-                _staminaBars[c] = guiBar;
+                CompanionsPlugin.Log.LogDebug(
+                    $"[HUD] Created companion bars — stamina={staminaBar != null} " +
+                    $"weight={weightBar != null} companion=\"{c.m_name}\"");
             }
         }
 
@@ -75,30 +118,49 @@ namespace Companions
             static void Postfix()
             {
                 List<Character> toRemove = null;
-                foreach (var kvp in _staminaBars)
+                foreach (var kvp in _bars)
                 {
-                    if (kvp.Key == null || kvp.Value == null)
+                    if (kvp.Key == null ||
+                        (kvp.Value.StaminaBar == null && kvp.Value.WeightBar == null))
                     {
                         if (toRemove == null) toRemove = new List<Character>();
                         toRemove.Add(kvp.Key);
                         continue;
                     }
 
-                    var stamina = kvp.Key.GetComponent<CompanionStamina>();
-                    if (stamina == null)
+                    var bars = kvp.Value;
+
+                    // Update stamina bar
+                    if (bars.StaminaBar != null)
                     {
-                        if (toRemove == null) toRemove = new List<Character>();
-                        toRemove.Add(kvp.Key);
-                        continue;
+                        var stamina = kvp.Key.GetComponent<CompanionStamina>();
+                        if (stamina != null)
+                            bars.StaminaBar.SetValue(stamina.GetStaminaPercentage());
                     }
 
-                    kvp.Value.SetValue(stamina.GetStaminaPercentage());
+                    // Update weight bar
+                    if (bars.WeightBar != null)
+                    {
+                        var humanoid = kvp.Key as Humanoid;
+                        if (humanoid != null)
+                        {
+                            var inv = humanoid.GetInventory();
+                            float pct = inv != null
+                                ? Mathf.Clamp01(inv.GetTotalWeight() / CompanionTierData.MaxCarryWeight)
+                                : 0f;
+                            bars.WeightBar.SetValue(pct);
+                        }
+                    }
                 }
 
                 if (toRemove != null)
                 {
                     for (int i = 0; i < toRemove.Count; i++)
-                        _staminaBars.Remove(toRemove[i]);
+                    {
+                        CompanionsPlugin.Log.LogDebug(
+                            $"[HUD] Removing stale companion bars — character destroyed or null");
+                        _bars.Remove(toRemove[i]);
+                    }
                 }
             }
         }

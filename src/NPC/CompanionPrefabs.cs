@@ -20,16 +20,20 @@ namespace Companions
                 _container.SetActive(false);
             }
 
-            CreatePrefab(zNetScene);
-            CompanionsPlugin.Log.LogInfo("[CompanionPrefabs] Registered companion prefab.");
+            CreateCompanionPrefab(zNetScene);
+            foreach (var variant in CompanionTierData.DvergerVariants)
+                CreateDvergerPrefab(zNetScene, variant);
+            CompanionsPlugin.Log.LogInfo("[CompanionPrefabs] Registered companion prefabs.");
         }
 
-        private static void CreatePrefab(ZNetScene zNetScene)
+        // ═══════════════════════════════════════════════════════════════════
+        //  Companion — Player clone with full appearance customization
+        // ═══════════════════════════════════════════════════════════════════
+
+        private static void CreateCompanionPrefab(ZNetScene zNetScene)
         {
             var def = CompanionTierData.Companion;
-
-            if (zNetScene.GetPrefab(def.PrefabName) != null)
-                return;
+            if (zNetScene.GetPrefab(def.PrefabName) != null) return;
 
             var playerPrefab = zNetScene.GetPrefab("Player");
             if (playerPrefab == null)
@@ -47,14 +51,167 @@ namespace Companions
             DestroyComponent<Talker>(go);
             DestroyComponent<Skills>(go);
 
-            // Humanoid (Character base — includes VisEquipment already on the prefab)
+            // Add fresh Humanoid (Player component was destroyed, taking Humanoid base with it)
+            var playerHumanoid = playerPrefab.GetComponent<Humanoid>();
             var humanoid = go.AddComponent<Humanoid>();
+            if (playerHumanoid != null)
+            {
+                humanoid.m_unarmedWeapon = playerHumanoid.m_unarmedWeapon;
+                humanoid.m_consumeItemEffects = playerHumanoid.m_consumeItemEffects;
+                int effectCount = humanoid.m_consumeItemEffects?.m_effectPrefabs?.Length ?? 0;
+                CompanionsPlugin.Log.LogInfo(
+                    $"[CompanionPrefabs]   Copied m_unarmedWeapon + m_consumeItemEffects ({effectCount} effects)");
+            }
             SetupHumanoid(humanoid, zNetScene, def);
 
-            // CompanionAI — custom BaseAI subclass (follows player, attacks enemies)
+            // Fix CharacterAnimEvent — destroying Player broke its m_character reference.
+            // It re-resolves in its own Awake via GetComponentInParent<Character>(), but
+            // we also set it here so the prefab reference is correct.
+            var animEvent = go.GetComponentInChildren<CharacterAnimEvent>();
+            if (animEvent != null)
+            {
+                var characterField = AccessTools.Field(typeof(CharacterAnimEvent), "m_character");
+                if (characterField != null)
+                    characterField.SetValue(animEvent, humanoid);
+            }
+
+            // CompanionAI — custom BaseAI subclass
             var ai = go.AddComponent<CompanionAI>();
             SetupCompanionAI(ai);
 
+            SetupSharedComponents(go, def, zNetScene);
+            RegisterPrefab(go, zNetScene);
+        }
+
+        // ═══════════════════════════════════════════════════════════════════
+        //  Dverger — vanilla Dvergr clone (variant determines source prefab)
+        // ═══════════════════════════════════════════════════════════════════
+
+        private static void CreateDvergerPrefab(ZNetScene zNetScene, CompanionTierDef def)
+        {
+            if (zNetScene.GetPrefab(def.PrefabName) != null) return;
+
+            var dvergerPrefab = zNetScene.GetPrefab(def.SourcePrefab);
+            if (dvergerPrefab == null)
+            {
+                CompanionsPlugin.Log.LogWarning(
+                    $"[CompanionPrefabs] Vanilla prefab \"{def.SourcePrefab}\" not found — " +
+                    $"{def.DisplayName} dverger variant will not be available.");
+                return;
+            }
+
+            var go = Object.Instantiate(dvergerPrefab, _container.transform, false);
+            go.name = def.PrefabName;
+
+            // Strip vanilla AI — we replace with CompanionAI
+            DestroyComponent<MonsterAI>(go);
+            // Strip NPC-specific components
+            DestroyComponent<CharacterDrop>(go);
+            DestroyComponent<NpcTalk>(go);
+
+            // Reconfigure existing Humanoid (DvergerMage already has one with the right model)
+            var humanoid = go.GetComponent<Humanoid>();
+            if (humanoid != null)
+            {
+                // Merge all gear sources into m_defaultItems before clearing random arrays.
+                // Some vanilla prefabs (e.g. DvergerMage) store gear in m_randomSets/m_randomWeapon
+                // instead of m_defaultItems. Without merging, those variants spawn with no gear.
+                var merged = new System.Collections.Generic.List<GameObject>();
+                var seen = new System.Collections.Generic.HashSet<string>();
+
+                // Start with existing m_defaultItems
+                if (humanoid.m_defaultItems != null)
+                {
+                    foreach (var item in humanoid.m_defaultItems)
+                    {
+                        if (item != null && seen.Add(item.name))
+                            merged.Add(item);
+                    }
+                }
+
+                // Absorb first items from random arrays (consistent gear, no randomization)
+                MergeFirstItem(merged, seen, humanoid.m_randomWeapon);
+                MergeFirstItem(merged, seen, humanoid.m_randomShield);
+                MergeFirstItem(merged, seen, humanoid.m_randomArmor);
+                if (humanoid.m_randomSets != null)
+                {
+                    foreach (var set in humanoid.m_randomSets)
+                    {
+                        if (set.m_items == null || set.m_items.Length == 0) continue;
+                        foreach (var item in set.m_items)
+                        {
+                            if (item != null && seen.Add(item.name))
+                                merged.Add(item);
+                        }
+                        break; // only take first set
+                    }
+                }
+
+                humanoid.m_defaultItems = merged.ToArray();
+
+                string defaultNames = "";
+                foreach (var di in humanoid.m_defaultItems)
+                    defaultNames += (di != null ? di.name : "null") + ", ";
+                CompanionsPlugin.Log.LogInfo(
+                    $"[CompanionPrefabs]   {def.PrefabName}: merged {humanoid.m_defaultItems.Length} m_defaultItems: [{defaultNames.TrimEnd(',', ' ')}]");
+
+                humanoid.m_randomWeapon  = System.Array.Empty<GameObject>();
+                humanoid.m_randomArmor   = System.Array.Empty<GameObject>();
+                humanoid.m_randomShield  = System.Array.Empty<GameObject>();
+                humanoid.m_randomSets    = System.Array.Empty<Humanoid.ItemSet>();
+
+                // Copy consume effects from Player for eating sounds
+                var playerPrefab = zNetScene.GetPrefab("Player");
+                var playerHumanoid = playerPrefab?.GetComponent<Humanoid>();
+                if (playerHumanoid != null)
+                {
+                    humanoid.m_consumeItemEffects = playerHumanoid.m_consumeItemEffects;
+                    CompanionsPlugin.Log.LogInfo(
+                        "[CompanionPrefabs]   Dverger: copied m_consumeItemEffects from Player");
+                }
+
+                SetupHumanoid(humanoid, zNetScene, def);
+            }
+            else
+            {
+                CompanionsPlugin.Log.LogError(
+                    $"[CompanionPrefabs] {def.SourcePrefab} prefab missing Humanoid component!");
+                Object.DestroyImmediate(go);
+                return;
+            }
+
+            // Log Animator info for debugging animation issues on Dverger variants
+            var dvergerAnimator = go.GetComponentInChildren<Animator>();
+            if (dvergerAnimator != null)
+            {
+                string ctrlName = dvergerAnimator.runtimeAnimatorController != null
+                    ? dvergerAnimator.runtimeAnimatorController.name : "NULL";
+                int paramCount = dvergerAnimator.parameterCount;
+                CompanionsPlugin.Log.LogInfo(
+                    $"[CompanionPrefabs]   {def.PrefabName}: Animator controller=\"{ctrlName}\" " +
+                    $"params={paramCount}");
+            }
+            else
+            {
+                CompanionsPlugin.Log.LogWarning(
+                    $"[CompanionPrefabs]   {def.PrefabName}: NO Animator found on prefab!");
+            }
+
+            // CompanionAI — custom BaseAI subclass
+            var ai = go.AddComponent<CompanionAI>();
+            SetupCompanionAI(ai);
+
+            SetupSharedComponents(go, def, zNetScene);
+            RegisterPrefab(go, zNetScene);
+        }
+
+        // ═══════════════════════════════════════════════════════════════════
+        //  Shared setup — components common to both Companion and Dverger
+        // ═══════════════════════════════════════════════════════════════════
+
+        private static void SetupSharedComponents(GameObject go, CompanionTierDef def,
+                                                   ZNetScene zNetScene)
+        {
             // ZNetView
             var nview = go.GetComponent<ZNetView>();
             nview.m_persistent       = true;
@@ -66,7 +223,7 @@ namespace Companions
             if (syncXform != null)
             {
                 syncXform.m_syncPosition       = true;
-                syncXform.m_syncRotation       = true;
+                syncXform.m_syncRotation        = true;
                 syncXform.m_syncScale          = false;
                 syncXform.m_syncBodyVelocity   = false;
                 syncXform.m_characterParentSync = false;
@@ -80,11 +237,11 @@ namespace Companions
 
             // CompanionSetup — reads appearance from ZDO and applies it
             go.AddComponent<CompanionSetup>();
-            CompanionsPlugin.Log.LogInfo("[CompanionPrefabs]   + CompanionSetup");
+            CompanionsPlugin.Log.LogInfo($"[CompanionPrefabs]   + CompanionSetup ({def.PrefabName})");
 
             // Container — for vanilla chest-style inventory interaction
             var container           = go.AddComponent<Container>();
-            container.m_name        = "Companion";
+            container.m_name        = def.DisplayName;
             container.m_width       = 5;
             container.m_height      = 6;
             container.m_privacy     = Container.PrivacySetting.Public;
@@ -103,11 +260,11 @@ namespace Companions
 
             // Resource harvesting AI (active in Gather modes 1-3)
             go.AddComponent<HarvestController>();
-            CompanionsPlugin.Log.LogInfo("[CompanionPrefabs]   + HarvestController");
+            CompanionsPlugin.Log.LogInfo($"[CompanionPrefabs]   + HarvestController ({def.PrefabName})");
 
             // Advanced combat AI (active in Follow/Stay modes)
             go.AddComponent<CombatController>();
-            CompanionsPlugin.Log.LogInfo("[CompanionPrefabs]   + CombatController");
+            CompanionsPlugin.Log.LogInfo($"[CompanionPrefabs]   + CombatController ({def.PrefabName})");
 
             // Overhead speech text (context-aware lines like Haldor)
             go.AddComponent<CompanionTalk>();
@@ -120,16 +277,22 @@ namespace Companions
 
             // Auto-repair at nearby workbenches
             go.AddComponent<RepairController>();
+        }
 
-            // Register with ZNetScene
+        private static void RegisterPrefab(GameObject go, ZNetScene zNetScene)
+        {
             int hash = StringExtensionMethods.GetStableHashCode(go.name);
             zNetScene.m_prefabs.Add(go);
             var namedPrefabs = _namedPrefabsField?.GetValue(zNetScene) as Dictionary<int, GameObject>;
             if (namedPrefabs != null)
                 namedPrefabs[hash] = go;
 
-            CompanionsPlugin.Log.LogInfo($"[CompanionPrefabs] Registered {def.PrefabName}");
+            CompanionsPlugin.Log.LogInfo($"[CompanionPrefabs] Registered {go.name}");
         }
+
+        // ═══════════════════════════════════════════════════════════════════
+        //  Configuration helpers
+        // ═══════════════════════════════════════════════════════════════════
 
         private static void SetupHumanoid(Humanoid h, ZNetScene scene, CompanionTierDef def)
         {
@@ -228,6 +391,16 @@ namespace Companions
                     CompanionsPlugin.Log.LogWarning($"[CompanionPrefabs] Effect prefab not found: {name}");
             }
             return list.ToArray();
+        }
+
+        private static void MergeFirstItem(
+            System.Collections.Generic.List<GameObject> merged,
+            System.Collections.Generic.HashSet<string> seen,
+            GameObject[] items)
+        {
+            if (items == null || items.Length == 0) return;
+            if (items[0] != null && seen.Add(items[0].name))
+                merged.Add(items[0]);
         }
 
         private static void DestroyComponent<T>(GameObject go) where T : Component

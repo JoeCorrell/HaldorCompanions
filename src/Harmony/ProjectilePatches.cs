@@ -56,7 +56,7 @@ namespace Companions
             if (Time.time - _lastLogTime > 1f)
             {
                 _lastLogTime = Time.time;
-                CompanionsPlugin.Log.LogInfo(
+                CompanionsPlugin.Log.LogDebug(
                     $"[Projectile] Arrow redirected — target=\"{target.m_name}\" " +
                     $"dist={dist:F1} speed={speed:F0} travelTime={travelTime:F2}s " +
                     $"gravDrop={gravityDrop:F2} leadMag={targetVel.magnitude * travelTime:F1} " +

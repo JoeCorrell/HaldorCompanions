@@ -27,6 +27,7 @@ namespace Companions
         internal static readonly int StayHomeHash  = StringExtensionMethods.GetStableHashCode("HC_StayHome");
         internal static readonly int HomePosHash   = StringExtensionMethods.GetStableHashCode("HC_HomePos");
         private  static readonly int StarterGearHash = StringExtensionMethods.GetStableHashCode("HC_StarterGear");
+        // DvergerPrefabHash removed — use CompanionTierData.IsDvergerVariant() instead
         internal const int ModeFollow      = 0;
         internal const int ModeGatherWood  = 1;
         internal const int ModeGatherStone = 2;
@@ -107,12 +108,12 @@ namespace Companions
                     _autoEquipPending = false;
                     if (_humanoid != null && _nview != null && _nview.IsOwner() && !SuppressAutoEquip)
                     {
-                        CompanionsPlugin.Log.LogInfo("[Setup] Deferred auto-equip firing now");
+                        CompanionsPlugin.Log.LogDebug("[Setup] Deferred auto-equip firing now");
                         AutoEquipBest();
                     }
                     else if (SuppressAutoEquip)
                     {
-                        CompanionsPlugin.Log.LogInfo("[Setup] Deferred auto-equip skipped — SuppressAutoEquip=true");
+                        CompanionsPlugin.Log.LogDebug("[Setup] Deferred auto-equip skipped — SuppressAutoEquip=true");
                     }
                 }
             }
@@ -138,7 +139,7 @@ namespace Companions
                 if (string.IsNullOrEmpty(owner))
                 {
                     zdo.Set(OwnerHash, localId);
-                    CompanionsPlugin.Log.LogInfo(
+                    CompanionsPlugin.Log.LogDebug(
                         $"[Setup] Claimed orphan companion — set owner to {localId}");
                     owner = localId;
                 }
@@ -182,7 +183,7 @@ namespace Companions
                     (mode >= ModeGatherWood && mode <= ModeGatherOre))
                 {
                     _ai.SetFollowTarget(Player.m_localPlayer.gameObject);
-                    CompanionsPlugin.Log.LogInfo(
+                    CompanionsPlugin.Log.LogDebug(
                         $"[Setup] Follow target was null — restored to player " +
                         $"(mode={mode} harvestActive={harvest?.IsActive ?? false})");
                 }
@@ -238,18 +239,25 @@ namespace Companions
         // ──────────────────────────────────────────────────────────────────────
         internal void ApplyAppearance(CompanionAppearance a)
         {
-            if (_visEquip == null) return;
+            // Companion (Player clone): apply full appearance customization
+            if (CanWearArmor() && _visEquip != null)
+            {
+                _visEquip.SetModel(a.ModelIndex);
+                _visEquip.SetHairItem(string.IsNullOrEmpty(a.HairItem) ? "Hair1" : a.HairItem);
+                _visEquip.SetBeardItem(a.ModelIndex == 0 ? (a.BeardItem ?? "") : "");
+                _visEquip.SetSkinColor(a.SkinColor);
+                _visEquip.SetHairColor(a.HairColor);
+            }
 
-            _visEquip.SetModel(a.ModelIndex);
-            _visEquip.SetHairItem(string.IsNullOrEmpty(a.HairItem) ? "Hair1" : a.HairItem);
-            _visEquip.SetBeardItem(a.ModelIndex == 0 ? (a.BeardItem ?? "") : "");
-            _visEquip.SetSkinColor(a.SkinColor);
-            _visEquip.SetHairColor(a.HairColor);
-            _updateVisuals?.Invoke(_visEquip, null);
+            // Refresh visual equipment state (needed for both types)
+            if (_visEquip != null)
+                _updateVisuals?.Invoke(_visEquip, null);
 
-            var animator = GetComponentInChildren<Animator>(true);
-            if (animator != null) animator.Update(0f);
+            // NOTE: Do NOT call animator.Update(0f) here — it triggers
+            // CharacterAnimEvent.OnAnimatorMove before CharacterAnimEvent.Awake,
+            // causing NullRef. The animator updates naturally on the first frame.
 
+            // Ensure all children are on the character layer (rendering + camera culling)
             int charLayer = LayerMask.NameToLayer("character");
             if (charLayer < 0) charLayer = 9;
             foreach (var t in GetComponentsInChildren<Transform>(true))
@@ -272,14 +280,14 @@ namespace Companions
             if (string.IsNullOrEmpty(owner))
             {
                 zdo.Set(OwnerHash, localId);
-                CompanionsPlugin.Log.LogInfo(
+                CompanionsPlugin.Log.LogDebug(
                     $"[Setup] RestoreFollow — claimed orphan, set owner to {localId}");
                 owner = localId;
             }
 
             if (owner != localId)
             {
-                CompanionsPlugin.Log.LogInfo(
+                CompanionsPlugin.Log.LogDebug(
                     $"[Setup] RestoreFollow — owner mismatch: zdo=\"{owner}\" local=\"{localId}\"");
                 return;
             }
@@ -321,7 +329,7 @@ namespace Companions
             if (_ai == null) return;
 
             bool stayHome = GetStayHome() && HasHomePosition();
-            CompanionsPlugin.Log.LogInfo($"[Setup] ApplyFollowMode — mode={mode} stayHome={stayHome}");
+            CompanionsPlugin.Log.LogDebug($"[Setup] ApplyFollowMode — mode={mode} stayHome={stayHome}");
 
             switch (mode)
             {
@@ -330,12 +338,12 @@ namespace Companions
                     {
                         _ai.SetFollowTarget(null);
                         _ai.SetPatrolPointAt(GetHomePosition());
-                        CompanionsPlugin.Log.LogInfo($"[Setup]   → StayHome patrol at {GetHomePosition():F1}");
+                        CompanionsPlugin.Log.LogDebug($"[Setup]   → StayHome patrol at {GetHomePosition():F1}");
                     }
                     else
                     {
                         _ai.SetFollowTarget(Player.m_localPlayer.gameObject);
-                        CompanionsPlugin.Log.LogInfo($"[Setup]   → Follow player (mode={mode})");
+                        CompanionsPlugin.Log.LogDebug($"[Setup]   → Follow player (mode={mode})");
                     }
                     break;
                 case ModeGatherWood:
@@ -346,7 +354,7 @@ namespace Companions
                     var harvestCheck = GetComponent<HarvestController>();
                     if (harvestCheck != null && harvestCheck.IsActive)
                     {
-                        CompanionsPlugin.Log.LogInfo(
+                        CompanionsPlugin.Log.LogDebug(
                             $"[Setup]   → Gather mode={mode}, harvest active — skipping follow override");
                         break;
                     }
@@ -354,12 +362,12 @@ namespace Companions
                     {
                         _ai.SetFollowTarget(null);
                         _ai.SetPatrolPointAt(GetHomePosition());
-                        CompanionsPlugin.Log.LogInfo($"[Setup]   → Gather+StayHome patrol at {GetHomePosition():F1}");
+                        CompanionsPlugin.Log.LogDebug($"[Setup]   → Gather+StayHome patrol at {GetHomePosition():F1}");
                     }
                     else
                     {
                         _ai.SetFollowTarget(Player.m_localPlayer.gameObject);
-                        CompanionsPlugin.Log.LogInfo($"[Setup]   → Follow player (mode={mode})");
+                        CompanionsPlugin.Log.LogDebug($"[Setup]   → Follow player (mode={mode})");
                     }
                     break;
                 case ModeStay:
@@ -368,11 +376,11 @@ namespace Companions
                         _ai.SetPatrolPointAt(GetHomePosition());
                     else
                         _ai.SetPatrolPoint();
-                    CompanionsPlugin.Log.LogInfo($"[Setup]   → Stay/patrol at {(stayHome ? GetHomePosition() : transform.position):F1}");
+                    CompanionsPlugin.Log.LogDebug($"[Setup]   → Stay/patrol at {(stayHome ? GetHomePosition() : transform.position):F1}");
                     break;
                 default:
                     _ai.SetFollowTarget(Player.m_localPlayer.gameObject);
-                    CompanionsPlugin.Log.LogInfo($"[Setup]   → Follow player (default fallback, mode={mode})");
+                    CompanionsPlugin.Log.LogDebug($"[Setup]   → Follow player (default fallback, mode={mode})");
                     break;
             }
         }
@@ -408,6 +416,9 @@ namespace Companions
 
             zdo.Set(StarterGearHash, true);
 
+            // Dverger companions spawn with no gear
+            if (CompanionTierData.IsDvergerVariant(zdo.GetPrefab())) return;
+
             if (_humanoid == null) return;
             var inv = _humanoid.GetInventory();
             if (inv == null) return;
@@ -420,7 +431,7 @@ namespace Companions
             {
                 var added = inv.AddItem(itemName, 1, 1, 0, pid, pname);
                 if (added != null)
-                    CompanionsPlugin.Log.LogInfo($"[Setup] Added starter item: {itemName}");
+                    CompanionsPlugin.Log.LogDebug($"[Setup] Added starter item: {itemName}");
                 else
                     CompanionsPlugin.Log.LogWarning($"[Setup] Failed to add starter item: {itemName}");
             }
@@ -459,7 +470,7 @@ namespace Companions
             {
                 if (_equipAnimActive)
                 {
-                    if (_zanim != null) _zanim.SetBool("equipping", false);
+                    if (_zanim != null && CanWearArmor()) _zanim.SetBool("equipping", false);
                     _equipAnimActive = false;
                 }
                 return;
@@ -469,7 +480,7 @@ namespace Companions
             var inv = _humanoid?.GetInventory();
             while (_equipQueue.Count > 0 && (inv == null || !inv.ContainsItem(_equipQueue[0])))
             {
-                CompanionsPlugin.Log.LogInfo(
+                CompanionsPlugin.Log.LogDebug(
                     $"[Setup] Equip queue: skipping \"{_equipQueue[0]?.m_shared?.m_name ?? "?"}\" — no longer in inventory");
                 _equipQueue.RemoveAt(0);
             }
@@ -479,10 +490,10 @@ namespace Companions
             if (!_equipAnimActive)
             {
                 _equipAnimActive = true;
-                if (_zanim != null) _zanim.SetBool("equipping", true);
+                if (_zanim != null && CanWearArmor()) _zanim.SetBool("equipping", true);
                 float dur = _equipQueue[0].m_shared.m_equipDuration;
                 _equipTimer = dur > 0f ? dur : 0.1f;
-                CompanionsPlugin.Log.LogInfo(
+                CompanionsPlugin.Log.LogDebug(
                     $"[Setup] Equip queue: started \"{_equipQueue[0].m_shared.m_name}\" " +
                     $"duration={_equipTimer:F1}s ({_equipQueue.Count} items queued)");
                 return;
@@ -503,7 +514,7 @@ namespace Companions
             }
             finally { _equipping = false; }
 
-            CompanionsPlugin.Log.LogInfo(
+            CompanionsPlugin.Log.LogDebug(
                 $"[Setup] Equip queue: equipped \"{item.m_shared.m_name}\" ({_equipQueue.Count} remaining)");
 
             // Set timer for next item or stop
@@ -511,12 +522,12 @@ namespace Companions
             {
                 float dur = _equipQueue[0].m_shared.m_equipDuration;
                 _equipTimer = dur > 0f ? dur : 0.1f;
-                CompanionsPlugin.Log.LogInfo(
+                CompanionsPlugin.Log.LogDebug(
                     $"[Setup] Equip queue: next \"{_equipQueue[0].m_shared.m_name}\" duration={_equipTimer:F1}s");
             }
             else
             {
-                if (_zanim != null) _zanim.SetBool("equipping", false);
+                if (_zanim != null && CanWearArmor()) _zanim.SetBool("equipping", false);
                 _equipAnimActive = false;
             }
         }
@@ -526,13 +537,13 @@ namespace Companions
         {
             if (_equipQueue.Count > 0)
             {
-                CompanionsPlugin.Log.LogInfo(
+                CompanionsPlugin.Log.LogDebug(
                     $"[Setup] Equip queue cleared ({_equipQueue.Count} items dropped)");
                 _equipQueue.Clear();
             }
             if (_equipAnimActive)
             {
-                if (_zanim != null) _zanim.SetBool("equipping", false);
+                if (_zanim != null && CanWearArmor()) _zanim.SetBool("equipping", false);
                 _equipAnimActive = false;
             }
             _equipTimer = 0f;
@@ -554,12 +565,12 @@ namespace Companions
                     if (_autoEquipCooldown > 0f)
                     {
                         _autoEquipPending = true;
-                        CompanionsPlugin.Log.LogInfo(
+                        CompanionsPlugin.Log.LogDebug(
                             $"[Setup] OnInventoryChanged — deferred (cooldown={_autoEquipCooldown:F2}s)");
                     }
                     else
                     {
-                        CompanionsPlugin.Log.LogInfo("[Setup] OnInventoryChanged — auto-equip triggered");
+                        CompanionsPlugin.Log.LogDebug("[Setup] OnInventoryChanged — auto-equip triggered");
                         AutoEquipBest();
                         _autoEquipCooldown = AutoEquipMinInterval;
                     }
@@ -571,7 +582,7 @@ namespace Companions
         internal void SyncEquipmentToInventory()
         {
             if (_humanoid == null || _nview == null || !_nview.IsOwner()) return;
-            CompanionsPlugin.Log.LogInfo(
+            CompanionsPlugin.Log.LogDebug(
                 $"[Setup] SyncEquipmentToInventory — SuppressAutoEquip={SuppressAutoEquip}");
             UnequipMissingEquippedItems();
             if (!SuppressAutoEquip) AutoEquipBest();
@@ -672,7 +683,7 @@ namespace Companions
             }
 
             // Log what AutoEquipBest selected
-            CompanionsPlugin.Log.LogInfo(
+            CompanionsPlugin.Log.LogDebug(
                 $"[Setup] AutoEquipBest — 1H=\"{bestRight?.m_shared?.m_name ?? "none"}\"({bestRightDmg:F0}) " +
                 $"2H=\"{best2H?.m_shared?.m_name ?? "none"}\"({best2HDmg:F0}) " +
                 $"shield=\"{bestShield?.m_shared?.m_name ?? "none"}\"(block={bestShieldBlock:F0}) " +
@@ -689,7 +700,7 @@ namespace Companions
             var desiredRight = use2H ? best2H : bestRight;
             // Tools (pickaxes) are never auto-equipped as weapons — HarvestController manages them
 
-            CompanionsPlugin.Log.LogInfo(
+            CompanionsPlugin.Log.LogDebug(
                 $"[Setup] Weapon decision: use2H={use2H} " +
                 $"desired=\"{desiredRight?.m_shared?.m_name ?? "none"}\" " +
                 $"current=\"{curRight?.m_shared?.m_name ?? "none"}\" " +
@@ -699,7 +710,7 @@ namespace Companions
             {
                 if (curRight != null)
                 {
-                    CompanionsPlugin.Log.LogInfo(
+                    CompanionsPlugin.Log.LogDebug(
                         $"[Setup] Unequip right: \"{curRight.m_shared?.m_name ?? "?"}\"");
                     _humanoid.UnequipItem(curRight, false);
                 }
@@ -707,14 +718,14 @@ namespace Companions
                 bool desiredIs2H = IsTwoHandedWeapon(desiredRight);
                 if (desiredIs2H && curLeft != null)
                 {
-                    CompanionsPlugin.Log.LogInfo(
+                    CompanionsPlugin.Log.LogDebug(
                         $"[Setup] Unequip left for 2H: \"{curLeft.m_shared?.m_name ?? "?"}\"");
                     _humanoid.UnequipItem(curLeft, false);
                     curLeft = null;
                 }
 
                 QueueEquip(desiredRight);
-                CompanionsPlugin.Log.LogInfo(
+                CompanionsPlugin.Log.LogDebug(
                     $"[Setup] Queued right: \"{desiredRight.m_shared?.m_name ?? "?"}\"");
                 curRight = desiredRight;
             }
@@ -728,28 +739,32 @@ namespace Companions
                 {
                     if (curLeft != null)
                     {
-                        CompanionsPlugin.Log.LogInfo(
+                        CompanionsPlugin.Log.LogDebug(
                             $"[Setup] Unequip left for shield swap: \"{curLeft.m_shared?.m_name ?? "?"}\"");
                         _humanoid.UnequipItem(curLeft, false);
                     }
                     QueueEquip(bestShield);
-                    CompanionsPlugin.Log.LogInfo(
+                    CompanionsPlugin.Log.LogDebug(
                         $"[Setup] Queued shield: \"{bestShield.m_shared?.m_name ?? "?"}\"");
                 }
             }
             else if (rightIs2H && curLeft != null)
             {
-                CompanionsPlugin.Log.LogInfo(
+                CompanionsPlugin.Log.LogDebug(
                     $"[Setup] Unequip left (2H in right): \"{curLeft.m_shared?.m_name ?? "?"}\"");
                 _humanoid.UnequipItem(curLeft, false);
             }
 
             // Armor/accessory slots: always converge to best available piece.
-            EquipBestArmorSlot(_chestItemField, bestChest);
-            EquipBestArmorSlot(_legItemField, bestLegs);
-            EquipBestArmorSlot(_helmetItemField, bestHelmet);
-            EquipBestArmorSlot(_shoulderItemField, bestShoulder);
-            EquipBestArmorSlot(_utilityItemField, bestUtility);
+            // Dverger companions cannot wear armor — skip armor slots entirely.
+            if (CanWearArmor())
+            {
+                EquipBestArmorSlot(_chestItemField, bestChest);
+                EquipBestArmorSlot(_legItemField, bestLegs);
+                EquipBestArmorSlot(_helmetItemField, bestHelmet);
+                EquipBestArmorSlot(_shoulderItemField, bestShoulder);
+                EquipBestArmorSlot(_utilityItemField, bestUtility);
+            }
         }
 
         internal ItemDrop.ItemData GetEquipSlot(FieldInfo field)
@@ -766,14 +781,14 @@ namespace Companions
 
             if (equipped != null)
             {
-                CompanionsPlugin.Log.LogInfo(
+                CompanionsPlugin.Log.LogDebug(
                     $"[Setup] Armor swap {slotField.Name}: " +
                     $"\"{equipped.m_shared?.m_name ?? "?"}\" → \"{bestItem.m_shared?.m_name ?? "?"}\"");
                 _humanoid.UnequipItem(equipped, false);
             }
             else
             {
-                CompanionsPlugin.Log.LogInfo(
+                CompanionsPlugin.Log.LogDebug(
                     $"[Setup] Armor queued {slotField.Name}: \"{bestItem.m_shared?.m_name ?? "?"}\"");
             }
 
@@ -848,6 +863,16 @@ namespace Companions
         internal bool HasHomePosition()
         {
             return GetHomePosition() != Vector3.zero;
+        }
+
+        /// <summary>
+        /// Returns false for Dverger companions — they cannot equip armor.
+        /// Detected via the ZDO prefab hash.
+        /// </summary>
+        internal bool CanWearArmor()
+        {
+            if (_nview == null || _nview.GetZDO() == null) return true;
+            return !CompanionTierData.IsDvergerVariant(_nview.GetZDO().GetPrefab());
         }
 
         /// <summary>

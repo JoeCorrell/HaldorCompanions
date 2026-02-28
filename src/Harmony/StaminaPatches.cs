@@ -21,7 +21,7 @@ namespace Companions
 
                 float before = cs.Stamina;
                 cs.Drain(stamina);
-                CompanionsPlugin.Log.LogInfo(
+                CompanionsPlugin.Log.LogDebug(
                     $"[Stamina] UseStamina — drained {stamina:F1} " +
                     $"({before:F1} → {cs.Stamina:F1} / {cs.MaxStamina:F1}) " +
                     $"companion=\"{__instance.m_name}\"");
@@ -40,14 +40,13 @@ namespace Companions
                 __result = cs.Stamina >= amount;
 
                 // Throttled logging to avoid spam (HaveStamina is called very frequently)
-                if (!__result || UnityEngine.Time.time - _lastLogTime > LogInterval)
+                if (!__result && UnityEngine.Time.time - _lastLogTime > LogInterval)
                 {
                     _lastLogTime = UnityEngine.Time.time;
-                    if (!__result)
-                        CompanionsPlugin.Log.LogWarning(
-                            $"[Stamina] HaveStamina FAILED — need {amount:F1} " +
-                            $"have {cs.Stamina:F1} / {cs.MaxStamina:F1} " +
-                            $"companion=\"{__instance.m_name}\"");
+                    CompanionsPlugin.Log.LogDebug(
+                        $"[Stamina] HaveStamina FAILED — need {amount:F1} " +
+                        $"have {cs.Stamina:F1} / {cs.MaxStamina:F1} " +
+                        $"companion=\"{__instance.m_name}\"");
                 }
                 return false;
             }

@@ -239,8 +239,8 @@ namespace Companions
                 _ai.StopMoving();
                 _ai.LookAtPoint( _targetStation.transform.position);
 
-                // Start crafting animation
-                if (_zanim != null)
+                // Start crafting animation (Player-model only — DvergerMage lacks this param)
+                if (_zanim != null && _setup != null && _setup.CanWearArmor())
                     _zanim.SetInt("crafting", _targetStation.m_useAnimation);
                 _targetStation.PokeInUse();
 
@@ -376,7 +376,7 @@ namespace Companions
 
         private void FinishRepair()
         {
-            if (_zanim != null) _zanim.SetInt("crafting", 0);
+            if (_zanim != null && _setup != null && _setup.CanWearArmor()) _zanim.SetInt("crafting", 0);
             Log($"All items repaired at \"{_targetStation?.m_name ?? "?"}\"");
             if (_talk != null) _talk.Say("All fixed up!");
             _targetStation = null;
@@ -397,7 +397,7 @@ namespace Companions
 
         private void Abort(string reason)
         {
-            if (_zanim != null) _zanim.SetInt("crafting", 0);
+            if (_zanim != null && _setup != null && _setup.CanWearArmor()) _zanim.SetInt("crafting", 0);
             Log($"Aborted — {reason} (phase was {_phase})");
             _targetStation = null;
             _repairQueue.Clear();
@@ -411,8 +411,8 @@ namespace Companions
             if (_combat != null && _combat.Phase != CombatController.CombatPhase.Idle)
                 return true;
 
-            // Skip during active harvest
-            if (_harvest != null && _harvest.IsInGatherMode)
+            // Skip during active harvest (moving/attacking/collecting, not idle scanning)
+            if (_harvest != null && _harvest.IsActive)
                 return true;
 
             // Skip while companion UI is open for this companion
@@ -475,7 +475,7 @@ namespace Companions
         private void Log(string msg)
         {
             string name = _character?.m_name ?? "?";
-            CompanionsPlugin.Log.LogInfo($"[Repair|{name}] {msg}");
+            CompanionsPlugin.Log.LogDebug($"[Repair|{name}] {msg}");
         }
     }
 }

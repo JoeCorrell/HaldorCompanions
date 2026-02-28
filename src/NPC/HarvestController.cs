@@ -138,7 +138,7 @@ namespace Companions
             if (_character != null && !_tag.Contains("|"))
             {
                 string name = _character.m_name;
-                if (!string.IsNullOrEmpty(name) && name != "HC_Companion")
+                if (!string.IsNullOrEmpty(name) && name != "HC_Companion" && name != "HC_Dverger")
                     _tag = $"[Harvest#{GetInstanceID() & 0xFFFF}|{name}]";
             }
 
@@ -1517,7 +1517,7 @@ namespace Companions
         // ── Logging helpers with per-companion tag ─────────────────────────
 
         private void Log(string msg) =>
-            CompanionsPlugin.Log.LogInfo($"{_tag} {msg}");
+            CompanionsPlugin.Log.LogDebug($"{_tag} {msg}");
 
         private void LogWarn(string msg) =>
             CompanionsPlugin.Log.LogWarning($"{_tag} {msg}");

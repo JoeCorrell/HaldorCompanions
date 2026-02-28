@@ -32,8 +32,11 @@ namespace Companions
         /// Deducts from bank balance and spawns a companion near the player.
         /// Returns true on success.
         /// </summary>
-        public static bool Purchase(CompanionAppearance appearance)
+        public static bool Purchase(CompanionAppearance appearance,
+                                     CompanionTierDef def = null)
         {
+            if (def == null) def = CompanionTierData.Companion;
+
             var player = Player.m_localPlayer;
             if (player == null) return false;
 
@@ -48,15 +51,21 @@ namespace Companions
                 return false;
             }
 
-            if (!SpawnCompanion(appearance)) return false;
-
-            // Deduct from bank and save
+            // Deduct first to prevent double-purchase race
             balance -= price;
             player.m_customData[BankDataKey] = balance.ToString();
 
+            if (!SpawnCompanion(appearance, def))
+            {
+                // Spawn failed — refund
+                balance += price;
+                player.m_customData[BankDataKey] = balance.ToString();
+                return false;
+            }
+
             MessageHud.instance?.ShowMessage(
                 MessageHud.MessageType.Center,
-                "Your new companion has arrived!");
+                $"Your new {def.DisplayName.ToLower()} has arrived!");
 
             return true;
         }
@@ -73,9 +82,9 @@ namespace Companions
 
         // ── Internal helpers ──────────────────────────────────────────────────
 
-        private static bool SpawnCompanion(CompanionAppearance appearance)
+        private static bool SpawnCompanion(CompanionAppearance appearance,
+                                             CompanionTierDef def)
         {
-            var def    = CompanionTierData.Companion;
             var prefab = ZNetScene.instance?.GetPrefab(def.PrefabName);
             if (prefab == null)
             {

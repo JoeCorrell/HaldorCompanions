@@ -155,7 +155,7 @@ namespace Companions
             }
 
             string source = isGamepad ? "gamepad" : "keyboard";
-            CompanionsPlugin.Log.LogInfo($"[Direct] Command triggered via {source}");
+            CompanionsPlugin.Log.LogDebug($"[Direct] Command triggered via {source}");
 
             // Raycast from camera — broad layer mask to hit all interactable objects
             Camera mainCam = Utils.GetMainCamera();
@@ -172,7 +172,7 @@ namespace Companions
             if (hits.Length > 1)
                 System.Array.Sort(hits, (a, b) => a.distance.CompareTo(b.distance));
 
-            CompanionsPlugin.Log.LogInfo(
+            CompanionsPlugin.Log.LogDebug(
                 $"[Direct] Raycast hits={hits.Length}, pos={mainCam.transform.position:F1}, dir={mainCam.transform.forward:F2}");
 
             // Gather owned companions
@@ -307,7 +307,7 @@ namespace Companions
             SayRandom(firstTalk, ComeHereLines);
 
             string inputSource = isGamepad ? "gamepad hold" : "keyboard hold";
-            CompanionsPlugin.Log.LogInfo($"[Direct] Come-to-me triggered via {inputSource}");
+            CompanionsPlugin.Log.LogDebug($"[Direct] Come-to-me triggered via {inputSource}");
         }
 
         // ═════════════════════════════════════════════════════════════════════
@@ -335,13 +335,13 @@ namespace Companions
             }
 
             SayRandom(firstTalk, AttackLines);
-            CompanionsPlugin.Log.LogInfo(
+            CompanionsPlugin.Log.LogDebug(
                 $"[Direct] {directed} companion(s) → attack \"{enemy.m_name}\"");
         }
 
         private static void DirectCart(CompanionSetup[] setups, string localId, Vagon vagon)
         {
-            CompanionsPlugin.Log.LogInfo(
+            CompanionsPlugin.Log.LogDebug(
                 $"[Direct] DirectCart called — vagon=\"{vagon.name}\" " +
                 $"attachPoint={vagon.m_attachPoint.position:F2} " +
                 $"attachOffset={vagon.m_attachOffset:F2} " +
@@ -368,7 +368,7 @@ namespace Companions
                             ai.SetFollowTarget(Player.m_localPlayer.gameObject);
 
                         SayRandom(setup.GetComponent<CompanionTalk>(), CartReleasedLines);
-                        CompanionsPlugin.Log.LogInfo("[Direct] Companion → detach from cart");
+                        CompanionsPlugin.Log.LogDebug("[Direct] Companion → detach from cart");
                     }
                     return;
                 }
@@ -427,19 +427,19 @@ namespace Companions
                 closestAI.SetFollowTarget(vagon.gameObject);
                 vagon.Interact(closestHumanoid, false, false);
 
-                CompanionsPlugin.Log.LogInfo(
+                CompanionsPlugin.Log.LogDebug(
                     $"[Direct] Cart close snap — pos={closest.transform.position:F2}");
             }
             else
             {
                 // Navigate to cart — companion walks there first
                 closestAI.SetPendingCart(vagon, closestHumanoid);
-                CompanionsPlugin.Log.LogInfo(
+                CompanionsPlugin.Log.LogDebug(
                     $"[Direct] Cart navigation started — dist={distToAttach:F1}m");
             }
 
             SayRandom(closest.GetComponent<CompanionTalk>(), CartPullLines);
-            CompanionsPlugin.Log.LogInfo(
+            CompanionsPlugin.Log.LogDebug(
                 $"[Direct] Companion → cart attach (dist={closestDist:F1}m)");
         }
 
@@ -462,7 +462,7 @@ namespace Companions
             }
 
             SayRandom(firstTalk, DoorLines);
-            CompanionsPlugin.Log.LogInfo(
+            CompanionsPlugin.Log.LogDebug(
                 $"[Direct] {directed} companion(s) → open door \"{door.m_name}\"");
         }
 
@@ -487,13 +487,13 @@ namespace Companions
             }
 
             SayRandom(firstTalk, SitLines);
-            CompanionsPlugin.Log.LogInfo(
+            CompanionsPlugin.Log.LogDebug(
                 $"[Direct] {directed} companion(s) → sit near fire");
         }
 
         private static void DirectSleep(CompanionSetup[] setups, string localId, Bed bed)
         {
-            CompanionsPlugin.Log.LogInfo(
+            CompanionsPlugin.Log.LogDebug(
                 $"[Direct] DirectSleep called — bed=\"{bed.name}\" " +
                 $"pos={bed.transform.position:F2} " +
                 $"spawnPoint={bed.m_spawnPoint?.position.ToString("F2") ?? "null"}");
@@ -528,7 +528,7 @@ namespace Companions
                 SayRandom(firstTalk, SleepLines);
             else
                 SayRandom(firstTalk, CancelLines);
-            CompanionsPlugin.Log.LogInfo(
+            CompanionsPlugin.Log.LogDebug(
                 $"[Direct] Sleep command — started={started}, wokeUp={wokeUp}");
         }
 
@@ -578,13 +578,13 @@ namespace Companions
             if (dispatched > 0)
             {
                 SayRandom(firstTalk, DepositLines);
-                CompanionsPlugin.Log.LogInfo(
+                CompanionsPlugin.Log.LogDebug(
                     $"[Direct] Dispatched {dispatched} companion(s) to deposit in \"{chest.m_name}\"");
             }
             else
             {
                 SayRandom(firstTalk, DepositEmptyLines);
-                CompanionsPlugin.Log.LogInfo("[Direct] No companions had items to deposit");
+                CompanionsPlugin.Log.LogDebug("[Direct] No companions had items to deposit");
             }
         }
 
@@ -594,7 +594,7 @@ namespace Companions
 
         private static void DirectRepair(CompanionSetup[] setups, string localId, CraftingStation station)
         {
-            CompanionsPlugin.Log.LogInfo(
+            CompanionsPlugin.Log.LogDebug(
                 $"[Direct] DirectRepair called — station=\"{station.m_name}\" " +
                 $"level={station.GetLevel()} pos={station.transform.position:F1}");
 
@@ -620,20 +620,20 @@ namespace Companions
             if (directed > 0)
             {
                 SayRandom(firstTalk, RepairLines);
-                CompanionsPlugin.Log.LogInfo(
+                CompanionsPlugin.Log.LogDebug(
                     $"[Direct] {directed} companion(s) → repair at \"{station.m_name}\"");
             }
             else
             {
                 SayRandom(firstTalk, RepairNothingLines);
-                CompanionsPlugin.Log.LogInfo(
+                CompanionsPlugin.Log.LogDebug(
                     $"[Direct] No companions can repair at \"{station.m_name}\"");
             }
         }
 
         private static void DirectBoard(CompanionSetup[] setups, string localId, Ship ship)
         {
-            CompanionsPlugin.Log.LogInfo(
+            CompanionsPlugin.Log.LogDebug(
                 $"[Direct] DirectBoard called — ship=\"{ship.name}\" " +
                 $"pos={ship.transform.position:F2} up={ship.transform.up:F2}");
 
@@ -667,7 +667,7 @@ namespace Companions
                 ai.FreezeTimer = 1f;
 
                 var character = setup.GetComponent<Character>();
-                CompanionsPlugin.Log.LogInfo(
+                CompanionsPlugin.Log.LogDebug(
                     $"[Direct] Board: \"{character?.m_name ?? "?"}\" " +
                     $"teleported {oldPos:F1} → {deckPos:F1}");
 
@@ -676,7 +676,7 @@ namespace Companions
             }
 
             SayRandom(firstTalk, BoardLines);
-            CompanionsPlugin.Log.LogInfo($"[Direct] {boarded} companion(s) → board ship");
+            CompanionsPlugin.Log.LogDebug($"[Direct] {boarded} companion(s) → board ship");
         }
 
         private static void DirectGatherMode(CompanionSetup[] setups, string localId, GameObject target)
@@ -684,14 +684,14 @@ namespace Companions
             int harvestMode = HarvestController.DetermineHarvestModeStatic(target);
             if (harvestMode < 0)
             {
-                CompanionsPlugin.Log.LogInfo(
+                CompanionsPlugin.Log.LogDebug(
                     $"[Direct] DirectGatherMode — target \"{target.name}\" is not harvestable (mode=-1)");
                 return;
             }
 
             string modeName = harvestMode == CompanionSetup.ModeGatherWood ? "Wood"
                             : harvestMode == CompanionSetup.ModeGatherStone ? "Stone" : "Ore";
-            CompanionsPlugin.Log.LogInfo(
+            CompanionsPlugin.Log.LogDebug(
                 $"[Direct] DirectGatherMode — target=\"{target.name}\" mode={modeName} pos={target.transform.position:F1}");
 
             CompanionTalk firstTalk = null;
@@ -720,13 +720,13 @@ namespace Companions
             }
 
             SayRandom(firstTalk, HarvestLines);
-            CompanionsPlugin.Log.LogInfo(
+            CompanionsPlugin.Log.LogDebug(
                 $"[Direct] {directed} companion(s) → gather mode {modeName}");
         }
 
         private static void DirectGround(CompanionSetup[] setups, string localId, Vector3 point)
         {
-            CompanionsPlugin.Log.LogInfo($"[Direct] DirectGround called — point={point:F1}");
+            CompanionsPlugin.Log.LogDebug($"[Direct] DirectGround called — point={point:F1}");
 
             // Check if any owned companion is in gather mode
             bool anyGathering = false;
@@ -740,7 +740,7 @@ namespace Companions
 
             if (anyGathering)
             {
-                CompanionsPlugin.Log.LogInfo("[Direct] DirectGround — companion(s) in gather mode, exiting gather instead");
+                CompanionsPlugin.Log.LogDebug("[Direct] DirectGround — companion(s) in gather mode, exiting gather instead");
                 ExitGatherMode(setups, localId);
                 return;
             }
@@ -765,7 +765,7 @@ namespace Companions
             }
 
             SayRandom(firstTalk, MoveLines);
-            CompanionsPlugin.Log.LogInfo($"[Direct] {directed} companion(s) → move to {point:F1}");
+            CompanionsPlugin.Log.LogDebug($"[Direct] {directed} companion(s) → move to {point:F1}");
         }
 
         private static void ExitGatherMode(CompanionSetup[] setups, string localId)
@@ -785,7 +785,7 @@ namespace Companions
                 nview.GetZDO().Set(CompanionSetup.ActionModeHash, CompanionSetup.ModeFollow);
 
                 var character = setup.GetComponent<Character>();
-                CompanionsPlugin.Log.LogInfo(
+                CompanionsPlugin.Log.LogDebug(
                     $"[Direct] ExitGather: \"{character?.m_name ?? "?"}\" mode {oldMode} → {CompanionSetup.ModeFollow}");
 
                 if (firstTalk == null) firstTalk = setup.GetComponent<CompanionTalk>();
@@ -793,7 +793,7 @@ namespace Companions
             }
 
             SayRandom(firstTalk, CancelLines);
-            CompanionsPlugin.Log.LogInfo($"[Direct] {exited} companion(s) exited gather mode → follow");
+            CompanionsPlugin.Log.LogDebug($"[Direct] {exited} companion(s) exited gather mode → follow");
         }
 
         private static void CancelAll(CompanionSetup[] setups, string localId)
@@ -834,7 +834,7 @@ namespace Companions
             }
 
             SayRandom(firstTalk, CancelLines);
-            CompanionsPlugin.Log.LogInfo("[Direct] Cancelled all directed commands");
+            CompanionsPlugin.Log.LogDebug("[Direct] Cancelled all directed commands");
         }
 
         // ═════════════════════════════════════════════════════════════════════
@@ -869,7 +869,7 @@ namespace Companions
                 var rest = setup.GetComponent<CompanionRest>();
                 if (rest != null && (rest.IsResting || rest.IsNavigating))
                 {
-                    CompanionsPlugin.Log.LogInfo(
+                    CompanionsPlugin.Log.LogDebug(
                         $"[Direct] CancelExisting \"{name}\": cancelling rest " +
                         $"(resting={rest.IsResting} nav={rest.IsNavigating})");
                     rest.CancelDirected();
@@ -880,15 +880,15 @@ namespace Companions
             if (ai != null)
             {
                 if (ai.PendingCartAttach != null)
-                    CompanionsPlugin.Log.LogInfo($"[Direct] CancelExisting \"{name}\": cancelling cart nav");
+                    CompanionsPlugin.Log.LogDebug($"[Direct] CancelExisting \"{name}\": cancelling cart nav");
                 ai.CancelPendingCart();
 
                 if (ai.PendingMoveTarget != null)
-                    CompanionsPlugin.Log.LogInfo($"[Direct] CancelExisting \"{name}\": cancelling move-to");
+                    CompanionsPlugin.Log.LogDebug($"[Direct] CancelExisting \"{name}\": cancelling move-to");
                 ai.CancelMoveTarget();
 
                 if (ai.PendingDepositContainer != null)
-                    CompanionsPlugin.Log.LogInfo($"[Direct] CancelExisting \"{name}\": cancelling deposit nav");
+                    CompanionsPlugin.Log.LogDebug($"[Direct] CancelExisting \"{name}\": cancelling deposit nav");
                 ai.CancelPendingDeposit();
 
                 ai.DirectedTargetLockTimer = 0f;
@@ -901,7 +901,7 @@ namespace Companions
             var repair = setup.GetComponent<RepairController>();
             if (repair != null && repair.IsActive)
             {
-                CompanionsPlugin.Log.LogInfo(
+                CompanionsPlugin.Log.LogDebug(
                     $"[Direct] CancelExisting \"{name}\": cancelling active repair");
                 repair.CancelDirected();
             }
