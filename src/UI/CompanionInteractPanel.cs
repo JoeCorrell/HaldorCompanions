@@ -159,6 +159,15 @@ namespace Companions
         private void OnDestroy()
         {
             if (Instance == this) Instance = null;
+            ClearPreviewClone();
+            // Release RenderTexture and camera
+            if (_rt != null)  { _rt.Release(); UnityEngine.Object.Destroy(_rt); _rt = null; }
+            if (_camGO != null) { UnityEngine.Object.Destroy(_camGO); _camGO = null; }
+            _cam = null;
+            // Clear static sprite caches to avoid holding destroyed Texture2D refs
+            _panelBgSprite = null;
+            _sliderBgSprite = null;
+            _buttonTemplate = null;
             Teardown();
         }
 
@@ -181,7 +190,6 @@ namespace Companions
                 if (dist > 5f) { Hide(); return; }
             }
 
-            UpdateBars();
             RefreshInventoryGrid();
 
             // Sync action mode from ZDO (may change externally, e.g. overweight auto-revert)
@@ -1675,10 +1683,6 @@ namespace Companions
         // ══════════════════════════════════════════════════════════════════════
         //  Stat bars
         // ══════════════════════════════════════════════════════════════════════
-
-        private void UpdateBars()
-        {
-        }
 
         // ══════════════════════════════════════════════════════════════════════
         //  Inventory grid refresh

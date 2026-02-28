@@ -1413,13 +1413,14 @@ namespace Companions
             {
                 if (c == null) continue;
                 scanned++;
+                // Distance check first — cheapest filter, skips most objects
+                float dist = Vector3.Distance(transform.position, c.transform.position);
+                if (dist > 50f) continue;
                 if (c.GetComponent<CompanionSetup>() != null) { skipped++; continue; }
                 if (c.GetComponent<Character>() != null) { skipped++; continue; }
                 if (c.IsInUse()) { skipped++; continue; }
                 var nv = c.GetComponent<ZNetView>();
                 if (nv == null || !nv.IsValid()) { skipped++; continue; }
-                float dist = Vector3.Distance(transform.position, c.transform.position);
-                if (dist > 50f) continue;
                 var inv = c.GetInventory();
                 if (inv == null) continue;
                 int items = inv.GetAllItems().Count;

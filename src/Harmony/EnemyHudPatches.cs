@@ -112,6 +112,15 @@ namespace Companions
             }
         }
 
+        [HarmonyPatch(typeof(EnemyHud), "OnDestroy")]
+        private static class OnDestroy_Patch
+        {
+            static void Postfix()
+            {
+                _bars.Clear();
+            }
+        }
+
         [HarmonyPatch(typeof(EnemyHud), "UpdateHuds")]
         private static class UpdateHuds_Patch
         {

@@ -335,7 +335,7 @@ namespace Companions
             _foods[slot] = new FoodEffect
             {
                 ItemName       = item.m_shared.m_name,
-                ItemPrefabName = item.m_dropPrefab != null ? item.m_dropPrefab.name : "",
+                ItemPrefabName = item.m_dropPrefab != null ? item.m_dropPrefab.name : item.m_shared?.m_name ?? "",
                 HealthBonus    = item.m_shared.m_food,
                 StaminaBonus   = item.m_shared.m_foodStamina,
                 EitrBonus      = item.m_shared.m_foodEitr,

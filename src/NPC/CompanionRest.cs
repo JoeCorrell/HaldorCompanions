@@ -16,6 +16,7 @@ namespace Companions
         private CompanionStamina _stamina;
         private ZSyncAnimation   _zanim;
         private CompanionSetup   _setup;
+        private Rigidbody        _body;
 
         private bool  _isSitting;
         private float _checkTimer;
@@ -48,6 +49,7 @@ namespace Companions
             _stamina   = GetComponent<CompanionStamina>();
             _zanim     = GetComponent<ZSyncAnimation>();
             _setup     = GetComponent<CompanionSetup>();
+            _body      = GetComponent<Rigidbody>();
         }
 
         private void Update()
@@ -311,13 +313,12 @@ namespace Companions
             transform.rotation = attachPoint.rotation;
 
             // Freeze rigidbody — prevent physics from pushing companion off bed
-            var body = GetComponent<Rigidbody>();
-            if (body != null)
+            if (_body != null)
             {
-                body.position = attachPoint.position;
-                body.velocity = Vector3.zero;
-                body.useGravity = false;
-                body.isKinematic = true;
+                _body.position = attachPoint.position;
+                _body.velocity = Vector3.zero;
+                _body.useGravity = false;
+                _body.isKinematic = true;
             }
 
             // Bed animation (Player-model only — DvergerMage lacks this param)
@@ -360,12 +361,11 @@ namespace Companions
             if (_nview?.GetZDO() != null) _nview.GetZDO().Set(ZDOVars.s_inBed, false);
 
             // Re-enable physics so the companion can walk
-            var body = GetComponent<Rigidbody>();
-            if (body != null)
+            if (_body != null)
             {
-                body.isKinematic = false;
-                body.useGravity = true;
-                body.velocity = Vector3.zero;
+                _body.isKinematic = false;
+                _body.useGravity = true;
+                _body.velocity = Vector3.zero;
             }
 
             // Nudge upward to prevent clipping into bed geometry
@@ -512,11 +512,10 @@ namespace Companions
             transform.position = attachPoint.position;
             transform.rotation = attachPoint.rotation;
 
-            var body = GetComponent<Rigidbody>();
-            if (body != null)
+            if (_body != null)
             {
-                body.position = attachPoint.position;
-                body.velocity = Vector3.zero;
+                _body.position = attachPoint.position;
+                _body.velocity = Vector3.zero;
             }
 
             // Heal while sleeping (same rate as sitting)

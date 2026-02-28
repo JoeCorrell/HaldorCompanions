@@ -25,7 +25,8 @@ namespace Companions
         internal static readonly int FormationSlotHash = StringExtensionMethods.GetStableHashCode("HC_FormationSlot");
         internal static readonly int IsCommandableHash = StringExtensionMethods.GetStableHashCode("HC_IsCommandable");
         internal static readonly int StayHomeHash  = StringExtensionMethods.GetStableHashCode("HC_StayHome");
-        internal static readonly int HomePosHash   = StringExtensionMethods.GetStableHashCode("HC_HomePos");
+        internal static readonly int HomePosHash    = StringExtensionMethods.GetStableHashCode("HC_HomePos");
+        private  static readonly int HomePosSetHash = StringExtensionMethods.GetStableHashCode("HC_HomePosSet");
         private  static readonly int StarterGearHash = StringExtensionMethods.GetStableHashCode("HC_StarterGear");
         // DvergerPrefabHash removed — use CompanionTierData.IsDvergerVariant() instead
         internal const int ModeFollow      = 0;
@@ -53,11 +54,13 @@ namespace Companions
         private static readonly FieldInfo _shoulderItemField = AccessTools.Field(typeof(Humanoid), "m_shoulderItem");
         private static readonly FieldInfo _utilityItemField  = AccessTools.Field(typeof(Humanoid), "m_utilityItem");
 
-        private ZNetView       _nview;
-        private VisEquipment   _visEquip;
-        private CompanionAI    _ai;
-        private Humanoid       _humanoid;
-        private ZSyncAnimation _zanim;
+        private ZNetView         _nview;
+        private VisEquipment     _visEquip;
+        private CompanionAI      _ai;
+        private Humanoid         _humanoid;
+        private ZSyncAnimation   _zanim;
+        private HarvestController _harvestCached;
+        private CompanionRest     _restCached;
         private bool           _initialized;
         private bool           _ownerMismatchLogged;
 
@@ -68,11 +71,13 @@ namespace Companions
 
         private void Awake()
         {
-            _nview    = GetComponent<ZNetView>();
-            _visEquip = GetComponent<VisEquipment>();
-            _ai       = GetComponent<CompanionAI>();
-            _humanoid = GetComponent<Humanoid>();
-            _zanim    = GetComponent<ZSyncAnimation>();
+            _nview         = GetComponent<ZNetView>();
+            _visEquip      = GetComponent<VisEquipment>();
+            _ai            = GetComponent<CompanionAI>();
+            _humanoid      = GetComponent<Humanoid>();
+            _zanim         = GetComponent<ZSyncAnimation>();
+            _harvestCached = GetComponent<HarvestController>();
+            _restCached    = GetComponent<CompanionRest>();
 
             CompanionsPlugin.Log.LogInfo(
                 $"[Setup] Awake — nview={_nview != null} visEquip={_visEquip != null} " +
@@ -161,12 +166,10 @@ namespace Companions
 
                 // ** CONFLICT CHECKS ** — Various systems intentionally set follow=null.
                 // Do NOT restore it or we'll create a tug-of-war.
-                var harvest = GetComponent<HarvestController>();
-                if (harvest != null && harvest.IsActive)
+                if (_harvestCached != null && _harvestCached.IsActive)
                     return; // HarvestController is driving movement
 
-                var rest = GetComponent<CompanionRest>();
-                if (rest != null && (rest.IsNavigating || rest.IsResting))
+                if (_restCached != null && (_restCached.IsNavigating || _restCached.IsResting))
                     return; // CompanionRest is navigating to a bed/fire or resting
 
                 if (_ai.PendingCartAttach != null || _ai.PendingMoveTarget != null ||
@@ -185,7 +188,7 @@ namespace Companions
                     _ai.SetFollowTarget(Player.m_localPlayer.gameObject);
                     CompanionsPlugin.Log.LogDebug(
                         $"[Setup] Follow target was null — restored to player " +
-                        $"(mode={mode} harvestActive={harvest?.IsActive ?? false})");
+                        $"(mode={mode} harvestActive={_harvestCached?.IsActive ?? false})");
                 }
             }
         }
@@ -449,13 +452,30 @@ namespace Companions
         private float _equipTimer;
         private bool  _equipAnimActive;
 
+        private Action _inventoryCallback;
+
         private void RegisterInventoryCallback()
         {
             if (_humanoid == null) return;
             var inv = _humanoid.GetInventory();
             if (inv == null) return;
 
-            inv.m_onChanged = (Action)Delegate.Combine(inv.m_onChanged, new Action(OnInventoryChanged));
+            _inventoryCallback = new Action(OnInventoryChanged);
+            inv.m_onChanged = (Action)Delegate.Combine(inv.m_onChanged, _inventoryCallback);
+        }
+
+        private void UnregisterInventoryCallback()
+        {
+            if (_humanoid == null || _inventoryCallback == null) return;
+            var inv = _humanoid.GetInventory();
+            if (inv == null) return;
+            inv.m_onChanged = (Action)Delegate.Remove(inv.m_onChanged, _inventoryCallback);
+            _inventoryCallback = null;
+        }
+
+        private void OnDestroy()
+        {
+            UnregisterInventoryCallback();
         }
 
         private void QueueEquip(ItemDrop.ItemData item)
@@ -857,12 +877,15 @@ namespace Companions
 
         internal void SetHomePosition(Vector3 p)
         {
-            _nview?.GetZDO()?.Set(HomePosHash, p);
+            var zdo = _nview?.GetZDO();
+            if (zdo == null) return;
+            zdo.Set(HomePosHash, p);
+            zdo.Set(HomePosSetHash, true);
         }
 
         internal bool HasHomePosition()
         {
-            return GetHomePosition() != Vector3.zero;
+            return _nview?.GetZDO()?.GetBool(HomePosSetHash, false) ?? false;
         }
 
         /// <summary>

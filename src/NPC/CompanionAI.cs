@@ -164,6 +164,8 @@ namespace Companions
         private RepairController _repair;
         private DoorHandler _doorHandler;
         private CompanionRest _rest;
+        private CompanionTalk _talk;
+        private Rigidbody _body;
 
         // ══════════════════════════════════════════════════════════════════════
         //  Lifecycle
@@ -179,6 +181,8 @@ namespace Companions
             _repair = GetComponent<RepairController>();
             _doorHandler = GetComponent<DoorHandler>();
             _rest = GetComponent<CompanionRest>();
+            _talk = GetComponent<CompanionTalk>();
+            _body = GetComponent<Rigidbody>();
 
             // Restore sleep state from ZDO
             ZDO zdo = m_nview.GetZDO();
@@ -457,11 +461,10 @@ namespace Companions
                         // Close enough — snap to exact attach position and interact
                         // Sync both transform and Rigidbody to prevent physics override
                         transform.position = attachWorldPos;
-                        var body = GetComponent<Rigidbody>();
-                        if (body != null)
+                        if (_body != null)
                         {
-                            body.position = attachWorldPos;
-                            body.velocity = Vector3.zero;
+                            _body.position = attachWorldPos;
+                            _body.velocity = Vector3.zero;
                         }
 
                         Vector3 toCart = PendingCartAttach.transform.position - transform.position;
@@ -558,9 +561,8 @@ namespace Companions
                         CompanionsPlugin.Log.LogDebug(
                             $"[AI] Deposit complete — {_depositCount} item(s) into \"{PendingDepositContainer.m_name}\"");
 
-                        var talk = GetComponent<CompanionTalk>();
-                        if (talk != null)
-                            talk.Say(_depositCount > 0 ? "All stowed away." : "Nothing to deposit.");
+                        if (_talk != null)
+                            _talk.Say(_depositCount > 0 ? "All stowed away." : "Nothing to deposit.");
 
                         CancelPendingDeposit();
                     }
@@ -607,9 +609,8 @@ namespace Companions
                             PendingDepositContainer.SetInUse(false);
                             _depositChestOpen = false;
 
-                            var talk = GetComponent<CompanionTalk>();
-                            if (talk != null)
-                                talk.Say("Nothing to deposit.");
+                            if (_talk != null)
+                                _talk.Say("Nothing to deposit.");
 
                             CancelPendingDeposit();
                         }
@@ -667,23 +668,29 @@ namespace Companions
                 }
 
                 // Invalidate stale target
-                if (_healTarget != null &&
-                    (_healTarget.IsDead() ||
-                     _healTarget.GetHealth() / _healTarget.GetMaxHealth() >= HealThreshold))
+                if (_healTarget != null)
                 {
-                    CompanionsPlugin.Log.LogDebug(
-                        $"[CompanionAI:Heal] Target \"{_healTarget.m_name}\" recovered or died — clearing");
-                    _healTarget = null;
+                    float htMax = _healTarget.GetMaxHealth();
+                    if (_healTarget.IsDead() || htMax <= 0f ||
+                        _healTarget.GetHealth() / htMax >= HealThreshold)
+                    {
+                        CompanionsPlugin.Log.LogDebug(
+                            $"[CompanionAI:Heal] Target \"{_healTarget.m_name}\" recovered or died — clearing");
+                        _healTarget = null;
+                    }
                 }
 
                 // Log target transitions
                 if (_healTarget != prevHealTarget)
                 {
                     if (_healTarget != null)
+                    {
+                        float htMax2 = _healTarget.GetMaxHealth();
+                        float htPct = htMax2 > 0f ? _healTarget.GetHealth() / htMax2 * 100f : 0f;
                         CompanionsPlugin.Log.LogDebug(
                             $"[CompanionAI:Heal] New heal target \"{_healTarget.m_name}\" " +
-                            $"HP={_healTarget.GetHealth():F0}/{_healTarget.GetMaxHealth():F0} " +
-                            $"({_healTarget.GetHealth() / _healTarget.GetMaxHealth() * 100f:F0}%)");
+                            $"HP={_healTarget.GetHealth():F0}/{htMax2:F0} ({htPct:F0}%)");
+                    }
                     else if (prevHealTarget != null)
                         CompanionsPlugin.Log.LogDebug("[CompanionAI:Heal] No hurt allies in range — resuming combat");
                 }
@@ -1460,11 +1467,10 @@ namespace Companions
                 targetPos.y = transform.position.y - 0.5f; // step down slightly
 
             transform.position = targetPos;
-            var body = GetComponent<Rigidbody>();
-            if (body != null)
+            if (_body != null)
             {
-                body.position = targetPos;
-                body.linearVelocity = Vector3.zero;
+                _body.position = targetPos;
+                _body.linearVelocity = Vector3.zero;
             }
 
             CompanionsPlugin.Log.LogDebug(

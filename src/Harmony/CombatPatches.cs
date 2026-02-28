@@ -49,6 +49,9 @@ namespace Companions
         {
             static void Postfix(Character __instance, ref float __result)
             {
+                // Early-out: skip non-companion characters cheaply
+                var ai = __instance.GetBaseAI();
+                if (ai == null || !(ai is CompanionAI)) return;
                 var food = __instance.GetComponent<CompanionFood>();
                 if (food == null) return;
 

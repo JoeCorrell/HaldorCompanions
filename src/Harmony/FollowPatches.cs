@@ -13,6 +13,7 @@ namespace Companions
     {
         static void Postfix(BaseAI __instance, GameObject go)
         {
+            if (!(__instance is CompanionAI)) return;
             var stamina = __instance.GetComponent<CompanionStamina>();
             if (stamina == null) return;
 

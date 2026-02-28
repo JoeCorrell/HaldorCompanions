@@ -1201,7 +1201,9 @@ namespace Companions
             var inv = _humanoid.GetInventory();
             if (inv == null) return false;
 
-            foreach (var item in inv.GetAllItems())
+            // Copy item list — RemoveOneItem mutates the internal list
+            var items = new System.Collections.Generic.List<ItemDrop.ItemData>(inv.GetAllItems());
+            foreach (var item in items)
             {
                 if (item?.m_shared == null) continue;
                 if (item.m_shared.m_itemType != ItemDrop.ItemData.ItemType.Consumable)
