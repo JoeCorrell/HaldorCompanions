@@ -33,6 +33,26 @@ This is an early development build intended for testing. Expect bugs, rough edge
 
 <br/>
 
+![Screenshots](https://img.shields.io/badge/%F0%9F%93%B8_SCREENSHOTS-4a4a4a?style=for-the-badge&labelColor=4a4a4a)
+
+<table><tr><td width="900">
+<br/>
+
+<img src="https://raw.githubusercontent.com/JoeCorrell/HaldorCompanions/main/Screenshots/Radial.png" alt="Radial Command Wheel" width="800"/>
+
+<br/><br/>
+
+<img src="https://raw.githubusercontent.com/JoeCorrell/HaldorCompanions/main/Screenshots/UI.png" alt="Companion Inventory Panel" width="800"/>
+
+<br/><br/>
+
+<img src="https://raw.githubusercontent.com/JoeCorrell/HaldorCompanions/main/Screenshots/Trader.png" alt="Trader Purchase Screen" width="800"/>
+
+<br/>
+</td></tr></table>
+
+<br/>
+
 ![Overview](https://img.shields.io/badge/%F0%9F%93%96_OVERVIEW-2b3a4a?style=for-the-badge&labelColor=2b3a4a)
 
 <table><tr><td width="900">
