@@ -32,7 +32,7 @@ namespace Companions
         private const float PanelH        = 400f;
         private const float DvergerPanelH = 290f;
         private const float UiScale       = 1.25f;
-        private const float OuterPad      = 2f;
+        private const float OuterPad      = 4f;
 
         // ── Grid constants ───────────────────────────────────────────────────
         private const int GridCols          = 5;
@@ -49,7 +49,9 @@ namespace Companions
         private static readonly Color EquipBlue        = new Color(0.29f, 0.55f, 0.94f, 1f);
         private static readonly Color BarBg            = new Color(0.15f, 0.15f, 0.15f, 0.85f);
         private static readonly Color SlotTint         = new Color(0f, 0f, 0f, 0.5625f);
+        private static readonly Color SlotHoverTint   = new Color(0.25f, 0.22f, 0.15f, 0.85f);
         private static readonly Color EquippedSlotTint = new Color(0.10f, 0.20f, 0.38f, 0.80f);
+        private static readonly Color EquippedHoverTint = new Color(0.16f, 0.30f, 0.52f, 0.90f);
 
         // ── Custom sprite caches ─────────────────────────────────────────────
         private static Sprite _panelBgSprite;
@@ -88,6 +90,7 @@ namespace Companions
         private Image[]           _foodSlotIcons;
         private TextMeshProUGUI[] _foodSlotCounts;
         private float             _invRefreshTimer;
+        private int               _hoveredSlot = -1;
 
         // ══════════════════════════════════════════════════════════════════════
         //  Lifecycle
@@ -321,7 +324,7 @@ namespace Companions
             }
             else
             {
-                const float foodOverhead = 33f;
+                const float foodOverhead = 22f;
                 float slotH = (totalH - foodOverhead - (gridRows - 1) * InventorySlotGap) / (gridRows + 1);
                 return Mathf.Floor(slotH);
             }
@@ -448,7 +451,7 @@ namespace Companions
 
                 var btn = slotGO.AddComponent<Button>();
                 btn.transition = Selectable.Transition.None;
-                btn.navigation = new Navigation { mode = Navigation.Mode.None };
+                btn.navigation = new Navigation { mode = Navigation.Mode.Automatic };
                 int slotIndex = i;
                 btn.onClick.AddListener(() => OnSlotLeftClick(slotIndex));
 
@@ -461,6 +464,20 @@ namespace Companions
                         OnSlotRightClick(slotIndex);
                 });
                 trigger.triggers.Add(rightEntry);
+
+                var hoverEnter = new EventTrigger.Entry { eventID = EventTriggerType.PointerEnter };
+                hoverEnter.callback.AddListener((_) => _hoveredSlot = slotIndex);
+                trigger.triggers.Add(hoverEnter);
+                var hoverExit = new EventTrigger.Entry { eventID = EventTriggerType.PointerExit };
+                hoverExit.callback.AddListener((_) => { if (_hoveredSlot == slotIndex) _hoveredSlot = -1; });
+                trigger.triggers.Add(hoverExit);
+
+                var selectEntry = new EventTrigger.Entry { eventID = EventTriggerType.Select };
+                selectEntry.callback.AddListener((_) => _hoveredSlot = slotIndex);
+                trigger.triggers.Add(selectEntry);
+                var deselectEntry = new EventTrigger.Entry { eventID = EventTriggerType.Deselect };
+                deselectEntry.callback.AddListener((_) => { if (_hoveredSlot == slotIndex) _hoveredSlot = -1; });
+                trigger.triggers.Add(deselectEntry);
 
                 var borderGO = new GameObject("Border", typeof(RectTransform), typeof(Image));
                 borderGO.transform.SetParent(slotGO.transform, false);
@@ -549,19 +566,8 @@ namespace Companions
             foodLabelRT.anchorMax = new Vector2(1f, 0f);
             foodLabelRT.pivot = new Vector2(0.5f, 0f);
             foodLabelRT.sizeDelta = new Vector2(0f, 14f);
-            foodLabelRT.anchoredPosition = new Vector2(0f, bottomY + foodSlotSz + 2f);
+            foodLabelRT.anchoredPosition = new Vector2(0f, bottomY + foodSlotSz + 1f);
             foodLabel.fontStyle = FontStyles.Bold;
-
-            var sepGO = new GameObject("FoodSeparator", typeof(RectTransform), typeof(Image));
-            sepGO.transform.SetParent(parent, false);
-            var sepRT = sepGO.GetComponent<RectTransform>();
-            sepRT.anchorMin = new Vector2(0.05f, 0f);
-            sepRT.anchorMax = new Vector2(0.95f, 0f);
-            sepRT.pivot = new Vector2(0.5f, 0f);
-            sepRT.sizeDelta = new Vector2(0f, 1f);
-            sepRT.anchoredPosition = new Vector2(0f, bottomY + foodSlotSz + 2f + 14f + 4f);
-            sepGO.GetComponent<Image>().color = GoldColor;
-            sepGO.GetComponent<Image>().raycastTarget = false;
 
             var foodRow = new GameObject("FoodSlots", typeof(RectTransform));
             foodRow.transform.SetParent(parent, false);
@@ -915,6 +921,12 @@ namespace Companions
                         }
                     }
                 }
+            }
+
+            if (_hoveredSlot >= 0 && _hoveredSlot < MainGridSlots)
+            {
+                _slotBgs[_hoveredSlot].color = _slotBgs[_hoveredSlot].color == EquippedSlotTint
+                    ? EquippedHoverTint : SlotHoverTint;
             }
 
             RefreshFoodSlots(inv);

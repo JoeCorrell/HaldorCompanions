@@ -41,7 +41,7 @@ namespace Companions
         private readonly List<ItemDrop.ItemData> _tempWorn    = new List<ItemDrop.ItemData>();
 
         // ── Config ──────────────────────────────────────────────────────────
-        private const float DurabilityThreshold = 0.70f;
+        private const float DurabilityThreshold = 0.50f;
         private const float ScanInterval        = 5f;
         private const float ScanBackoffInterval = 60f;   // long backoff when no station can help
         private const float ScanRadius          = 20f;
@@ -435,12 +435,15 @@ namespace Companions
             if (recipe == null) return false;
             if (recipe.m_craftingStation == null && recipe.m_repairStation == null) return false;
 
-            // Station name must match recipe's crafting or repair station
+            // Station name must match recipe's crafting or repair station,
+            // OR the item is from a lower world level (vanilla allows repair
+            // of older-tier items at any station).
             bool stationMatch =
                 (recipe.m_repairStation != null &&
                  recipe.m_repairStation.m_name == station.m_name) ||
                 (recipe.m_craftingStation != null &&
-                 recipe.m_craftingStation.m_name == station.m_name);
+                 recipe.m_craftingStation.m_name == station.m_name) ||
+                item.m_worldLevel < Game.m_worldLevel;
 
             if (!stationMatch) return false;
 
@@ -461,8 +464,9 @@ namespace Companions
 
             string recipeStation = recipe.m_repairStation?.m_name ?? recipe.m_craftingStation?.m_name ?? "?";
             bool nameMatch = (recipe.m_repairStation != null && recipe.m_repairStation.m_name == station.m_name) ||
-                             (recipe.m_craftingStation != null && recipe.m_craftingStation.m_name == station.m_name);
-            if (!nameMatch) return $"wrong station (needs \"{recipeStation}\")";
+                             (recipe.m_craftingStation != null && recipe.m_craftingStation.m_name == station.m_name) ||
+                             item.m_worldLevel < Game.m_worldLevel;
+            if (!nameMatch) return $"wrong station (needs \"{recipeStation}\", worldLevel={item.m_worldLevel} gameLevel={Game.m_worldLevel})";
 
             int stationLevel = Mathf.Min(station.GetLevel(), 4);
             if (stationLevel < recipe.m_minStationLevel)

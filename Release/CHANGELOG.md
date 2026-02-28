@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.0.2
+- Fixed Stay Home + Wander not working (companions stood still due to suppressed move interval)
+- Fixed Stay Home + Gather not working (gathering companions now wander to find new resource patches)
+- Fixed companions unable to return home when wander is turned off while far away
+- Fixed infinite re-approach cycle during harvesting causing companions to walk away and stand still
+- Fixed Eitr Weave and other cross-tier items not being repaired (added vanilla worldLevel fallback)
+- Fixed follow target not restored after closing companion UI during active harvest
+- Fixed STUCK detection false positives when companion is intentionally stationary in StayHome mode
+- Improved tree priority: fallen logs and stumps are now always preferred over standing trees (two-pass scan)
+- Added inventory slot hover highlight for mouse and controller
+- Added Command toggle to Dverger radial wheel
+- Added overhead speech when executing radial commands
+- Removed food slot separator line, tightened inventory panel spacing
+
 ## 1.0.0
 - Added Stay Home mode — companions remain near a set home position instead of following the player
 - Stay Home works alongside any action mode (gather, follow, etc.) as a separate toggle

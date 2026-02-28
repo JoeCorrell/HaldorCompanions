@@ -1,9 +1,9 @@
 {
-  "name": "OfflineCompanions",
+  "name": "Offline_Companions",
   "author": "ProfMags",
-  "version_number": "0.0.1",
+  "version_number": "0.0.2",
   "website_url": "https://github.com/JoeCorrell/HaldorCompanions",
-  "description": "Hire AI companions with their own health, stamina, food, and inventory. They fight alongside you, gather wood/stone/ore, auto-repair gear, and follow you across the world.",
+  "description": "Hire NPC companions with their own health, stamina, food, weight, inventory, and AI. They fight alongside you, gather wood, stone, and ore, automatically repair their gear, and follow you across the realms of Valheim.",
   "dependencies": [
     "denikson-BepInExPack_Valheim-5.4.2200",
     "ProfMags-TraderOverhaul-0.0.1"

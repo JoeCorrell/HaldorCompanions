@@ -51,6 +51,11 @@ namespace Companions
         private const float DeadZonePx     = 30f;
         private const float DeadZoneStick  = 0.3f;
 
+        // ── Speech pools ────────────────────────────────────────────────
+        private static readonly string[] ActionSpeech = {
+            "On it!", "As you wish.", "Consider it done.", "Right away!"
+        };
+
         // ── Segment data ─────────────────────────────────────────────────
         private struct Segment
         {
@@ -67,6 +72,7 @@ namespace Companions
         private ZNetView          _companionNview;
         private CompanionAI       _companionAI;
         private HarvestController _companionHarvest;
+        private CompanionTalk     _companionTalk;
         private bool              _isDverger;
 
         // ── UI elements ──────────────────────────────────────────────────
@@ -128,6 +134,7 @@ namespace Companions
             _companionNview   = companion.GetComponent<ZNetView>();
             _companionAI      = companion.GetComponent<CompanionAI>();
             _companionHarvest = companion.GetComponent<HarvestController>();
+            _companionTalk    = companion.GetComponent<CompanionTalk>();
             _isDverger        = !companion.CanWearArmor();
 
             BuildSegments();
@@ -330,6 +337,10 @@ namespace Companions
                     ToggleCommandable();
                     break;
             }
+
+            // Overhead speech on any action
+            if (_companionTalk != null && ActionSpeech.Length > 0)
+                _companionTalk.Say(ActionSpeech[UnityEngine.Random.Range(0, ActionSpeech.Length)]);
         }
 
         private void SetActionMode(int mode)
@@ -499,14 +510,11 @@ namespace Companions
                 IconColor = new Color(0.90f, 0.70f, 0.15f)
             });
 
-            if (!_isDverger)
-            {
-                _segments.Add(new Segment {
-                    Label = "Command", ActionId = ActionCommand,
-                    IsToggle = true, IsActive = commandable,
-                    IconColor = new Color(0.80f, 0.35f, 0.35f)
-                });
-            }
+            _segments.Add(new Segment {
+                Label = "Command", ActionId = ActionCommand,
+                IsToggle = true, IsActive = commandable,
+                IconColor = new Color(0.80f, 0.35f, 0.35f)
+            });
         }
 
         // ══════════════════════════════════════════════════════════════════

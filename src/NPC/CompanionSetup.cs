@@ -58,6 +58,7 @@ namespace Companions
         private CompanionRest     _restCached;
         private bool           _initialized;
         private bool           _ownerMismatchLogged;
+        private bool           _uiFrozen;
 
         /// <summary>
         /// When true, auto-equip is suppressed (used by CompanionHarvest to keep tools equipped).
@@ -93,7 +94,23 @@ namespace Companions
             {
                 _ai?.SetPatrolPoint();
                 _ai?.SetFollowTarget(null);
+                _uiFrozen = true;
                 return;
+            }
+
+            // UI just closed — restore follow target based on current mode.
+            // Use force=true to bypass the harvest-active guard, since the
+            // harvest controller was paused during UI and needs a valid
+            // fallback follow/patrol to resume from.
+            if (_uiFrozen)
+            {
+                _uiFrozen = false;
+                var zdo = _nview?.GetZDO();
+                if (zdo != null && _ai != null)
+                {
+                    int mode = zdo.GetInt(ActionModeHash, ModeFollow);
+                    ApplyFollowMode(mode, force: true);
+                }
             }
 
             // Process deferred auto-equip (throttled during rapid pickup)
@@ -319,12 +336,12 @@ namespace Companions
             ApplyFollowMode(mode);
         }
 
-        internal void ApplyFollowMode(int mode)
+        internal void ApplyFollowMode(int mode, bool force = false)
         {
             if (_ai == null) return;
 
             bool stayHome = GetStayHome() && HasHomePosition();
-            CompanionsPlugin.Log.LogDebug($"[Setup] ApplyFollowMode — mode={mode} stayHome={stayHome}");
+            CompanionsPlugin.Log.LogDebug($"[Setup] ApplyFollowMode — mode={mode} stayHome={stayHome} force={force}");
 
             switch (mode)
             {
@@ -346,12 +363,16 @@ namespace Companions
                 case ModeGatherOre:
                     // Don't override follow target if HarvestController is actively
                     // driving movement to a resource — it sets its own follow target.
-                    var harvestCheck = GetComponent<HarvestController>();
-                    if (harvestCheck != null && harvestCheck.IsActive)
+                    // Skip this guard when force=true (UI close restoration).
+                    if (!force)
                     {
-                        CompanionsPlugin.Log.LogDebug(
-                            $"[Setup]   → Gather mode={mode}, harvest active — skipping follow override");
-                        break;
+                        var harvestCheck = GetComponent<HarvestController>();
+                        if (harvestCheck != null && harvestCheck.IsActive)
+                        {
+                            CompanionsPlugin.Log.LogDebug(
+                                $"[Setup]   → Gather mode={mode}, harvest active — skipping follow override");
+                            break;
+                        }
                     }
                     if (stayHome)
                     {

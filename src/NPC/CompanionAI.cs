@@ -368,29 +368,79 @@ namespace Companions
         /// When StayHome is active and companion has no follow target,
         /// periodically re-set patrol to home position. UI freeze and other
         /// systems overwrite patrol, so this keeps the companion anchored.
+        /// Also manages m_randomMoveInterval: the prefab sets it to 9999 to
+        /// suppress vanilla random movement, but StayHome+Wander and
+        /// StayHome+Gather need a normal interval for IdleMovement to work.
         /// </summary>
-        private void EnforceHomePatrol(float dt)
+        private const float WanderMoveInterval = 5f;
+        private const float SuppressedMoveInterval = 9999f;
+
+        private bool _returningHome;
+
+        /// <summary>
+        /// Returns true if this method is driving movement (caller should skip IdleMovement).
+        /// </summary>
+        private bool EnforceHomePatrol(float dt)
         {
             if (_setup == null || !_setup.GetStayHome() || !_setup.HasHomePosition())
             {
-                // Not in StayHome — restore default wander range
+                // Not in StayHome — restore defaults
                 if (m_randomMoveRange > 10f)
                     m_randomMoveRange = 4f;
-                return;
+                if (m_randomMoveInterval < 100f)
+                    m_randomMoveInterval = SuppressedMoveInterval;
+                _returningHome = false;
+                return false;
             }
-            if (m_follow != null) return; // following something actively
+            if (m_follow != null) return false; // following something actively
 
-            // Wander toggle controls whether companion roams or stays put
-            if (_setup.GetWander())
+            // Wander toggle or active gather mode: allow random movement around home.
+            // Gathering companions wander between scans to discover new resource patches.
+            bool shouldWander = _setup.GetWander();
+            bool isGathering = _harvest != null && _harvest.IsInGatherMode;
+
+            if (shouldWander || isGathering)
+            {
                 m_randomMoveRange = CompanionSetup.MaxLeashDistance; // 50m
+                // Switch from the suppressed interval to a normal one (once)
+                if (m_randomMoveInterval > 10f)
+                {
+                    m_randomMoveInterval = WanderMoveInterval;
+                    ResetRandomMovement(); // flush the old ~9999s timer
+                }
+                _returningHome = false;
+            }
             else
+            {
                 m_randomMoveRange = 0f; // stay put at home
+                if (m_randomMoveInterval < 100f)
+                    m_randomMoveInterval = SuppressedMoveInterval;
+
+                // Wander OFF but far from home — walk back directly.
+                // RandomMovement with range=0 can't compute a return vector,
+                // so we drive movement with MoveTo instead.
+                float distFromHome = Utils.DistanceXZ(
+                    transform.position, _setup.GetHomePosition());
+                if (distFromHome > 3f)
+                {
+                    if (!_returningHome)
+                    {
+                        _returningHome = true;
+                        CompanionsPlugin.Log.LogDebug(
+                            $"[AI] Returning home — dist={distFromHome:F1}m");
+                    }
+                    MoveTo(dt, _setup.GetHomePosition(), 2f, distFromHome > 10f);
+                    return true; // driving movement — skip IdleMovement
+                }
+                _returningHome = false;
+            }
 
             _homePatrolTimer -= dt;
-            if (_homePatrolTimer > 0f) return;
+            if (_homePatrolTimer > 0f) return false;
             _homePatrolTimer = 2f; // re-set every 2s
 
             SetPatrolPointAt(_setup.GetHomePosition());
+            return false;
         }
 
         /// <summary>
@@ -741,8 +791,8 @@ namespace Companions
                     FollowWithFormation(m_follow, dt);
                 else
                 {
-                    EnforceHomePatrol(dt);
-                    IdleMovement(dt);
+                    if (!EnforceHomePatrol(dt))
+                        IdleMovement(dt);
                 }
                 return true;
             }
@@ -1449,7 +1499,14 @@ namespace Companions
             bool repairing = _repair != null && _repair.IsActive;
             bool handlingDoor = _doorHandler != null && _doorHandler.IsActive;
 
-            if (moved < 0.1f && !inAttack && !atFollowDist && !harvesting && !repairing && !handlingDoor)
+            // StayHome with wander OFF: companion is intentionally stationary
+            // at home — don't flag as stuck. Also suppress during return-home.
+            bool stayingHome = _setup != null && _setup.GetStayHome()
+                && !_setup.GetWander() && !harvesting;
+            bool intentionallyStationary = stayingHome || _returningHome;
+
+            if (moved < 0.1f && !inAttack && !atFollowDist && !harvesting
+                && !repairing && !handlingDoor && !intentionallyStationary)
                 _stuckDetectTimer += dt;
             else
                 _stuckDetectTimer = 0f;

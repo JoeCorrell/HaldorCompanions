@@ -78,6 +78,9 @@ namespace Companions
         private readonly Collider[]  _scanBuffer = new Collider[1024];
         private readonly Collider[]  _dropBuffer = new Collider[128];
         private readonly HashSet<int> _seenIds   = new HashSet<int>();
+        // Two-pass tree scan: track best standing tree as fallback
+        private GameObject _bestTree;
+        private float      _bestTreeDist;
 
         // ── Drop collection state ─────────────────────────────────────────
         private Vector3    _lastDestroyPos;
@@ -643,14 +646,27 @@ namespace Companions
             // CompanionAI.UpdateAI skips Follow() when harvest is active,
             // so there's no dual-control jitter.
             // After re-approach (attacks failed/whiffed), get much closer.
+            // Re-approach uses walk mode (run=false) so MoveTo's internal
+            // stop distance is 0.5m instead of 1.0m, letting the companion
+            // get genuinely close to the target.
             float moveGoal;
+            bool runToTarget;
             if (_reapproach)
+            {
                 moveGoal = range * 0.15f;  // get right on top of target
+                runToTarget = false;        // walk for tighter stop distance
+            }
             else if (IsLowTarget())
+            {
                 moveGoal = range * 0.3f;
+                runToTarget = true;
+            }
             else
+            {
                 moveGoal = range * 0.5f;
-            bool moveResult = _ai.MoveToPoint(dt, targetPos, moveGoal, true);
+                runToTarget = true;
+            }
+            bool moveResult = _ai.MoveToPoint(dt, targetPos, moveGoal, runToTarget);
 
             // Pathfinding failed at close range — fall back to direct push.
             // This handles cases where the navmesh has gaps near the target.
@@ -704,7 +720,7 @@ namespace Companions
             bool isLow = IsLowTarget();
             float arrivalDist;
             if (_reapproach)
-                arrivalDist = range * 0.5f;  // much tighter on re-approach
+                arrivalDist = range * 0.35f;  // tighter than re-approach trigger (0.6*range)
             else if (isLow)
                 arrivalDist = range;
             else
@@ -890,7 +906,9 @@ namespace Companions
 
             // After several swings without destroy, the weapon probably isn't
             // connecting — force re-approach to get right on top of the target.
-            if (attacked && _swingCount > 0 && _swingCount % 5 == 0 && dist > range * 0.4f)
+            // Trigger threshold (0.6*range) must be HIGHER than re-approach
+            // arrival distance (0.35*range) to prevent infinite re-approach cycles.
+            if (attacked && _swingCount > 0 && _swingCount % 5 == 0 && dist > range * 0.6f)
             {
                 LogWarn($"Re-approach — {_swingCount} swings without destroy at dist={dist:F1}m " +
                     $"range={range:F1} — moving closer");
@@ -1148,6 +1166,10 @@ namespace Companions
             _seenIds.Clear();
             GameObject best = null;
             float bestDist = float.MaxValue;
+            // Fallback: track closest standing tree separately (only used if
+            // no fallen logs or stumps are found in the scan radius)
+            _bestTree = null;
+            _bestTreeDist = float.MaxValue;
             int candidateCount = 0;
             int treeBaseCount = 0, treeLogCount = 0, stumpCount = 0, rockCount = 0;
 
@@ -1182,7 +1204,8 @@ namespace Companions
                 float dist = Vector3.Distance(transform.position, candidate.transform.position);
 
                 // Count by type
-                if (type == "TreeBase") treeBaseCount++;
+                bool isStandingTree = type == "TreeBase";
+                if (isStandingTree) treeBaseCount++;
                 else if (type == "TreeLog") treeLogCount++;
                 else if (type == "Stump") stumpCount++;
                 else rockCount++;
@@ -1192,14 +1215,23 @@ namespace Companions
                     Log($"  Candidate #{candidateCount}: \"{candidate.name}\" " +
                         $"type={type} dist={dist:F1}m pos={candidate.transform.position:F1}");
 
-                // Prioritize fallen logs and stumps over standing trees —
-                // standing trees create more logs/stumps, so clean up first.
-                float score = dist;
-                if (type == "TreeBase") score *= 3f;
-
-                if (score < bestDist)
+                // Two-pass priority for wood mode: ALWAYS prefer fallen logs
+                // and stumps over standing trees. Only consider standing trees
+                // if no fallen debris exists in the scan radius.
+                if (isStandingTree)
                 {
-                    bestDist = score;
+                    // Track best standing tree separately as fallback
+                    if (dist < _bestTreeDist)
+                    {
+                        _bestTreeDist = dist;
+                        _bestTree = candidate;
+                    }
+                    continue; // skip — check for logs/stumps first
+                }
+
+                if (dist < bestDist)
+                {
+                    bestDist = dist;
                     best = candidate;
                 }
             }
@@ -1215,6 +1247,14 @@ namespace Companions
                     $"(total {candidateCount} unique targets)");
             else
                 Log($"  Breakdown [{modeName}]: {rockCount} deposits (total {candidateCount} unique targets)");
+
+            // Fallback: no fallen logs/stumps found — use closest standing tree
+            if (best == null && _bestTree != null)
+            {
+                best = _bestTree;
+                bestDist = _bestTreeDist;
+                Log($"No logs/stumps found — falling back to standing tree");
+            }
 
             if (best != null)
                 Log($"Best target: \"{best.name}\" dist={bestDist:F1}m " +
