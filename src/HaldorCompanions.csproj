@@ -72,15 +72,21 @@
     </Reference>
   </ItemGroup>
 
-  <!-- Auto-deploy to BepInEx plugins folder after every build -->
-  <Target Name="DeployToPlugins" AfterTargets="Build">
+  <!-- Auto-deploy to BepInEx plugins folder and local Release folder after every build -->
+  <Target Name="DeployBuildArtifacts" AfterTargets="Build">
     <PropertyGroup>
       <PluginDir>C:\Program Files (x86)\Steam\steamapps\common\Valheim\BepInEx\plugins\$(AssemblyName)</PluginDir>
+      <ReleaseDir>$(MSBuildProjectDirectory)\..\Release\</ReleaseDir>
     </PropertyGroup>
     <MakeDir Directories="$(PluginDir)" />
-    <Copy SourceFiles="$(OutputPath)$(AssemblyName).dll"
+    <MakeDir Directories="$(ReleaseDir)" />
+    <Copy SourceFiles="$(TargetPath)"
           DestinationFolder="$(PluginDir)"
           SkipUnchangedFiles="true" />
+    <Copy SourceFiles="$(TargetPath)"
+          DestinationFolder="$(ReleaseDir)"
+          SkipUnchangedFiles="true" />
     <Message Text="Deployed $(AssemblyName).dll to $(PluginDir)" Importance="high" />
+    <Message Text="Copied $(AssemblyName).dll to $(ReleaseDir)" Importance="high" />
   </Target>
 </Project>

@@ -35,6 +35,7 @@ namespace Companions
         private int          _totalAttempts;   // total attack attempts (success + failure) on current target
         private float        _selfDefenseLogTimer;
         private bool         _wasInSelfDefense;  // true last frame when combat target was present
+        private ItemDrop.ItemData _pendingToolReequip; // deferred equip when EquipItem fails mid-animation
 
         // ── Directed harvest (one-shot from hotkey, works outside gather mode) ─
         private GameObject   _directedTarget;
@@ -156,10 +157,42 @@ namespace Companions
             // Weight check — stop gathering if overweight
             if (IsOverweight())
             {
-                var talk = GetComponent<CompanionTalk>();
-                if (talk != null && _overweightMsgTimer <= 0f)
+                // Already walking to a chest for deposit — don't re-trigger
+                if (_ai != null && _ai.PendingDepositContainer != null)
+                    return;
+
+                // StayHome: try to find a chest and deposit instead of walking to player
+                if (_setup != null && _setup.GetStayHome() && _setup.HasHomePosition())
                 {
-                    talk.Say("My back is hurting from all this weight!");
+                    var chest = FindNearestChest();
+                    if (chest != null)
+                    {
+                        LogWarn($"OVERWEIGHT+StayHome — depositing to chest \"{chest.m_name}\" " +
+                            $"dist={Vector3.Distance(transform.position, chest.transform.position):F1}");
+                        ResetToIdle();
+                        _ai?.SetPendingDeposit(chest, _humanoid);
+                        // Don't exit gather mode — after deposit completes,
+                        // HarvestController resumes scanning naturally
+                        return;
+                    }
+                    else
+                    {
+                        var talk = GetComponent<CompanionTalk>();
+                        if (talk != null && _overweightMsgTimer <= 0f)
+                        {
+                            talk.Say("No chest nearby to unload!");
+                            _overweightMsgTimer = 15f;
+                        }
+                        LogWarn($"OVERWEIGHT+StayHome — no chest found, stopping gather");
+                        ExitGatherMode();
+                        return;
+                    }
+                }
+
+                var talkFull = GetComponent<CompanionTalk>();
+                if (talkFull != null && _overweightMsgTimer <= 0f)
+                {
+                    talkFull.Say("My back is hurting from all this weight!");
                     _overweightMsgTimer = 15f;
                 }
                 LogWarn($"OVERWEIGHT — weight={GetCurrentWeight():F1} >= {OverweightThreshold}, " +
@@ -423,11 +456,16 @@ namespace Companions
             ResetToIdle();
             RestoreLoadout();
 
-            // Restore follow target
-            if (_ai != null && Player.m_localPlayer != null)
+            // Restore follow target (unless StayHome → stay at home patrol)
+            bool stayHome = _setup != null && _setup.GetStayHome() && _setup.HasHomePosition();
+            if (_ai != null && !stayHome && Player.m_localPlayer != null)
             {
                 _ai.SetFollowTarget(Player.m_localPlayer.gameObject);
                 Log("Restored follow target to player");
+            }
+            else if (stayHome)
+            {
+                Log("StayHome active — NOT restoring follow to player");
             }
         }
 
@@ -440,6 +478,7 @@ namespace Companions
             _swingCount    = 0;
             _totalAttempts = 0;
             _scanTimer     = 0f;
+            _pendingToolReequip = null;
 
             // If this was a directed harvest, clean up and restore loadout
             if (_isDirectedHarvest)
@@ -451,11 +490,13 @@ namespace Companions
             }
 
             // Restore follow target so companion follows player between targets
-            if (_ai != null && Player.m_localPlayer != null)
+            // (unless StayHome is active — then stay at home patrol)
+            bool stayHome = _setup != null && _setup.GetStayHome() && _setup.HasHomePosition();
+            if (_ai != null && !stayHome && Player.m_localPlayer != null)
                 _ai.SetFollowTarget(Player.m_localPlayer.gameObject);
 
             if (prevState != State_Idle)
-                Log($"ResetToIdle (was {prevState}) — follow target restored to player");
+                Log($"ResetToIdle (was {prevState}) — stayHome={stayHome}");
         }
 
         // ══════════════════════════════════════════════════════════════════════
@@ -542,6 +583,13 @@ namespace Companions
 
         private void UpdateMoving()
         {
+            // Retry deferred tool equip — EquipItem fails silently during attack animations
+            if (_pendingToolReequip != null && _humanoid != null && !_humanoid.InAttack())
+            {
+                Log($"Retrying deferred equip: \"{_pendingToolReequip.m_shared.m_name}\"");
+                EquipTool(_pendingToolReequip);
+            }
+
             // DoorHandler is actively opening a door — pause movement so we don't
             // fight its MoveTowards with our MoveToPoint. Also pause the stuck
             // timer since the delay is the door handler's fault, not ours.
@@ -557,7 +605,12 @@ namespace Companions
             }
 
             float dt = Time.deltaTime;
-            _moveTimer += dt;
+
+            // Don't count time toward stuck timeout while locked in attack animation —
+            // the companion physically can't move, so it's not a pathfinding failure
+            bool inAttack = _humanoid != null && _humanoid.InAttack();
+            if (!inAttack)
+                _moveTimer += dt;
 
             // Stuck timeout — give up and scan for a new target
             if (_moveTimer > MoveTimeout)
@@ -618,7 +671,6 @@ namespace Companions
                 float distNow = Vector3.Distance(transform.position, targetPos);
                 var velocity = _character?.GetVelocity() ?? Vector3.zero;
                 var followTarget = _ai?.GetFollowTarget();
-                bool inAttack = _humanoid != null && _humanoid.InAttack();
 
                 Log($"Moving → \"{_target.name}\" dist={distNow:F1}m " +
                     $"range={range:F1} timer={_moveTimer:F1}s " +
@@ -995,11 +1047,12 @@ namespace Companions
             _state = State_Idle;
             _scanTimer = 0f; // scan immediately for next harvest target
 
-            // Restore follow target to player
-            if (_ai != null && Player.m_localPlayer != null)
+            // Restore follow target to player (unless StayHome)
+            bool stayHome = _setup != null && _setup.GetStayHome() && _setup.HasHomePosition();
+            if (_ai != null && !stayHome && Player.m_localPlayer != null)
                 _ai.SetFollowTarget(Player.m_localPlayer.gameObject);
 
-            Log($"ResetToIdle (was CollectingDrops) — collected {_dropsPickedUp} items, follow target restored to player");
+            Log($"FinishDropCollection — collected {_dropsPickedUp} items, stayHome={stayHome}");
         }
 
         // ══════════════════════════════════════════════════════════════════════
@@ -1040,6 +1093,14 @@ namespace Companions
                     if (candidateCount == 0)
                         Log($"  Skipping blacklisted \"{candidate.name}\" (id={candidate.GetInstanceID()})");
                     continue;
+                }
+
+                // StayHome leash: skip targets beyond 50m from home position
+                if (_setup != null && _setup.GetStayHome() && _setup.HasHomePosition())
+                {
+                    float distFromHome = Vector3.Distance(
+                        _setup.GetHomePosition(), candidate.transform.position);
+                    if (distFromHome > 50f) continue;
                 }
 
                 candidateCount++;
@@ -1282,18 +1343,25 @@ namespace Companions
 
             // Equip the harvest tool
             _humanoid.EquipItem(tool, false);
-            _toolEquipped = true;
 
-            // Verify it actually equipped
+            // Verify it actually equipped — EquipItem silently fails during attack animations
             var verifyRight = ReflectionHelper.GetRightItem(_humanoid);
             bool success = verifyRight != null;
             if (success)
+            {
+                _toolEquipped = true;
+                _pendingToolReequip = null;
                 Log($"After equip: rightItem=\"{verifyRight.m_shared?.m_name ?? "?"}\" " +
                     $"attackRange={GetAttackRange():F1}");
+            }
             else
-                LogWarn($"After equip: rightItem=\"NONE\" — EQUIP FAILED! " +
+            {
+                _toolEquipped = false;
+                _pendingToolReequip = tool;
+                LogWarn($"After equip: rightItem=\"NONE\" — EQUIP FAILED (will retry). " +
                     $"Tried to equip \"{tool.m_shared.m_name}\" type={tool.m_shared.m_itemType} " +
-                    $"gridPos=({tool.m_gridPos.x},{tool.m_gridPos.y})");
+                    $"inAttack={(_humanoid.InAttack() ? "true" : "false")}");
+            }
         }
 
         private void RestoreLoadout()
@@ -1330,6 +1398,41 @@ namespace Companions
         public bool IsOverweight()
         {
             return GetCurrentWeight() >= OverweightThreshold;
+        }
+
+        /// <summary>
+        /// Find nearest Container (chest) within 50m that has free slots.
+        /// Skips companions, characters, in-use chests, and full inventories.
+        /// </summary>
+        private Container FindNearestChest()
+        {
+            Container best = null;
+            float bestDist = float.MaxValue;
+            int scanned = 0, skipped = 0;
+            foreach (var c in Object.FindObjectsByType<Container>(FindObjectsSortMode.None))
+            {
+                if (c == null) continue;
+                scanned++;
+                if (c.GetComponent<CompanionSetup>() != null) { skipped++; continue; }
+                if (c.GetComponent<Character>() != null) { skipped++; continue; }
+                if (c.IsInUse()) { skipped++; continue; }
+                var nv = c.GetComponent<ZNetView>();
+                if (nv == null || !nv.IsValid()) { skipped++; continue; }
+                float dist = Vector3.Distance(transform.position, c.transform.position);
+                if (dist > 50f) continue;
+                var inv = c.GetInventory();
+                if (inv == null) continue;
+                int items = inv.GetAllItems().Count;
+                int capacity = inv.GetWidth() * inv.GetHeight();
+                if (items >= capacity) continue;
+                if (dist < bestDist) { bestDist = dist; best = c; }
+            }
+            if (best != null)
+                Log($"FindNearestChest — found \"{best.m_name}\" at {bestDist:F1}m " +
+                    $"(scanned={scanned} skipped={skipped})");
+            else
+                Log($"FindNearestChest — NONE found (scanned={scanned} skipped={skipped})");
+            return best;
         }
 
         private int GetMode()

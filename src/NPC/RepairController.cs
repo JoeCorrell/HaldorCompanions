@@ -332,20 +332,20 @@ namespace Companions
         /// Directed repair: immediately start walking to the given station.
         /// Builds repair queue from all worn items that station can fix.
         /// </summary>
-        public void DirectRepairAt(CraftingStation station)
+        public bool DirectRepairAt(CraftingStation station)
         {
-            if (station == null) return;
+            if (station == null) return false;
             if (_phase != RepairPhase.Idle) Abort("new directed repair");
 
             var inv = _humanoid?.GetInventory();
-            if (inv == null) return;
+            if (inv == null) return false;
 
             _tempWorn.Clear();
             inv.GetWornItems(_tempWorn);
             if (_tempWorn.Count == 0)
             {
                 Log("DirectRepairAt — no worn items");
-                return;
+                return false;
             }
 
             _repairQueue.Clear();
@@ -353,12 +353,14 @@ namespace Companions
             {
                 if (CanRepairAt(station, _tempWorn[i]))
                     _repairQueue.Add(_tempWorn[i]);
+                else
+                    Log($"DirectRepairAt: \"{_tempWorn[i].m_shared.m_name}\" — {GetRepairRejectReason(station, _tempWorn[i])}");
             }
 
             if (_repairQueue.Count == 0)
             {
                 Log($"DirectRepairAt — no items repairable at \"{station.m_name}\"");
-                return;
+                return false;
             }
 
             _targetStation = station;
@@ -369,6 +371,7 @@ namespace Companions
             _lastScanFailed = false;
 
             Log($"DirectRepairAt — {_repairQueue.Count} items to repair at \"{station.m_name}\"");
+            return true;
         }
 
         private void FinishRepair()

@@ -24,6 +24,8 @@ namespace Companions
         internal static readonly int CombatStanceHash = StringExtensionMethods.GetStableHashCode("HC_CombatStance");
         internal static readonly int FormationSlotHash = StringExtensionMethods.GetStableHashCode("HC_FormationSlot");
         internal static readonly int IsCommandableHash = StringExtensionMethods.GetStableHashCode("HC_IsCommandable");
+        internal static readonly int StayHomeHash  = StringExtensionMethods.GetStableHashCode("HC_StayHome");
+        internal static readonly int HomePosHash   = StringExtensionMethods.GetStableHashCode("HC_HomePos");
         private  static readonly int StarterGearHash = StringExtensionMethods.GetStableHashCode("HC_StarterGear");
         internal const int ModeFollow      = 0;
         internal const int ModeGatherWood  = 1;
@@ -166,8 +168,13 @@ namespace Companions
                 if (rest != null && (rest.IsNavigating || rest.IsResting))
                     return; // CompanionRest is navigating to a bed/fire or resting
 
-                if (_ai.PendingCartAttach != null || _ai.PendingMoveTarget != null)
+                if (_ai.PendingCartAttach != null || _ai.PendingMoveTarget != null ||
+                    _ai.PendingDepositContainer != null)
                     return; // Navigating to a directed position
+
+                // StayHome: don't restore follow — companion stays at home position
+                if (GetStayHome() && HasHomePosition())
+                    return;
 
                 // Follow and gather modes: companion should follow player when no
                 // directed navigation is active.
@@ -313,13 +320,23 @@ namespace Companions
         {
             if (_ai == null) return;
 
-            CompanionsPlugin.Log.LogInfo($"[Setup] ApplyFollowMode — mode={mode}");
+            bool stayHome = GetStayHome() && HasHomePosition();
+            CompanionsPlugin.Log.LogInfo($"[Setup] ApplyFollowMode — mode={mode} stayHome={stayHome}");
 
             switch (mode)
             {
                 case ModeFollow:
-                    _ai.SetFollowTarget(Player.m_localPlayer.gameObject);
-                    CompanionsPlugin.Log.LogInfo($"[Setup]   → Follow player (mode={mode})");
+                    if (stayHome)
+                    {
+                        _ai.SetFollowTarget(null);
+                        _ai.SetPatrolPointAt(GetHomePosition());
+                        CompanionsPlugin.Log.LogInfo($"[Setup]   → StayHome patrol at {GetHomePosition():F1}");
+                    }
+                    else
+                    {
+                        _ai.SetFollowTarget(Player.m_localPlayer.gameObject);
+                        CompanionsPlugin.Log.LogInfo($"[Setup]   → Follow player (mode={mode})");
+                    }
                     break;
                 case ModeGatherWood:
                 case ModeGatherStone:
@@ -333,13 +350,25 @@ namespace Companions
                             $"[Setup]   → Gather mode={mode}, harvest active — skipping follow override");
                         break;
                     }
-                    _ai.SetFollowTarget(Player.m_localPlayer.gameObject);
-                    CompanionsPlugin.Log.LogInfo($"[Setup]   → Follow player (mode={mode})");
+                    if (stayHome)
+                    {
+                        _ai.SetFollowTarget(null);
+                        _ai.SetPatrolPointAt(GetHomePosition());
+                        CompanionsPlugin.Log.LogInfo($"[Setup]   → Gather+StayHome patrol at {GetHomePosition():F1}");
+                    }
+                    else
+                    {
+                        _ai.SetFollowTarget(Player.m_localPlayer.gameObject);
+                        CompanionsPlugin.Log.LogInfo($"[Setup]   → Follow player (mode={mode})");
+                    }
                     break;
                 case ModeStay:
                     _ai.SetFollowTarget(null);
-                    _ai.SetPatrolPoint();
-                    CompanionsPlugin.Log.LogInfo($"[Setup]   → Stay/patrol at {transform.position:F1}");
+                    if (stayHome)
+                        _ai.SetPatrolPointAt(GetHomePosition());
+                    else
+                        _ai.SetPatrolPoint();
+                    CompanionsPlugin.Log.LogInfo($"[Setup]   → Stay/patrol at {(stayHome ? GetHomePosition() : transform.position):F1}");
                     break;
                 default:
                     _ai.SetFollowTarget(Player.m_localPlayer.gameObject);
@@ -793,6 +822,32 @@ namespace Companions
             var zdo = _nview?.GetZDO();
             if (zdo == null) return;
             zdo.Set(IsCommandableHash, value ? 1 : 0);
+        }
+
+        // ── StayHome accessors ────────────────────────────────────────────
+        internal bool GetStayHome()
+        {
+            return _nview?.GetZDO()?.GetBool(StayHomeHash, false) ?? false;
+        }
+
+        internal void SetStayHome(bool v)
+        {
+            _nview?.GetZDO()?.Set(StayHomeHash, v);
+        }
+
+        internal Vector3 GetHomePosition()
+        {
+            return _nview?.GetZDO()?.GetVec3(HomePosHash, Vector3.zero) ?? Vector3.zero;
+        }
+
+        internal void SetHomePosition(Vector3 p)
+        {
+            _nview?.GetZDO()?.Set(HomePosHash, p);
+        }
+
+        internal bool HasHomePosition()
+        {
+            return GetHomePosition() != Vector3.zero;
         }
 
         /// <summary>

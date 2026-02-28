@@ -93,6 +93,20 @@ namespace Companions
         private float _pendingMoveTimeout;
 
         // ══════════════════════════════════════════════════════════════════════
+        //  Pending Deposit (walk to chest, then transfer items)
+        // ══════════════════════════════════════════════════════════════════════
+
+        internal Container PendingDepositContainer;
+        internal Humanoid PendingDepositHumanoid;
+        private float _pendingDepositTimeout;
+        private bool  _depositChestOpen;
+        private float _depositWorkTimer;
+        private int   _depositCount;
+        private readonly System.Collections.Generic.List<ItemDrop.ItemData> _depositQueue
+            = new System.Collections.Generic.List<ItemDrop.ItemData>();
+        private const float DepositItemInterval = 0.6f; // seconds between each item transfer
+
+        // ══════════════════════════════════════════════════════════════════════
         //  Constants
         // ══════════════════════════════════════════════════════════════════════
 
@@ -113,6 +127,9 @@ namespace Companions
 
         private const float DebugLogInterval = 3f;
         private const float StuckThreshold = 5f;
+
+        // ── StayHome patrol enforcement ─────────────────────────────────────
+        private float _homePatrolTimer;
 
         // ══════════════════════════════════════════════════════════════════════
         //  Formation Following
@@ -239,8 +256,7 @@ namespace Companions
             if (PendingCartAttach == null) return;
             PendingCartAttach = null;
             PendingCartHumanoid = null;
-            if (Player.m_localPlayer != null)
-                SetFollowTarget(Player.m_localPlayer.gameObject);
+            RestoreFollowOrPatrol();
         }
 
         internal void SetMoveTarget(Vector3 pos)
@@ -258,8 +274,88 @@ namespace Companions
             CompanionsPlugin.Log.LogInfo(
                 $"[AI] CancelMoveTarget — was={PendingMoveTarget.Value:F1}");
             PendingMoveTarget = null;
-            if (Player.m_localPlayer != null)
+            RestoreFollowOrPatrol();
+        }
+
+        internal void SetPendingDeposit(Container chest, Humanoid humanoid)
+        {
+            PendingDepositContainer = chest;
+            PendingDepositHumanoid = humanoid;
+            _pendingDepositTimeout = 20f;
+            SetFollowTarget(null);
+            CompanionsPlugin.Log.LogInfo(
+                $"[AI] SetPendingDeposit — chest=\"{chest.m_name}\" " +
+                $"dist={Vector3.Distance(transform.position, chest.transform.position):F1}");
+        }
+
+        internal void CancelPendingDeposit()
+        {
+            if (PendingDepositContainer == null) return;
+            CompanionsPlugin.Log.LogInfo("[AI] CancelPendingDeposit");
+
+            // Close chest if we opened it
+            if (_depositChestOpen && PendingDepositContainer != null)
+            {
+                PendingDepositContainer.SetInUse(false);
+                _depositChestOpen = false;
+            }
+
+            PendingDepositContainer = null;
+            PendingDepositHumanoid = null;
+            _depositQueue.Clear();
+            _depositCount = 0;
+
+            RestoreFollowOrPatrol();
+        }
+
+        /// <summary>
+        /// Restore follow to player OR patrol at home, depending on StayHome state.
+        /// Used after cancelling pending actions.
+        /// </summary>
+        private void RestoreFollowOrPatrol()
+        {
+            if (_setup != null && _setup.GetStayHome() && _setup.HasHomePosition())
+            {
+                SetFollowTarget(null);
+                SetPatrolPointAt(_setup.GetHomePosition());
+                CompanionsPlugin.Log.LogInfo(
+                    $"[AI] RestoreFollowOrPatrol → patrol at home {_setup.GetHomePosition():F1}");
+            }
+            else if (Player.m_localPlayer != null)
+            {
                 SetFollowTarget(Player.m_localPlayer.gameObject);
+                CompanionsPlugin.Log.LogInfo("[AI] RestoreFollowOrPatrol → follow player");
+            }
+        }
+
+        /// <summary>
+        /// When StayHome is active and companion has no follow target,
+        /// periodically re-set patrol to home position. UI freeze and other
+        /// systems overwrite patrol, so this keeps the companion anchored.
+        /// </summary>
+        private void EnforceHomePatrol(float dt)
+        {
+            if (_setup == null || !_setup.GetStayHome() || !_setup.HasHomePosition())
+                return;
+            if (m_follow != null) return; // following something actively
+
+            _homePatrolTimer -= dt;
+            if (_homePatrolTimer > 0f) return;
+            _homePatrolTimer = 2f; // re-set every 2s
+
+            SetPatrolPointAt(_setup.GetHomePosition());
+        }
+
+        /// <summary>
+        /// Set patrol point to a specific world position.
+        /// BaseAI.SetPatrolPoint(Vector3) is private, so we write ZDO vars directly.
+        /// GetPatrolPoint() refreshes from ZDO every 1s.
+        /// </summary>
+        internal void SetPatrolPointAt(Vector3 point)
+        {
+            if (m_nview?.GetZDO() == null) return;
+            m_nview.GetZDO().Set(ZDOVars.s_patrol, true);
+            m_nview.GetZDO().Set(ZDOVars.s_patrolPoint, point);
         }
 
         // ══════════════════════════════════════════════════════════════════════
@@ -288,6 +384,10 @@ namespace Companions
             // Resting (sitting/sleeping) — skip all movement so position stays
             if (_rest != null && _rest.IsResting)
                 return true;
+
+            // Stuck-on-furniture recovery — if stuck on a Bed/Chair collider,
+            // nudge off so pathfinding can resume (NavMesh doesn't cover furniture).
+            UpdateFurnitureUnstuck(dt);
 
             // Rest navigation — walking to a bed or fire
             if (_rest != null && _rest.IsNavigating)
@@ -383,6 +483,117 @@ namespace Companions
                 return true;
             }
 
+            // Deposit navigation — walk to chest, open, transfer one-by-one, close
+            if (PendingDepositContainer != null)
+            {
+                _pendingDepositTimeout -= dt;
+                if (_pendingDepositTimeout <= 0f || PendingDepositContainer == null)
+                {
+                    CompanionsPlugin.Log.LogInfo("[AI] Deposit navigation timed out — cancelling");
+                    CancelPendingDeposit();
+                }
+                else if (_depositChestOpen)
+                {
+                    // Phase 2: chest is open — transfer items one at a time
+                    StopMoving();
+                    LookAtPoint(PendingDepositContainer.transform.position);
+
+                    _depositWorkTimer -= dt;
+                    if (_depositWorkTimer <= 0f && _depositQueue.Count > 0)
+                    {
+                        _depositWorkTimer = DepositItemInterval;
+
+                        var item = _depositQueue[0];
+                        _depositQueue.RemoveAt(0);
+
+                        var chestInv = PendingDepositContainer.GetInventory();
+                        var compInv = PendingDepositHumanoid?.GetInventory();
+                        if (chestInv != null && compInv != null && compInv.ContainsItem(item))
+                        {
+                            if (chestInv.AddItem(item))
+                            {
+                                compInv.RemoveItem(item);
+                                _depositCount++;
+                                chestInv.m_onChanged?.Invoke();
+                                compInv.m_onChanged?.Invoke();
+                            }
+                        }
+                    }
+
+                    // All items transferred — close chest and finish
+                    if (_depositQueue.Count == 0)
+                    {
+                        PendingDepositContainer.SetInUse(false);
+                        _depositChestOpen = false;
+
+                        CompanionsPlugin.Log.LogInfo(
+                            $"[AI] Deposit complete — {_depositCount} item(s) into \"{PendingDepositContainer.m_name}\"");
+
+                        var talk = GetComponent<CompanionTalk>();
+                        if (talk != null)
+                            talk.Say(_depositCount > 0 ? "All stowed away." : "Nothing to deposit.");
+
+                        CancelPendingDeposit();
+                    }
+                }
+                else
+                {
+                    // Phase 1: walking to chest
+                    Vector3 chestPos = PendingDepositContainer.transform.position;
+                    float distToChest = Vector3.Distance(transform.position, chestPos);
+
+                    if (distToChest < 2f)
+                    {
+                        // Arrived — open chest, build transfer queue
+                        StopMoving();
+                        LookAtPoint(chestPos);
+
+                        PendingDepositContainer.SetInUse(true);
+                        _depositChestOpen = true;
+                        _depositCount = 0;
+                        _depositWorkTimer = DepositItemInterval; // initial delay before first item
+
+                        // Build deposit queue
+                        _depositQueue.Clear();
+                        var depositHumanoid = PendingDepositHumanoid;
+                        if (depositHumanoid != null)
+                        {
+                            var compInv = depositHumanoid.GetInventory();
+                            if (compInv != null)
+                            {
+                                foreach (var item in compInv.GetAllItems())
+                                {
+                                    if (!DirectedTargetPatch.ShouldKeep(item, depositHumanoid))
+                                        _depositQueue.Add(item);
+                                }
+                            }
+                        }
+
+                        CompanionsPlugin.Log.LogInfo(
+                            $"[AI] Deposit opened \"{PendingDepositContainer.m_name}\" — {_depositQueue.Count} items to transfer");
+
+                        // If nothing to deposit, close immediately
+                        if (_depositQueue.Count == 0)
+                        {
+                            PendingDepositContainer.SetInUse(false);
+                            _depositChestOpen = false;
+
+                            var talk = GetComponent<CompanionTalk>();
+                            if (talk != null)
+                                talk.Say("Nothing to deposit.");
+
+                            CancelPendingDeposit();
+                        }
+                    }
+                    else
+                    {
+                        bool runToChest = distToChest > 10f;
+                        MoveTo(dt, chestPos, 1.5f, runToChest);
+                    }
+                }
+                return true;
+            }
+
             // Directed target lock countdown
             if (DirectedTargetLockTimer > 0f)
                 DirectedTargetLockTimer -= dt;
@@ -405,7 +616,10 @@ namespace Companions
                 if (m_follow != null)
                     FollowWithFormation(m_follow, dt, stance);
                 else
+                {
+                    EnforceHomePatrol(dt);
                     IdleMovement(dt);
+                }
                 return true;
             }
 
@@ -431,7 +645,10 @@ namespace Companions
                 if (m_follow != null)
                     FollowWithFormation(m_follow, dt, stance);
                 else
+                {
+                    EnforceHomePatrol(dt);
                     IdleMovement(dt);
+                }
                 return true;
             }
 
@@ -962,6 +1179,68 @@ namespace Companions
         }
 
         // ══════════════════════════════════════════════════════════════════════
+        //  Furniture Unstuck — beds, chairs, etc. block NavMesh pathing
+        // ══════════════════════════════════════════════════════════════════════
+
+        private float _furnitureStuckTimer;
+        private const float FurnitureStuckThreshold = 3f;
+
+        private void UpdateFurnitureUnstuck(float dt)
+        {
+            // Only check when not resting and actually trying to move
+            if (m_character == null) return;
+            float vel = m_character.GetVelocity().magnitude;
+            bool wantsToMove = m_follow != null || PendingMoveTarget.HasValue ||
+                               PendingCartAttach != null ||
+                               (_rest != null && _rest.IsNavigating);
+
+            if (vel < 0.1f && wantsToMove)
+                _furnitureStuckTimer += dt;
+            else
+                _furnitureStuckTimer = 0f;
+
+            if (_furnitureStuckTimer < FurnitureStuckThreshold) return;
+
+            // Check if standing on a bed or other piece furniture via downward raycast
+            Vector3 origin = transform.position + Vector3.up * 0.5f;
+            int pieceMask = LayerMask.GetMask("piece", "piece_nonsolid");
+            if (!Physics.Raycast(origin, Vector3.down, out RaycastHit hit, 1.5f, pieceMask))
+                return;
+
+            var bed = hit.collider.GetComponentInParent<Bed>();
+            if (bed == null) return;
+
+            // Found a bed under us — nudge companion off it
+            _furnitureStuckTimer = 0f;
+
+            // Pick a direction away from bed center
+            Vector3 awayDir = (transform.position - bed.transform.position);
+            awayDir.y = 0f;
+            if (awayDir.sqrMagnitude < 0.01f)
+                awayDir = transform.forward;
+            awayDir = awayDir.normalized;
+
+            // Find ground position 2m away from bed
+            Vector3 targetPos = bed.transform.position + awayDir * 2.5f;
+            int groundMask = LayerMask.GetMask("Default", "static_solid", "terrain", "piece");
+            if (Physics.Raycast(targetPos + Vector3.up * 5f, Vector3.down, out RaycastHit groundHit, 10f, groundMask))
+                targetPos.y = groundHit.point.y;
+            else
+                targetPos.y = transform.position.y - 0.5f; // step down slightly
+
+            transform.position = targetPos;
+            var body = GetComponent<Rigidbody>();
+            if (body != null)
+            {
+                body.position = targetPos;
+                body.linearVelocity = Vector3.zero;
+            }
+
+            CompanionsPlugin.Log.LogInfo(
+                $"[CompanionAI] Unstuck from bed \"{bed.name}\" — nudged to {targetPos:F1}");
+        }
+
+        // ══════════════════════════════════════════════════════════════════════
         //  Debug Logging (replaces TargetPatches.UpdateAI_DebugLog)
         // ══════════════════════════════════════════════════════════════════════
 
@@ -996,12 +1275,18 @@ namespace Companions
                         ? Vector3.Distance(transform.position, m_targetCreature.transform.position)
                         : -1f;
 
+                    // Diagnostic: check why movement is failing
+                    bool onGround = m_character != null && m_character.IsOnGround();
+                    bool canMove = m_character != null && m_character.CanMove();
+                    bool pathResult = FoundPath();
+
                     CompanionsPlugin.Log.LogWarning(
                         $"[CompanionAI] STUCK {_stuckDetectTimer:F1}s — " +
                         $"target=\"{m_targetCreature?.m_name ?? "null"}\" targetDist={distToTarget:F1} " +
                         $"follow=\"{follow?.name ?? "null"}\" followDist={distToFollow:F1} " +
                         $"inAttack={inAttack} isAlerted={IsAlerted()} " +
-                        $"charging={IsCharging()} pos={transform.position:F1}");
+                        $"charging={IsCharging()} pos={transform.position:F1} " +
+                        $"onGround={onGround} canMove={canMove} pathOK={pathResult}");
                 }
                 return;
             }

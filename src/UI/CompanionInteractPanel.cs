@@ -194,6 +194,9 @@ namespace Companions
                     _activeStance = zdoStance;
                     RefreshStanceButtons();
                 }
+
+                // Sync StayHome toggle from ZDO
+                RefreshStayHomeButton();
             }
 
             // Gamepad: LB/RB cycle tabs, same keys vanilla uses for InventoryGui tab cycling
@@ -580,7 +583,11 @@ namespace Companions
             _gatherWoodBtn = BuildActionButton(parent, ref y, btnH, btnGap, "Gather Wood", CompanionSetup.ModeGatherWood);
             _gatherStoneBtn = BuildActionButton(parent, ref y, btnH, btnGap, "Gather Stone", CompanionSetup.ModeGatherStone);
             _gatherOreBtn = BuildActionButton(parent, ref y, btnH, btnGap, "Gather Ore", CompanionSetup.ModeGatherOre);
-            _stayBtn = BuildActionButton(parent, ref y, btnH, btnGap, "Stay Home", CompanionSetup.ModeStay);
+            _stayBtn = BuildUnwiredActionButton(parent, ref y, btnH, btnGap, "Stay Home: OFF");
+            if (_stayBtn != null)
+            {
+                _stayBtn.onClick.AddListener(ToggleStayHome);
+            }
             _setHomeBtn = BuildUnwiredActionButton(parent, ref y, btnH, btnGap, "Set Home");
             if (_setHomeBtn != null)
                 _setHomeBtn.onClick.AddListener(OnSetHomeClicked);
@@ -1341,13 +1348,22 @@ namespace Companions
                 return;
             }
 
+            bool stayHome = _companion != null && _companion.GetStayHome() && _companion.HasHomePosition();
+
             switch (_activeMode)
             {
                 case CompanionSetup.ModeFollow:
                 case CompanionSetup.ModeGatherWood:
                 case CompanionSetup.ModeGatherStone:
                 case CompanionSetup.ModeGatherOre:
-                    if (Player.m_localPlayer != null)
+                    if (stayHome)
+                    {
+                        _companionAI.SetFollowTarget(null);
+                        _companionAI.SetPatrolPointAt(_companion.GetHomePosition());
+                        CompanionsPlugin.Log.LogInfo(
+                            $"[UI] ApplyActionMode: StayHome patrol (mode={_activeMode})");
+                    }
+                    else if (Player.m_localPlayer != null)
                     {
                         _companionAI.SetFollowTarget(Player.m_localPlayer.gameObject);
                         CompanionsPlugin.Log.LogInfo(
@@ -1358,7 +1374,10 @@ namespace Companions
                     break;
                 case CompanionSetup.ModeStay:
                     _companionAI.SetFollowTarget(null);
-                    _companionAI.SetPatrolPoint();
+                    if (stayHome)
+                        _companionAI.SetPatrolPointAt(_companion.GetHomePosition());
+                    else
+                        _companionAI.SetPatrolPoint();
                     CompanionsPlugin.Log.LogInfo("[UI] ApplyActionMode: Stay — cleared follow, set patrol");
                     break;
                 default:
@@ -1370,16 +1389,58 @@ namespace Companions
             }
         }
 
+        private void ToggleStayHome()
+        {
+            if (_companion == null || _companionAI == null) return;
+            EnsureCompanionOwnership();
+
+            bool current = _companion.GetStayHome();
+            bool next = !current;
+            _companion.SetStayHome(next);
+
+            if (next)
+            {
+                // Auto-set home position if not already set
+                if (!_companion.HasHomePosition())
+                    _companion.SetHomePosition(_companion.transform.position);
+
+                _companionAI.SetFollowTarget(null);
+                _companionAI.SetPatrolPointAt(_companion.GetHomePosition());
+                MessageHud.instance?.ShowMessage(
+                    MessageHud.MessageType.Center,
+                    "Companion will stay home.");
+            }
+            else
+            {
+                if (Player.m_localPlayer != null)
+                    _companionAI.SetFollowTarget(Player.m_localPlayer.gameObject);
+                MessageHud.instance?.ShowMessage(
+                    MessageHud.MessageType.Center,
+                    "Companion will follow you.");
+            }
+
+            RefreshStayHomeButton();
+            CompanionsPlugin.Log.LogInfo(
+                $"[UI] ToggleStayHome → {next} home={_companion.GetHomePosition():F1}");
+        }
+
         private void OnSetHomeClicked()
         {
             if (_companionAI == null || _companion == null) return;
             EnsureCompanionOwnership();
-            _companionAI.SetPatrolPoint();
+
+            Vector3 pos = _companion.transform.position;
+            _companion.SetHomePosition(pos);
+
+            // If StayHome is active, update patrol to new home
+            if (_companion.GetStayHome())
+                _companionAI.SetPatrolPointAt(pos);
+
             MessageHud.instance?.ShowMessage(
                 MessageHud.MessageType.Center,
                 "Home point set.");
             CompanionsPlugin.Log.LogInfo(
-                $"[UI] Set home point at {_companion.transform.position}");
+                $"[UI] Set home point at {pos}");
         }
 
         private void RefreshActionButtons()
@@ -1388,7 +1449,16 @@ namespace Companions
             SetBtnHighlight(_gatherWoodBtn,  _activeMode == CompanionSetup.ModeGatherWood);
             SetBtnHighlight(_gatherStoneBtn, _activeMode == CompanionSetup.ModeGatherStone);
             SetBtnHighlight(_gatherOreBtn,   _activeMode == CompanionSetup.ModeGatherOre);
-            SetBtnHighlight(_stayBtn,        _activeMode == CompanionSetup.ModeStay);
+            RefreshStayHomeButton();
+        }
+
+        private void RefreshStayHomeButton()
+        {
+            if (_stayBtn == null || _companion == null) return;
+            bool on = _companion.GetStayHome();
+            var txt = _stayBtn.GetComponentInChildren<TMP_Text>(true);
+            if (txt != null) txt.text = on ? "Stay Home: ON" : "Stay Home: OFF";
+            SetBtnHighlight(_stayBtn, on);
         }
 
         // ── Combat Stance UI ─────────────────────────────────────────────────
@@ -1448,15 +1518,19 @@ namespace Companions
         private void RefreshModeText()
         {
             if (_modeText == null) return;
+            string text;
             switch (_activeMode)
             {
-                case CompanionSetup.ModeFollow:      _modeText.text = "Follow into Battle"; break;
-                case CompanionSetup.ModeGatherWood:  _modeText.text = "Gather Wood"; break;
-                case CompanionSetup.ModeGatherStone: _modeText.text = "Gather Stone"; break;
-                case CompanionSetup.ModeGatherOre:   _modeText.text = "Gather Ore"; break;
-                case CompanionSetup.ModeStay:        _modeText.text = "Stay Home"; break;
-                default:                             _modeText.text = "Follow into Battle"; break;
+                case CompanionSetup.ModeFollow:      text = "Follow into Battle"; break;
+                case CompanionSetup.ModeGatherWood:  text = "Gather Wood"; break;
+                case CompanionSetup.ModeGatherStone: text = "Gather Stone"; break;
+                case CompanionSetup.ModeGatherOre:   text = "Gather Ore"; break;
+                case CompanionSetup.ModeStay:        text = "Stay Home"; break;
+                default:                             text = "Follow into Battle"; break;
             }
+            if (_companion != null && _companion.GetStayHome() && _activeMode != CompanionSetup.ModeStay)
+                text += " (Home)";
+            _modeText.text = text;
         }
 
         // ── Auto pickup toggle ─────────────────────────────────────────────

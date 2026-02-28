@@ -23,6 +23,16 @@ namespace Companions
     {
         private static float _cooldown;
 
+        // ── Hold-to-cancel detection ────────────────────────────────────────
+        private static bool  _holdActive;       // tracking a press
+        private static float _holdTimer;         // how long held so far
+        private static bool  _holdFired;         // already fired cancel-all
+        private const  float HoldThreshold = 0.4f; // seconds to trigger come-to-me
+
+        private static readonly string[] ComeHereLines = {
+            "Coming!", "On my way back!", "Right behind you."
+        };
+
         // ── Speech pools ──────────────────────────────────────────────────────
         private static readonly string[] AttackLines = {
             "On it!", "Going in!", "I'll take them down!", "For Odin!"
@@ -76,40 +86,76 @@ namespace Companions
             if (Chat.instance != null && Chat.instance.HasFocus()) return;
             if (Hud.IsPieceSelectionVisible()) return;
 
-            _cooldown -= Time.deltaTime;
-            if (_cooldown > 0f) return;
+            float dt = Time.deltaTime;
+            _cooldown -= dt;
 
-            // Keyboard — configurable hotkey (default Z)
-            bool keyboardTriggered = !ZInput.IsGamepadActive()
-                && Input.GetKeyDown(CompanionsPlugin.DirectTargetKey.Value);
+            // ── Detect button state ──────────────────────────────────────
+            bool isGamepad = ZInput.IsGamepadActive();
 
-            // Controller — X button, but only when no interact prompt is on screen
-            bool gamepadPressed = ZInput.IsGamepadActive()
-                && ZInput.GetButtonDown("JoyUse");
-            bool gamepadTriggered = false;
-            if (gamepadPressed)
+            bool buttonDown = isGamepad
+                ? ZInput.GetButtonDown("JoyUse")
+                : Input.GetKeyDown(CompanionsPlugin.DirectTargetKey.Value);
+
+            bool buttonHeld = isGamepad
+                ? ZInput.GetButton("JoyUse")
+                : Input.GetKey(CompanionsPlugin.DirectTargetKey.Value);
+
+            // Suppress gamepad when interact prompt or radial is visible
+            if (isGamepad && (buttonDown || buttonHeld))
             {
                 var hoverObj = __instance.GetHoverObject();
-                if (hoverObj != null)
+                if (hoverObj != null || Hud.InRadial())
                 {
-                    CompanionsPlugin.Log.LogDebug(
-                        $"[Direct] Gamepad X suppressed — interact prompt on \"{hoverObj.name}\"");
-                }
-                else if (Hud.InRadial())
-                {
-                    CompanionsPlugin.Log.LogDebug("[Direct] Gamepad X suppressed — radial menu open");
-                }
-                else
-                {
-                    gamepadTriggered = true;
+                    _holdActive = false;
+                    _holdTimer = 0f;
+                    return;
                 }
             }
 
-            if (!keyboardTriggered && !gamepadTriggered) return;
-            _cooldown = 0.5f;
+            // ── Hold tracking ────────────────────────────────────────────
+            if (buttonDown && _cooldown <= 0f)
+            {
+                _holdActive = true;
+                _holdTimer = 0f;
+                _holdFired = false;
+            }
 
-            string inputSource = gamepadTriggered ? "gamepad" : "keyboard";
-            CompanionsPlugin.Log.LogInfo($"[Direct] Command triggered via {inputSource}");
+            if (_holdActive && buttonHeld)
+            {
+                _holdTimer += dt;
+
+                // Long press — cancel all, come to me
+                if (_holdTimer >= HoldThreshold && !_holdFired)
+                {
+                    _holdFired = true;
+                    _cooldown = 0.5f;
+                    FireComeToMe(__instance, isGamepad);
+                    return;
+                }
+                return; // still holding — wait
+            }
+
+            // Button released or not held
+            if (_holdActive)
+            {
+                _holdActive = false;
+
+                // If hold already fired cancel-all, don't also fire a tap command
+                if (_holdFired)
+                    return;
+
+                // Short press — normal directed command
+                if (_cooldown > 0f) return;
+                _cooldown = 0.5f;
+            }
+            else
+            {
+                // No hold was active, no button pressed
+                return;
+            }
+
+            string source = isGamepad ? "gamepad" : "keyboard";
+            CompanionsPlugin.Log.LogInfo($"[Direct] Command triggered via {source}");
 
             // Raycast from camera — broad layer mask to hit all interactable objects
             Camera mainCam = Utils.GetMainCamera();
@@ -223,11 +269,13 @@ namespace Companions
                     return;
                 }
 
-                // ── Ground / terrain — move to position or exit gather ──
+                // ── Ground / terrain / building surface — move to position or exit gather ──
                 int layer = col.gameObject.layer;
                 if (layer == LayerMask.NameToLayer("terrain") ||
                     layer == LayerMask.NameToLayer("Default") ||
-                    layer == LayerMask.NameToLayer("static_solid"))
+                    layer == LayerMask.NameToLayer("static_solid") ||
+                    layer == LayerMask.NameToLayer("piece") ||
+                    layer == LayerMask.NameToLayer("piece_nonsolid"))
                 {
                     DirectGround(setups, localId, hits[i].point);
                     return;
@@ -236,6 +284,30 @@ namespace Companions
 
             // No valid target found — cancel all directed commands
             CancelAll(setups, localId);
+        }
+
+        /// <summary>
+        /// Hold/long-press handler — cancel all actions and restore follow.
+        /// </summary>
+        private static void FireComeToMe(Player player, bool isGamepad)
+        {
+            var setups = Object.FindObjectsByType<CompanionSetup>(FindObjectsSortMode.None);
+            string localId = player.GetPlayerID().ToString();
+
+            CancelAll(setups, localId);
+
+            // Override the CancelAll speech with "come here" speech
+            CompanionTalk firstTalk = null;
+            foreach (var setup in setups)
+            {
+                if (!IsOwned(setup, localId)) continue;
+                firstTalk = setup.GetComponent<CompanionTalk>();
+                if (firstTalk != null) break;
+            }
+            SayRandom(firstTalk, ComeHereLines);
+
+            string inputSource = isGamepad ? "gamepad hold" : "keyboard hold";
+            CompanionsPlugin.Log.LogInfo($"[Direct] Come-to-me triggered via {inputSource}");
         }
 
         // ═════════════════════════════════════════════════════════════════════
@@ -465,7 +537,7 @@ namespace Companions
             var chestInv = chest.GetInventory();
             if (chestInv == null) return;
 
-            int totalDeposited = 0;
+            int dispatched = 0;
             CompanionTalk firstTalk = null;
 
             foreach (var setup in setups)
@@ -473,40 +545,52 @@ namespace Companions
                 if (!IsOwned(setup, localId)) continue;
                 if (!setup.GetIsCommandable()) continue;
 
-                CancelExistingActions(setup);
-
                 var humanoid = setup.GetComponent<Humanoid>();
                 if (humanoid == null) continue;
                 var compInv = humanoid.GetInventory();
                 if (compInv == null) continue;
 
-                if (firstTalk == null) firstTalk = setup.GetComponent<CompanionTalk>();
-
-                var toDeposit = new List<ItemDrop.ItemData>();
+                // Check if companion has anything to deposit before walking
+                bool hasDepositable = false;
                 foreach (var item in compInv.GetAllItems())
                 {
-                    if (ShouldKeep(item, humanoid)) continue;
-                    toDeposit.Add(item);
-                }
-
-                foreach (var item in toDeposit)
-                {
-                    if (chestInv.AddItem(item))
+                    if (!ShouldKeep(item, humanoid))
                     {
-                        compInv.RemoveItem(item);
-                        totalDeposited++;
+                        hasDepositable = true;
+                        break;
                     }
                 }
 
-                if (toDeposit.Count > 0) compInv.m_onChanged?.Invoke();
+                if (firstTalk == null) firstTalk = setup.GetComponent<CompanionTalk>();
+
+                if (!hasDepositable)
+                    continue;
+
+                CancelExistingActions(setup);
+
+                var ai = setup.GetComponent<CompanionAI>();
+                if (ai == null) continue;
+
+                ai.SetPendingDeposit(chest, humanoid);
+                dispatched++;
             }
 
-            if (totalDeposited > 0) chestInv.m_onChanged?.Invoke();
-
-            SayRandom(firstTalk, totalDeposited > 0 ? DepositLines : DepositEmptyLines);
-            CompanionsPlugin.Log.LogInfo(
-                $"[Direct] Deposited {totalDeposited} item(s) into \"{chest.m_name}\"");
+            if (dispatched > 0)
+            {
+                SayRandom(firstTalk, DepositLines);
+                CompanionsPlugin.Log.LogInfo(
+                    $"[Direct] Dispatched {dispatched} companion(s) to deposit in \"{chest.m_name}\"");
+            }
+            else
+            {
+                SayRandom(firstTalk, DepositEmptyLines);
+                CompanionsPlugin.Log.LogInfo("[Direct] No companions had items to deposit");
+            }
         }
+
+        private static readonly string[] RepairNothingLines = {
+            "Nothing to fix here.", "My gear's fine.", "No repairs needed."
+        };
 
         private static void DirectRepair(CompanionSetup[] setups, string localId, CraftingStation station)
         {
@@ -522,19 +606,29 @@ namespace Companions
                 if (!IsOwned(setup, localId)) continue;
                 if (!setup.GetIsCommandable()) continue;
 
-                CancelExistingActions(setup);
-
                 var repair = setup.GetComponent<RepairController>();
                 if (repair == null) continue;
 
-                repair.DirectRepairAt(station);
                 if (firstTalk == null) firstTalk = setup.GetComponent<CompanionTalk>();
-                directed++;
+
+                CancelExistingActions(setup);
+
+                if (repair.DirectRepairAt(station))
+                    directed++;
             }
 
-            SayRandom(firstTalk, RepairLines);
-            CompanionsPlugin.Log.LogInfo(
-                $"[Direct] {directed} companion(s) → repair at \"{station.m_name}\"");
+            if (directed > 0)
+            {
+                SayRandom(firstTalk, RepairLines);
+                CompanionsPlugin.Log.LogInfo(
+                    $"[Direct] {directed} companion(s) → repair at \"{station.m_name}\"");
+            }
+            else
+            {
+                SayRandom(firstTalk, RepairNothingLines);
+                CompanionsPlugin.Log.LogInfo(
+                    $"[Direct] No companions can repair at \"{station.m_name}\"");
+            }
         }
 
         private static void DirectBoard(CompanionSetup[] setups, string localId, Ship ship)
@@ -717,6 +811,7 @@ namespace Companions
                     ai.DirectedTargetLockTimer = 0f;
                     ai.CancelPendingCart();
                     ai.CancelMoveTarget();
+                    ai.CancelPendingDeposit();
 
                     // Restore follow target to player — handles ship disembark,
                     // move-to leftovers, or any other state where follow was
@@ -792,6 +887,10 @@ namespace Companions
                     CompanionsPlugin.Log.LogInfo($"[Direct] CancelExisting \"{name}\": cancelling move-to");
                 ai.CancelMoveTarget();
 
+                if (ai.PendingDepositContainer != null)
+                    CompanionsPlugin.Log.LogInfo($"[Direct] CancelExisting \"{name}\": cancelling deposit nav");
+                ai.CancelPendingDeposit();
+
                 ai.DirectedTargetLockTimer = 0f;
             }
 
@@ -813,7 +912,7 @@ namespace Companions
         /// Keeps: equipped items, food, weapons, armor, shields, utility.
         /// Deposits: materials, misc, trophies, tools, etc.
         /// </summary>
-        private static bool ShouldKeep(ItemDrop.ItemData item, Humanoid humanoid)
+        internal static bool ShouldKeep(ItemDrop.ItemData item, Humanoid humanoid)
         {
             if (item == null || item.m_shared == null) return true;
 

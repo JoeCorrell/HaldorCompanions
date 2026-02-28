@@ -105,7 +105,6 @@ namespace Companions
         private float _rangedLogTimer;    // log bow draw progress
         private float _retreatLogTimer;   // log retreat status
         private float _blockLogTimer;     // log block events (throttled)
-        private float _abandonLogTimer;   // log abandon cooldown hits (throttled)
 
         private void Awake()
         {
@@ -232,6 +231,14 @@ namespace Companions
                 return;
             }
 
+            // ── Early abandon check (before ENGAGE log to prevent spam) ──
+            if (_abandonCooldown > 0f && target.GetInstanceID() == _abandonedTargetId)
+            {
+                _ai.ClearTargets();
+                if (_phase != CombatPhase.Idle) ExitCombat("target on abandon cooldown");
+                return;
+            }
+
             // ── Log new combat engagement ──
             if (_phase == CombatPhase.Idle)
             {
@@ -328,21 +335,6 @@ namespace Companions
             float distToTarget = Vector3.Distance(transform.position, target.transform.position);
             bool isFleeingAnimal = target.GetComponent<AnimalAI>() != null;
             bool hasBow = HasBowAndArrows();
-
-            // Skip recently abandoned targets (prevents infinite re-engage on fleeing animals)
-            if (_abandonCooldown > 0f && target.GetInstanceID() == _abandonedTargetId)
-            {
-                _abandonLogTimer -= dt;
-                if (_abandonLogTimer <= 0f)
-                {
-                    _abandonLogTimer = 5f;
-                    CompanionsPlugin.Log.LogInfo(
-                        $"[Combat] Skipping abandoned target \"{target.m_name}\" — cooldown={_abandonCooldown:F0}s remaining");
-                }
-                _ai.ClearTargets();
-                if (_phase != CombatPhase.Idle) ExitCombat("target on abandon cooldown");
-                return;
-            }
 
             // Fleeing animals: always use bow, never chase on foot
             if (isFleeingAnimal)

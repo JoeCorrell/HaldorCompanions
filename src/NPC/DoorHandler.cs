@@ -49,6 +49,7 @@ namespace Companions
         private ZNetView          _nview;
         private HarvestController _harvest;
         private RepairController  _repair;
+        private CompanionRest     _rest;
 
         // ── State ───────────────────────────────────────────────────────────
         private Phase   _phase;
@@ -86,6 +87,7 @@ namespace Companions
             _nview    = GetComponent<ZNetView>();
             _harvest  = GetComponent<HarvestController>();
             _repair   = GetComponent<RepairController>();
+            _rest     = GetComponent<CompanionRest>();
             CompanionsPlugin.Log.LogInfo("[DoorHandler] Initialized — door handling active");
         }
 
@@ -170,6 +172,15 @@ namespace Companions
             {
                 _cooldownTimer -= dt;
                 _stuckTimer = 0f;
+                ResetProactive();
+                return;
+            }
+
+            // Sleeping/sitting companions are stationary by design — skip entirely
+            if (_rest != null && _rest.IsResting)
+            {
+                _stuckTimer = 0f;
+                _stuckCheckTimer = 0f;
                 ResetProactive();
                 return;
             }
