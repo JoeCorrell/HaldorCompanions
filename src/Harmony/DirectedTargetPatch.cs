@@ -905,6 +905,14 @@ namespace Companions
                     $"[Direct] CancelExisting \"{name}\": cancelling active repair");
                 repair.CancelDirected();
             }
+
+            var smelt = setup.GetComponent<SmeltController>();
+            if (smelt != null && smelt.IsActive)
+            {
+                CompanionsPlugin.Log.LogDebug(
+                    $"[Direct] CancelExisting \"{name}\": cancelling active smelt");
+                smelt.CancelDirected();
+            }
         }
 
         /// <summary>

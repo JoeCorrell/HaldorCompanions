@@ -24,9 +24,10 @@ namespace Companions
         private ZNetView         _nview;
         private ZSyncAnimation   _zanim;
         private CompanionTalk    _talk;
-        private CombatController _combat;
+        private CombatController  _combat;
         private HarvestController _harvest;
-        private DoorHandler      _doorHandler;
+        private DoorHandler       _doorHandler;
+        private SmeltController   _smelt;
 
         // ── State ───────────────────────────────────────────────────────────
         private RepairPhase     _phase;
@@ -65,6 +66,7 @@ namespace Companions
             _combat      = GetComponent<CombatController>();
             _harvest     = GetComponent<HarvestController>();
             _doorHandler = GetComponent<DoorHandler>();
+            _smelt       = GetComponent<SmeltController>();
         }
 
         private void Update()
@@ -413,6 +415,10 @@ namespace Companions
 
             // Skip during active harvest (moving/attacking/collecting, not idle scanning)
             if (_harvest != null && _harvest.IsActive)
+                return true;
+
+            // Skip during active smelting
+            if (_smelt != null && _smelt.IsActive)
                 return true;
 
             // Skip while companion UI is open for this companion

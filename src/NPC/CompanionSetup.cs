@@ -40,6 +40,7 @@ namespace Companions
         internal const int ModeGatherOre   = 3;
         internal const int ModeStay        = 4;
         internal const int ModeForage     = 5;
+        internal const int ModeSmelt      = 6;
 
         internal const float MaxLeashDistance = 50f;
         private const int ActionModeSchemaVersion = 2;
@@ -62,6 +63,7 @@ namespace Companions
         private ZSyncAnimation   _zanim;
         private HarvestController _harvestCached;
         private CompanionRest     _restCached;
+        private SmeltController   _smeltCached;
         private bool           _initialized;
         private bool           _ownerMismatchLogged;
         private bool           _uiFrozen;
@@ -80,6 +82,7 @@ namespace Companions
             _zanim         = GetComponent<ZSyncAnimation>();
             _harvestCached = GetComponent<HarvestController>();
             _restCached    = GetComponent<CompanionRest>();
+            _smeltCached   = GetComponent<SmeltController>();
 
             CompanionsPlugin.Log.LogInfo(
                 $"[Setup] Awake — nview={_nview != null} visEquip={_visEquip != null} " +
@@ -187,6 +190,9 @@ namespace Companions
                 if (_harvestCached != null && _harvestCached.IsActive)
                     return; // HarvestController is driving movement
 
+                if (_smeltCached != null && _smeltCached.IsActive)
+                    return; // SmeltController is driving movement
+
                 if (_restCached != null && (_restCached.IsNavigating || _restCached.IsResting))
                     return; // CompanionRest is navigating to a bed/fire or resting
 
@@ -202,7 +208,8 @@ namespace Companions
                 // directed navigation is active and Follow toggle is ON.
                 if (mode == ModeFollow ||
                     (mode >= ModeGatherWood && mode <= ModeGatherOre) ||
-                    mode == ModeForage)
+                    mode == ModeForage ||
+                    mode == ModeSmelt)
                 {
                     _ai.SetFollowTarget(Player.m_localPlayer.gameObject);
                     CompanionsPlugin.Log.LogDebug(
@@ -252,7 +259,7 @@ namespace Companions
 
             // Legacy mapping: 2 used to be Stay before gather modes were fully wired.
             if (mode == 2) mode = ModeStay;
-            if (mode < ModeFollow || mode > ModeForage) mode = ModeFollow;
+            if (mode < ModeFollow || mode > ModeSmelt) mode = ModeFollow;
 
             zdo.Set(ActionModeHash, mode);
             zdo.Set(ActionModeSchemaHash, ActionModeSchemaVersion);
@@ -378,8 +385,9 @@ namespace Companions
                 case ModeGatherStone:
                 case ModeGatherOre:
                 case ModeForage:
-                    // Don't override follow target if HarvestController is actively
-                    // driving movement to a resource — it sets its own follow target.
+                case ModeSmelt:
+                    // Don't override follow target if HarvestController or SmeltController
+                    // is actively driving movement — they set their own follow targets.
                     // Skip this guard when force=true (UI close restoration).
                     if (!force)
                     {
@@ -388,6 +396,13 @@ namespace Companions
                         {
                             CompanionsPlugin.Log.LogDebug(
                                 $"[Setup]   → Gather mode={mode}, harvest active — skipping follow override");
+                            break;
+                        }
+                        var smeltCheck = GetComponent<SmeltController>();
+                        if (smeltCheck != null && smeltCheck.IsActive)
+                        {
+                            CompanionsPlugin.Log.LogDebug(
+                                $"[Setup]   → Smelt mode={mode}, smelt active — skipping follow override");
                             break;
                         }
                     }

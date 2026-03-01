@@ -30,6 +30,7 @@ namespace Companions
         private const int ActionGatherStone = 2;
         private const int ActionGatherOre   = 3;
         private const int ActionForage      = 5;
+        private const int ActionSmelt       = 6;
         private const int ActionStayHome    = 10;
         private const int ActionSetHome     = 11;
         private const int ActionWander      = 12;
@@ -504,6 +505,7 @@ namespace Companions
                 case ActionGatherStone:
                 case ActionGatherOre:
                 case ActionForage:
+                case ActionSmelt:
                     SetActionMode(seg.ActionId);
                     break;
                 case ActionStayHome:
@@ -541,6 +543,10 @@ namespace Companions
             _companionHarvest?.NotifyActionModeChanged();
             _companion.ApplyFollowMode(newMode);
 
+            // Notify SmeltController of mode change
+            var smelt = _companion.GetComponent<SmeltController>();
+            smelt?.NotifyActionModeChanged();
+
             string name;
             switch (newMode)
             {
@@ -549,6 +555,7 @@ namespace Companions
                 case CompanionSetup.ModeGatherStone: name = "Gather Stone"; break;
                 case CompanionSetup.ModeGatherOre:   name = "Gather Ore"; break;
                 case CompanionSetup.ModeForage:      name = "Forage"; break;
+                case CompanionSetup.ModeSmelt:       name = "Smelt"; break;
                 default:                             name = "Idle"; break;
             }
             MessageHud.instance?.ShowMessage(MessageHud.MessageType.Center, name);
@@ -696,6 +703,11 @@ namespace Companions
                     Label = "Forage", ActionId = ActionForage,
                     IsMode = true, IsActive = currentMode == CompanionSetup.ModeForage,
                     IconColor = new Color(0.45f, 0.75f, 0.30f)
+                });
+                _segments.Add(new Segment {
+                    Label = "Smelt", ActionId = ActionSmelt,
+                    IsMode = true, IsActive = currentMode == CompanionSetup.ModeSmelt,
+                    IconColor = new Color(0.85f, 0.45f, 0.15f)
                 });
             }
 
@@ -972,6 +984,7 @@ namespace Companions
                 case ActionGatherStone: return "GatherStone";
                 case ActionGatherOre:   return "GatherOre";
                 case ActionForage:      return "GatherForage";
+                case ActionSmelt:       return "Smelt";
                 case ActionStayHome:    return "StayHome";
                 case ActionSetHome:     return "SetHome";
                 case ActionWander:      return "Wander";

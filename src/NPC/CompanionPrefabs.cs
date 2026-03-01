@@ -277,6 +277,9 @@ namespace Companions
 
             // Auto-repair at nearby workbenches
             go.AddComponent<RepairController>();
+
+            // Smelting/refilling kilns and furnaces
+            go.AddComponent<SmeltController>();
         }
 
         private static void RegisterPrefab(GameObject go, ZNetScene zNetScene)

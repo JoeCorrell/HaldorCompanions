@@ -61,6 +61,11 @@ namespace Companions
             "My legs are about to give out!",
             "I'm loaded down. Let's head back."
         };
+        private static readonly string[] SmeltLines = {
+            "Keeping the fires burning.", "The forge needs more fuel.",
+            "These bars are coming along nicely.", "Almost done with this batch.",
+            "The kiln is running hot.", "More ore going in."
+        };
 
         // ── Lifecycle ──────────────────────────────────────────────────────
 
@@ -154,6 +159,11 @@ namespace Companions
             if (mode == CompanionSetup.ModeForage)
             {
                 SayRandom(ForageLines);
+                return;
+            }
+            if (mode == CompanionSetup.ModeSmelt)
+            {
+                SayRandom(SmeltLines);
                 return;
             }
 
