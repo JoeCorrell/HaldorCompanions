@@ -60,9 +60,9 @@ namespace Companions
         private const int ActionStancePassive    = 23;
 
         private const float InnerRingRadius    = 105f;
-        private const float InnerSegSize       = 70f;
-        private const float InnerIconSize      = 42f;
-        private const float InnerHighlightSize = 56f;
+        private const float InnerSegSize       = 100f;
+        private const float InnerIconSize      = 62f;
+        private const float InnerHighlightSize = 84f;
 
         // ── Animation ──────────────────────────────────────────────────────
         private enum AnimState { Closed, Opening, Open, Closing }
@@ -1214,21 +1214,21 @@ namespace Companions
                     iconRT.anchorMax = new Vector2(0.5f, 0.5f);
                     iconRT.pivot = new Vector2(0.5f, 0.5f);
                     iconRT.sizeDelta = new Vector2(InnerIconSize * 0.78f, InnerIconSize * 0.78f);
-                    iconRT.anchoredPosition = new Vector2(0f, 4f);
+                    iconRT.anchoredPosition = new Vector2(0f, 6f);
                     var iconImg = iconGO.GetComponent<Image>();
                     iconImg.sprite = GetActionIcon(seg.ActionId);
                     iconImg.color = new Color(0.9f, 0.9f, 0.9f, 0.85f);
                     iconImg.raycastTarget = false;
 
                     // Label
-                    var label = MakeText(segGO.transform, "Label", seg.Label, font, 8f,
+                    var label = MakeText(segGO.transform, "Label", seg.Label, font, 9f,
                         TextNormal, TextAlignmentOptions.Center);
                     var labelRT = label.GetComponent<RectTransform>();
                     labelRT.anchorMin = new Vector2(0f, 0f);
                     labelRT.anchorMax = new Vector2(1f, 0f);
                     labelRT.pivot = new Vector2(0.5f, 1f);
-                    labelRT.sizeDelta = new Vector2(0f, 12f);
-                    labelRT.anchoredPosition = new Vector2(0f, 12f);
+                    labelRT.sizeDelta = new Vector2(0f, 14f);
+                    labelRT.anchoredPosition = new Vector2(0f, 14f);
 
                     // Active dot
                     Image dotImg = null;
@@ -1238,7 +1238,7 @@ namespace Companions
                     dotRT.anchorMin = new Vector2(0.5f, 0f);
                     dotRT.anchorMax = new Vector2(0.5f, 0f);
                     dotRT.pivot = new Vector2(0.5f, 0.5f);
-                    dotRT.sizeDelta = new Vector2(6f, 6f);
+                    dotRT.sizeDelta = new Vector2(8f, 8f);
                     dotRT.anchoredPosition = new Vector2(0f, 6f);
                     dotImg = dotGO.GetComponent<Image>();
                     dotImg.sprite = GetCircleSprite();

@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.0.7
+- Fixed smelter interaction deadlock: companion got stuck when pathfinding reached closest point but 3D distance exceeded threshold (moveOk=True at 2.6m vs 2.5m UseDistance)
+- SmeltController now accepts pathfinding "arrived" with relaxed distance tolerance for smelter insert and output collection
+- Increased smelter interact offset from 1.2m to 1.3m for better switch-side navigation
+
+## 0.0.6
+- Improved controller support: dual-stick radial menu selection (whichever stick has greater magnitude)
+- Added camera direction lock on radial close to prevent camera jerk from held right stick
+- Added custom combat stance icons (Balanced, Aggressive, Defensive, Passive)
+- Increased inner ring stance icon sizes to match outer ring icons
+- Increased smelter interact offset so companions navigate to the correct side of smelters
+
 ## 0.0.5
 - Added combat stances: Balanced, Aggressive, Defensive, and Passive selectable from inner radial ring
 - Aggressive stance: extended 50m aggro range, no blocking/dodging, 15%/5% retreat thresholds, halved power attack cooldown, tighter flanking

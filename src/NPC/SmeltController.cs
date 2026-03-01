@@ -455,19 +455,28 @@ namespace Companions
             Vector3 interactPos = GetSmelterInteractPoint(_targetSmelter, _carryingIsFuel);
             float dist = Vector3.Distance(transform.position, interactPos);
 
-            if (dist < UseDistance)
+            bool closeEnough = dist < UseDistance;
+            if (!closeEnough)
             {
-                _ai.StopMoving();
-                _ai.LookAtPoint(interactPos);
-                _insertTimer = InsertDelay;
-                _phase = SmeltPhase.InsertingItem;
-                Log($"Arrived at smelter interact point (dist={dist:F1}m) — inserting {_carryingAmount}x {_carryingItemPrefab}");
-                return;
+                bool moveOk = _ai.MoveToPoint(dt, interactPos, UseDistance, true);
+                // MoveTo returns true when pathfinding reached closest point or
+                // XZ distance satisfied — accept if within a relaxed threshold
+                // (handles Y-offset and NavMesh imprecision near smelter colliders)
+                if (moveOk && dist < UseDistance + 1f)
+                    closeEnough = true;
+                else
+                {
+                    LogMovement(dt, "smelter", dist, moveOk);
+                    UpdateStuckDetection(dt, "smelter");
+                    return;
+                }
             }
 
-            bool moveOk = _ai.MoveToPoint(dt, interactPos, UseDistance, true);
-            LogMovement(dt, "smelter", dist, moveOk);
-            UpdateStuckDetection(dt, "smelter");
+            _ai.StopMoving();
+            _ai.LookAtPoint(interactPos);
+            _insertTimer = InsertDelay;
+            _phase = SmeltPhase.InsertingItem;
+            Log($"Arrived at smelter interact point (dist={dist:F1}m) — inserting {_carryingAmount}x {_carryingItemPrefab}");
         }
 
         // ── Inserting item into smelter ────────────────────────────────────
@@ -573,9 +582,17 @@ namespace Companions
             if (dist > UseDistance)
             {
                 bool moveOk = _ai.MoveToPoint(Time.deltaTime, outputPos, UseDistance, true);
-                LogMovement(Time.deltaTime, "smelter (collect)", dist, moveOk);
-                UpdateStuckDetection(Time.deltaTime, "smelter (collect)");
-                return;
+                // Accept pathfinding "arrived" if within relaxed threshold
+                if (moveOk && dist < UseDistance + 1f)
+                {
+                    _ai.StopMoving();
+                }
+                else
+                {
+                    LogMovement(Time.deltaTime, "smelter (collect)", dist, moveOk);
+                    UpdateStuckDetection(Time.deltaTime, "smelter (collect)");
+                    return;
+                }
             }
 
             // At the smelter — trigger output spawn if not yet done
@@ -1042,7 +1059,7 @@ namespace Companions
             Transform switchT = isFuel ? smelter.m_addWoodSwitch?.transform
                                        : smelter.m_addOreSwitch?.transform;
             if (switchT == null) return smelter.transform.position;
-            return OffsetFromCenter(smelter.transform.position, switchT.position, 0.8f);
+            return OffsetFromCenter(smelter.transform.position, switchT.position, 1.3f);
         }
 
         /// <summary>
@@ -1054,9 +1071,9 @@ namespace Companions
         {
             Vector3 center = smelter.transform.position;
             if (smelter.m_emptyOreSwitch != null)
-                return OffsetFromCenter(center, smelter.m_emptyOreSwitch.transform.position, 0.8f);
+                return OffsetFromCenter(center, smelter.m_emptyOreSwitch.transform.position, 1.3f);
             if (smelter.m_outputPoint != null)
-                return OffsetFromCenter(center, smelter.m_outputPoint.position, 0.8f);
+                return OffsetFromCenter(center, smelter.m_outputPoint.position, 1.3f);
             return center;
         }
 
