@@ -163,6 +163,7 @@ namespace Companions
         private HarvestController _harvest;
         private CombatController _combat;
         private RepairController _repair;
+        private SmeltController _smelt;
         private DoorHandler _doorHandler;
         private CompanionRest _rest;
         private CompanionTalk _talk;
@@ -180,6 +181,7 @@ namespace Companions
             _harvest = GetComponent<HarvestController>();
             _combat = GetComponent<CombatController>();
             _repair = GetComponent<RepairController>();
+            _smelt = GetComponent<SmeltController>();
             _doorHandler = GetComponent<DoorHandler>();
             _rest = GetComponent<CompanionRest>();
             _talk = GetComponent<CompanionTalk>();
@@ -801,6 +803,7 @@ namespace Companions
                 // distance (~3m) cancels the controller's movement commands.
                 if ((_harvest != null && _harvest.IsActive) ||
                     (_repair != null && _repair.IsActive) ||
+                    (_smelt != null && _smelt.IsActive) ||
                     (_doorHandler != null && _doorHandler.IsActive))
                     return true;
 
@@ -1514,19 +1517,20 @@ namespace Companions
 
             bool harvesting = _harvest != null && _harvest.IsInGatherMode;
             bool repairing = _repair != null && _repair.IsActive;
+            bool smelting = _smelt != null && _smelt.IsActive;
             bool handlingDoor = _doorHandler != null && _doorHandler.IsActive;
 
             // StayHome with wander OFF: companion is intentionally stationary
             // at home — don't flag as stuck. Also suppress during return-home.
             // Follow OFF + StayHome OFF: companion is idle with no movement target.
             bool stayingHome = _setup != null && _setup.GetStayHome()
-                && !_setup.GetWander() && !harvesting;
+                && !_setup.GetWander() && !harvesting && !smelting;
             bool followOffIdle = _setup != null && !_setup.GetFollow()
-                && !_setup.GetStayHome() && !harvesting;
+                && !_setup.GetStayHome() && !harvesting && !smelting;
             bool intentionallyStationary = stayingHome || _returningHome || followOffIdle;
 
             if (moved < 0.1f && !inAttack && !atFollowDist && !harvesting
-                && !repairing && !handlingDoor && !intentionallyStationary)
+                && !repairing && !smelting && !handlingDoor && !intentionallyStationary)
                 _stuckDetectTimer += dt;
             else
                 _stuckDetectTimer = 0f;

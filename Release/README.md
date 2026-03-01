@@ -9,7 +9,7 @@
 <br/>
 
 <p align="center">
-<a href="https://github.com/JoeCorrell/OfflineCompanions/releases"><img src="https://img.shields.io/badge/Version-0.0.3--beta-c9a44a?style=for-the-badge&labelColor=0d1117" alt="Version"></a>
+<a href="https://github.com/JoeCorrell/OfflineCompanions/releases"><img src="https://img.shields.io/badge/Version-0.0.4--beta-c9a44a?style=for-the-badge&labelColor=0d1117" alt="Version"></a>
 <a href="#-requirements"><img src="https://img.shields.io/badge/BepInEx-5.4.2200+-e06c20?style=for-the-badge&labelColor=0d1117" alt="BepInEx"></a>
 <a href="#-requirements"><img src="https://img.shields.io/badge/Valheim-0.219+-4ade80?style=for-the-badge&labelColor=0d1117" alt="Valheim"></a>
 <a href="#"><img src="https://img.shields.io/badge/License-MIT-7c3aed?style=for-the-badge&labelColor=0d1117" alt="License"></a>
@@ -114,6 +114,7 @@ The companion's name is shown in the center. Active toggles show their current O
 | **Gather Stone** | Mode | Autonomously find and mine rocks nearby |
 | **Gather Ore** | Mode | Autonomously find and mine ore deposits nearby |
 | **Forage** | Mode | Autonomously find and pick berry bushes, mushrooms, flowers, and ground items nearby |
+| **Smelt** | Mode | Autonomously refill kilns and furnaces with fuel/ore from chests, collect smelted output |
 | **Stay Home** | Toggle | Patrol the home position instead of following you |
 | **Set Home** | Action | Save the companion's current position as their home point |
 | **Wander** | Toggle | Roam up to 50m around home (ON) or stay put (OFF) |
@@ -241,6 +242,40 @@ Gathering stops automatically at **298/300 weight**. The companion reverts to Fo
 If an enemy enters within 10m during gathering, the companion pauses to fight, then resumes gathering once the threat is gone.
 
 > Point at a specific tree, rock, or ore node and press the command hotkey to direct the companion straight to it.
+
+<br/>
+</td></tr></table>
+
+<br/>
+
+<p align="center">
+<img src="https://img.shields.io/badge/%F0%9F%94%A5_SMELTING_AUTOMATION-e06c20?style=for-the-badge&labelColor=0d1117" alt="Smelting Automation">
+</p>
+
+<table><tr><td width="900">
+<br/>
+
+Set a companion to **Smelt** via the radial wheel and they'll autonomously manage nearby kilns and furnaces. Place them near your smelting setup with chests of ore and fuel, and they'll handle the rest.
+
+### How It Works
+The companion continuously scans for smelters within 25m and keeps them running:
+
+1. **Refill kilns** first (they produce charcoal for furnaces)
+2. **Refill furnaces** with smart priority: ore first when fuel is adequate, fuel when critically low
+3. **Collect smelted output** (bars, coal) from ground drops and queued output
+4. **Deposit output** into nearby chests with available space
+
+### Smart Behavior
+- **Inventory-first**: if the companion already has fuel or ore in their inventory, they go straight to the smelter instead of visiting a chest
+- **Chest animations**: opening and closing chests plays the proper animation and sound effects
+- **Smelter effects**: inserting fuel or ore plays the smelter's sound effects and feeding animation
+- **Correct positioning**: the AI navigates to the correct interaction side of each smelter (fuel side, ore side, output side)
+- **Carry limits**: up to 20 ore or 40 fuel per trip to prevent overweighting
+
+### Combine with Stay Home
+Set **Stay Home + Smelt** and the companion will manage your smelting operation autonomously near their home position. Perfect for unattended base smelting while you're out exploring.
+
+> Companions will pause smelting to fight any enemies that enter self-defense range, then resume when the threat is gone.
 
 <br/>
 </td></tr></table>
@@ -417,6 +452,7 @@ Companions have context-aware overhead speech that plays every 20-40 seconds. Li
 | **Needs Repair** | "My gear is worn.", "Need repairs." |
 | **Gathering** | "Found some!", "This looks promising." |
 | **Foraging** | "Found some berries!", "These mushrooms look good." |
+| **Smelting** | "Fetching fuel.", "Fetching materials.", "Everything's running. I'll keep watch." |
 | **Following** | "Right behind you.", "Lead the way.", "Nice day for an adventure." |
 | **Commands** | "On it!", "As you wish." |
 

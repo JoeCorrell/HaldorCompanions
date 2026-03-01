@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.0.4
+- Added Smelt mode: companions autonomously refill kilns and furnaces with fuel and ore from nearby chests
+- Companions collect smelted output (bars, coal) from furnace ground drops and queued output
+- Companions deposit collected output into nearby chests with available space
+- Smart per-smelter priority: ore first when fuel is adequate, fuel when critically low, kilns before furnaces
+- Inventory-first refilling: companions use fuel/ore already in their inventory before making a chest trip
+- Chest open/close animation and sound effects play when companions take or deposit items
+- Smelter sound effects and feeding animation play when companions insert fuel or ore
+- AI navigates to the correct side of smelters using switch interaction points
+- Increased carry capacity per trip: 20 ore, 40 fuel (coal)
+- Added Smelt segment to radial command wheel with custom icon
+- Added Auto Pickup custom icon to radial command wheel
+- Companions speak contextual lines while smelting ("Fetching fuel.", "Everything's running.", etc.)
+
 ## 0.0.3
 - Added Forage gather mode: companions find and pick berry bushes, mushrooms, flowers, branches, and stones
 - Changed Follow from a mode to an independent toggle (Follow ON overrides Stay Home, works alongside gather modes)

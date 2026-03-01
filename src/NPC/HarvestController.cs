@@ -1280,6 +1280,17 @@ namespace Companions
                     if (distFromHome > 50f) continue;
                 }
 
+                // Player leash: skip targets beyond 40m from the player
+                // Prevents the companion from drifting endlessly away
+                if (Player.m_localPlayer != null &&
+                    (_setup == null || !_setup.GetStayHome()))
+                {
+                    float distFromPlayer = Vector3.Distance(
+                        Player.m_localPlayer.transform.position,
+                        candidate.transform.position);
+                    if (distFromPlayer > 40f) continue;
+                }
+
                 candidateCount++;
                 float dist = Vector3.Distance(transform.position, candidate.transform.position);
 
@@ -1384,6 +1395,16 @@ namespace Companions
                     float distFromHome = Vector3.Distance(
                         _setup.GetHomePosition(), go.transform.position);
                     if (distFromHome > 50f) continue;
+                }
+
+                // Player leash: skip targets beyond 40m from the player
+                if (Player.m_localPlayer != null &&
+                    (_setup == null || !_setup.GetStayHome()))
+                {
+                    float distFromPlayer = Vector3.Distance(
+                        Player.m_localPlayer.transform.position,
+                        go.transform.position);
+                    if (distFromPlayer > 40f) continue;
                 }
 
                 candidateCount++;

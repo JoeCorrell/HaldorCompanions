@@ -547,18 +547,6 @@ namespace Companions
             var smelt = _companion.GetComponent<SmeltController>();
             smelt?.NotifyActionModeChanged();
 
-            string name;
-            switch (newMode)
-            {
-                case CompanionSetup.ModeFollow:      name = "Idle"; break;
-                case CompanionSetup.ModeGatherWood:  name = "Gather Wood"; break;
-                case CompanionSetup.ModeGatherStone: name = "Gather Stone"; break;
-                case CompanionSetup.ModeGatherOre:   name = "Gather Ore"; break;
-                case CompanionSetup.ModeForage:      name = "Forage"; break;
-                case CompanionSetup.ModeSmelt:       name = "Smelt"; break;
-                default:                             name = "Idle"; break;
-            }
-            MessageHud.instance?.ShowMessage(MessageHud.MessageType.Center, name);
         }
 
         private void ToggleStayHome()
@@ -577,7 +565,6 @@ namespace Companions
                     _companionAI.SetFollowTarget(null);
                     _companionAI.SetPatrolPointAt(_companion.GetHomePosition());
                 }
-                MessageHud.instance?.ShowMessage(MessageHud.MessageType.Center, "Stay Home: ON");
             }
             else
             {
@@ -585,7 +572,6 @@ namespace Companions
                 int mode = zdo?.GetInt(CompanionSetup.ActionModeHash, CompanionSetup.ModeFollow)
                            ?? CompanionSetup.ModeFollow;
                 _companion.ApplyFollowMode(mode);
-                MessageHud.instance?.ShowMessage(MessageHud.MessageType.Center, "Stay Home: OFF");
             }
         }
 
@@ -595,7 +581,6 @@ namespace Companions
             _companion.SetHomePosition(pos);
             if (_companion.GetStayHome() && _companionAI != null)
                 _companionAI.SetPatrolPointAt(pos);
-            MessageHud.instance?.ShowMessage(MessageHud.MessageType.Center, "Home point set.");
         }
 
         private void ToggleWander()
@@ -604,8 +589,6 @@ namespace Companions
             _companion.SetWander(next);
             if (next && !_companion.HasHomePosition())
                 _companion.SetHomePosition(_companion.transform.position);
-            MessageHud.instance?.ShowMessage(
-                MessageHud.MessageType.Center, next ? "Wander: ON" : "Wander: OFF");
         }
 
         private void ToggleAutoPickup()
@@ -614,16 +597,12 @@ namespace Companions
             if (zdo == null) return;
             bool current = zdo.GetBool(CompanionSetup.AutoPickupHash, true);
             zdo.Set(CompanionSetup.AutoPickupHash, !current);
-            MessageHud.instance?.ShowMessage(
-                MessageHud.MessageType.Center, !current ? "Auto Pickup: ON" : "Auto Pickup: OFF");
         }
 
         private void ToggleCommandable()
         {
             bool current = _companion.GetIsCommandable();
             _companion.SetIsCommandable(!current);
-            MessageHud.instance?.ShowMessage(
-                MessageHud.MessageType.Center, !current ? "Command: ON" : "Command: OFF");
         }
 
         private void ToggleFollow()
@@ -634,8 +613,6 @@ namespace Companions
             int mode = zdo?.GetInt(CompanionSetup.ActionModeHash, CompanionSetup.ModeFollow)
                        ?? CompanionSetup.ModeFollow;
             _companion.ApplyFollowMode(mode);
-            MessageHud.instance?.ShowMessage(
-                MessageHud.MessageType.Center, next ? "Follow: ON" : "Follow: OFF");
         }
 
         private void EnsureOwnership()
@@ -685,17 +662,17 @@ namespace Companions
             if (!_isDverger)
             {
                 _segments.Add(new Segment {
-                    Label = "Gather Wood", ActionId = ActionGatherWood,
+                    Label = "Wood", ActionId = ActionGatherWood,
                     IsMode = true, IsActive = currentMode == CompanionSetup.ModeGatherWood,
                     IconColor = new Color(0.65f, 0.45f, 0.25f)
                 });
                 _segments.Add(new Segment {
-                    Label = "Gather Stone", ActionId = ActionGatherStone,
+                    Label = "Stone", ActionId = ActionGatherStone,
                     IsMode = true, IsActive = currentMode == CompanionSetup.ModeGatherStone,
                     IconColor = new Color(0.60f, 0.60f, 0.60f)
                 });
                 _segments.Add(new Segment {
-                    Label = "Gather Ore", ActionId = ActionGatherOre,
+                    Label = "Ore", ActionId = ActionGatherOre,
                     IsMode = true, IsActive = currentMode == CompanionSetup.ModeGatherOre,
                     IconColor = new Color(0.75f, 0.55f, 0.15f)
                 });
@@ -727,7 +704,7 @@ namespace Companions
                 IconColor = new Color(0.50f, 0.80f, 0.35f)
             });
             _segments.Add(new Segment {
-                Label = "Auto Pickup", ActionId = ActionAutoPickup,
+                Label = "Pickup", ActionId = ActionAutoPickup,
                 IsToggle = true, IsActive = autoPickup,
                 IconColor = new Color(0.90f, 0.70f, 0.15f)
             });

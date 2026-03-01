@@ -820,9 +820,18 @@ namespace Companions
                         ai.SetFollowTarget(null);
                 }
 
+                // Reset action mode to Follow — fully exits gather/smelt modes
+                var nview = setup.GetComponent<ZNetView>();
+                if (nview?.GetZDO() != null)
+                {
+                    int mode = nview.GetZDO().GetInt(CompanionSetup.ActionModeHash, CompanionSetup.ModeFollow);
+                    if (mode != CompanionSetup.ModeFollow)
+                        nview.GetZDO().Set(CompanionSetup.ActionModeHash, CompanionSetup.ModeFollow);
+                }
+
                 var harvest = setup.GetComponent<HarvestController>();
                 if (harvest != null)
-                    harvest.CancelDirectedTarget();
+                    harvest.NotifyActionModeChanged();
 
                 var rest = setup.GetComponent<CompanionRest>();
                 if (rest != null)
@@ -831,6 +840,10 @@ namespace Companions
                 var repair = setup.GetComponent<RepairController>();
                 if (repair != null && repair.IsActive)
                     repair.CancelDirected();
+
+                var smelt = setup.GetComponent<SmeltController>();
+                if (smelt != null)
+                    smelt.NotifyActionModeChanged();
             }
 
             SayRandom(firstTalk, CancelLines);
