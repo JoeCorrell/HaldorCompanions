@@ -13,6 +13,8 @@ namespace Companions
         private Humanoid       _humanoid;
         private CompanionFood  _food;
         private CompanionSetup _setup;
+        private AudioSource    _audioSource;
+        private string         _voicePack;
 
         private float _talkTimer;
         private float _talkInterval;
@@ -24,48 +26,20 @@ namespace Companions
         private const float CullDistance   = 20f;
         private const float SpeechTTL      = 5f;
         private const float RepairThreshold = 0.25f;
+        private const float SayCooldown    = 20f;
+        private float _lastSayTime = -SayCooldown;
 
-        // ── Text pools ─────────────────────────────────────────────────────
-
-        private static readonly string[] ActionLines = {
-            "Let's go!", "On it!", "I'll handle it.", "As you wish.", "Consider it done."
-        };
-        private static readonly string[] GatherLines = {
-            "Found some!", "Back to work.", "Almost got it.", "This looks promising.",
-            "Plenty of resources here.", "I'll keep at it."
-        };
-        private static readonly string[] ForageLines = {
-            "Ooh, berries!", "This one looks ripe.", "Nature provides.",
-            "I'll gather what I can.", "There's plenty growing here."
-        };
-        private static readonly string[] CombatLines = {
-            "Take this!", "Watch out!", "For Odin!", "Stand your ground!",
-            "Behind you!", "I've got your back!", "They won't get past me!"
-        };
-        private static readonly string[] FollowLines = {
-            "Right behind you.", "Lead the way.", "Nice day for an adventure.",
-            "Where to next?", "I'm with you.", "Staying close."
-        };
-        private static readonly string[] HungryLines = {
-            "I'm starving...", "Got any food?", "My stomach is growling.",
-            "Could use a meal.", "I'm getting weak from hunger."
-        };
-        private static readonly string[] RepairLines = {
-            "My gear is worn.", "Need repairs.", "This won't hold much longer.",
-            "My equipment is damaged.", "Better fix this soon."
-        };
-        private static readonly string[] OverweightLines = {
-            "My back is hurting from all this weight!",
-            "I can't carry any more...",
-            "Too heavy! I need to drop some off.",
-            "My legs are about to give out!",
-            "I'm loaded down. Let's head back."
-        };
-        private static readonly string[] SmeltLines = {
-            "Keeping the fires burning.", "The forge needs more fuel.",
-            "These bars are coming along nicely.", "Almost done with this batch.",
-            "The kiln is running hot.", "More ore going in."
-        };
+        // ── Text pools (loaded from speech.json) ─────────────────────────
+        private static string[] ActionLines    => SpeechConfig.Instance.Action;
+        private static string[] GatherLines    => SpeechConfig.Instance.Gather;
+        private static string[] ForageLines    => SpeechConfig.Instance.Forage;
+        private static string[] CombatLines    => SpeechConfig.Instance.Combat;
+        private static string[] FollowLines    => SpeechConfig.Instance.Follow;
+        private static string[] HungryLines    => SpeechConfig.Instance.Hungry;
+        private static string[] RepairLines    => SpeechConfig.Instance.Repair;
+        private static string[] OverweightLines => SpeechConfig.Instance.Overweight;
+        private static string[] SmeltLines     => SpeechConfig.Instance.Smelt;
+        private static string[] IdleLines      => SpeechConfig.Instance.Idle;
 
         // ── Lifecycle ──────────────────────────────────────────────────────
 
@@ -76,6 +50,29 @@ namespace Companions
             _humanoid  = GetComponent<Humanoid>();
             _food      = GetComponent<CompanionFood>();
             _setup     = GetComponent<CompanionSetup>();
+
+            // AudioSource for voice clips (3D positional)
+            _audioSource = gameObject.AddComponent<AudioSource>();
+            _audioSource.spatialBlend = 1f;
+            _audioSource.rolloffMode  = AudioRolloffMode.Linear;
+            _audioSource.minDistance   = 2f;
+            _audioSource.maxDistance   = CullDistance;
+            _audioSource.volume        = 1.5f;
+            _audioSource.playOnAwake   = false;
+
+            // Determine voice pack from appearance (0=male, 1=female)
+            _voicePack = "MaleCompanion";
+            if (_nview != null)
+            {
+                var zdo = _nview.GetZDO();
+                if (zdo != null)
+                {
+                    string serial = zdo.GetString(CompanionSetup.AppearanceHash, "");
+                    var appearance = CompanionAppearance.Deserialize(serial);
+                    _voicePack = appearance.ModelIndex == 0 ? "MaleCompanion" : "FemaleCompanion";
+                }
+            }
+
             ResetTimer();
         }
 
@@ -95,7 +92,7 @@ namespace Companions
             {
                 int mode = zdo.GetInt(CompanionSetup.ActionModeHash, CompanionSetup.ModeFollow);
                 if (_lastActionMode >= 0 && mode != _lastActionMode)
-                    SayRandom(ActionLines);
+                    SayRandom(ActionLines, "Action");
                 _lastActionMode = mode;
             }
 
@@ -109,14 +106,27 @@ namespace Companions
 
         // ── Public API ─────────────────────────────────────────────────────
 
-        /// <summary>Display a specific line above the companion.</summary>
-        public void Say(string text)
+        /// <summary>Display a specific line above the companion and optionally play voice audio.</summary>
+        public void Say(string text, string audioCategory = null)
         {
-            if (Chat.instance == null || string.IsNullOrEmpty(text)) return;
+            if (string.IsNullOrEmpty(text)) return;
+            if (Time.time - _lastSayTime < SayCooldown) return;
+            _lastSayTime = Time.time;
             CompanionsPlugin.Log.LogDebug($"[Talk] \"{text}\"");
-            Chat.instance.SetNpcText(
-                gameObject, Vector3.up * SpeechOffset,
-                CullDistance, SpeechTTL, "", text, false);
+
+            bool isMale = _voicePack == "MaleCompanion";
+            bool showText  = isMale ? CompanionsPlugin.MaleShowSpeechText.Value
+                                    : CompanionsPlugin.FemaleShowSpeechText.Value;
+            bool playAudio = isMale ? CompanionsPlugin.MaleEnableVoiceAudio.Value
+                                    : CompanionsPlugin.FemaleEnableVoiceAudio.Value;
+
+            if (showText && Chat.instance != null)
+                Chat.instance.SetNpcText(
+                    gameObject, Vector3.up * SpeechOffset,
+                    CullDistance, SpeechTTL, "", text, false);
+
+            if (audioCategory != null && playAudio)
+                CompanionVoice.Instance?.PlayRandom(_audioSource, _voicePack, audioCategory);
         }
 
         // ── Internals ──────────────────────────────────────────────────────
@@ -126,25 +136,25 @@ namespace Companions
             // Priority: combat > overweight > hungry > repair > gathering > following
             if (HasEnemyNearby())
             {
-                SayRandom(CombatLines);
+                SayRandom(CombatLines, "Combat");
                 return;
             }
 
             if (IsOverweight())
             {
-                SayRandom(OverweightLines);
+                SayRandom(OverweightLines, "Overweight");
                 return;
             }
 
             if (IsHungry())
             {
-                SayRandom(HungryLines);
+                SayRandom(HungryLines, "Hungry");
                 return;
             }
 
             if (NeedsRepair())
             {
-                SayRandom(RepairLines);
+                SayRandom(RepairLines, "Repair");
                 return;
             }
 
@@ -153,27 +163,36 @@ namespace Companions
                 ?? CompanionSetup.ModeFollow;
             if (mode >= CompanionSetup.ModeGatherWood && mode <= CompanionSetup.ModeGatherOre)
             {
-                SayRandom(GatherLines);
+                SayRandom(GatherLines, "Gather");
                 return;
             }
             if (mode == CompanionSetup.ModeForage)
             {
-                SayRandom(ForageLines);
+                SayRandom(ForageLines, "Forage");
                 return;
             }
             if (mode == CompanionSetup.ModeSmelt)
             {
-                SayRandom(SmeltLines);
+                SayRandom(SmeltLines, "Smelt");
+                return;
+            }
+            if (mode == CompanionSetup.ModeStay)
+            {
+                SayRandom(IdleLines, "Idle");
                 return;
             }
 
-            SayRandom(FollowLines);
+            // Mix in random idle chatter ~40% of the time while following
+            if (Random.value < 0.4f)
+                SayRandom(IdleLines, "Idle");
+            else
+                SayRandom(FollowLines, "Follow");
         }
 
-        private void SayRandom(string[] pool)
+        private void SayRandom(string[] pool, string audioCategory = null)
         {
             if (pool == null || pool.Length == 0) return;
-            Say(pool[Random.Range(0, pool.Length)]);
+            Say(pool[Random.Range(0, pool.Length)], audioCategory);
         }
 
         private void ResetTimer()

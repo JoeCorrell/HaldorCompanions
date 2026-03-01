@@ -17,11 +17,16 @@ namespace Companions
     {
         public const string PluginGUID = "com.profmags.companions";
         public const string PluginName = "Offline Companions";
-        public const string PluginVersion = "0.0.7";
+        public const string PluginVersion = "0.0.8";
 
         private static Harmony _harmony;
         internal static ManualLogSource Log;
         internal static ConfigEntry<KeyCode> DirectTargetKey;
+        internal static ConfigEntry<bool> MaleShowSpeechText;
+        internal static ConfigEntry<bool> MaleEnableVoiceAudio;
+        internal static ConfigEntry<bool> FemaleShowSpeechText;
+        internal static ConfigEntry<bool> FemaleEnableVoiceAudio;
+        internal static ConfigEntry<bool> SpawnStarterCompanion;
         private bool _fontFixWarned;
 
         private void Awake()
@@ -31,6 +36,21 @@ namespace Companions
 
             DirectTargetKey = Config.Bind("Controls", "DirectTargetKey", KeyCode.Z,
                 "Press while looking at an enemy to direct companions to focus-fire that target.");
+
+            MaleShowSpeechText = Config.Bind("Speech", "MaleShowOverheadText", false,
+                "Show overhead speech text for male companions.");
+
+            MaleEnableVoiceAudio = Config.Bind("Speech", "MaleEnableVoiceAudio", true,
+                "Play voice audio clips for male companions.");
+
+            FemaleShowSpeechText = Config.Bind("Speech", "FemaleShowOverheadText", true,
+                "Show overhead speech text for female companions.");
+
+            FemaleEnableVoiceAudio = Config.Bind("Speech", "FemaleEnableVoiceAudio", false,
+                "Play voice audio clips for female companions.");
+
+            SpawnStarterCompanion = Config.Bind("General", "SpawnStarterCompanion", true,
+                "Spawn a free companion when entering a new world for the first time.");
 
             _harmony = new Harmony(PluginGUID);
             try
@@ -47,6 +67,7 @@ namespace Companions
 
             SceneManager.sceneLoaded += OnSceneLoaded;
             Game.m_playerInitialSpawn += CompanionManager.SpawnStarterCompanion;
+            gameObject.AddComponent<CompanionVoice>();
             EnsureTmpDefaultFont("awake");
         }
 

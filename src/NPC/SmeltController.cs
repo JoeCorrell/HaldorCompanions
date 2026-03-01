@@ -55,6 +55,7 @@ namespace Companions
         private float       _stuckCheckTimer;
         private Vector3     _stuckCheckPos;
         private float       _monitorTimer;
+        private bool        _wasMonitoring;   // suppress repeated "All stocked" log
         private float       _insertTimer;
 
         // Current task tracking
@@ -195,7 +196,7 @@ namespace Companions
                 int processed = snview.GetZDO().GetInt(ZDOVars.s_spawnAmount);
                 bool isKiln = smelter.m_maxFuel == 0;
                 int groundDrops = CountGroundDropsNearSmelter(smelter);
-                Log($"  Smelter \"{smelter.m_name}\" type={( isKiln ? "kiln" : "furnace")} " +
+                LogDebug($"  Smelter \"{smelter.m_name}\" type={( isKiln ? "kiln" : "furnace")} " +
                     $"fuel={fuel:F0}/{smelter.m_maxFuel} ore={queued}/{smelter.m_maxOre} " +
                     $"output={processed} groundDrops={groundDrops} active={smelter.IsActive()} " +
                     $"pos={smelter.transform.position:F1} " +
@@ -313,13 +314,17 @@ namespace Companions
             {
                 _phase = SmeltPhase.Monitoring;
                 _monitorTimer = MonitorInterval;
-                Log("All smelters stocked — monitoring");
-                if (_talk != null) _talk.Say("Everything's running. I'll keep watch.");
+                if (!_wasMonitoring)
+                {
+                    _wasMonitoring = true;
+                    Log("All smelters stocked — monitoring");
+                    if (_talk != null) _talk.Say("Everything's running. I'll keep watch.", "Smelt");
+                }
             }
             else
             {
                 Log("All smelters idle and fully stocked — done");
-                if (_talk != null) _talk.Say("All done smelting.");
+                if (_talk != null) _talk.Say("All done smelting.", "Smelt");
                 Finish();
             }
         }
@@ -762,7 +767,7 @@ namespace Companions
 
         // ── Helpers ─────────────────────────────────────────────────────────
 
-        private bool IsSmeltMode()
+        internal bool IsSmeltMode()
         {
             var zdo = _nview?.GetZDO();
             if (zdo == null) return false;
@@ -788,7 +793,7 @@ namespace Companions
                 _nearbySmelters.Add(smelter);
             }
 
-            Log($"Scan: found {_nearbySmelters.Count} smelters");
+            LogDebug($"Scan: found {_nearbySmelters.Count} smelters");
         }
 
         private void ScanNearbyChests()
@@ -812,12 +817,12 @@ namespace Companions
                 _nearbyChests.Add(container);
             }
 
-            Log($"Scan: found {_nearbyChests.Count} chests within {ScanRadius}m");
+            LogDebug($"Scan: found {_nearbyChests.Count} chests within {ScanRadius}m");
             foreach (var chest in _nearbyChests)
             {
                 var inv = chest.GetInventory();
                 float d = Vector3.Distance(transform.position, chest.transform.position);
-                Log($"  Chest \"{chest.m_name}\" items={inv?.GetAllItems().Count ?? 0} " +
+                LogDebug($"  Chest \"{chest.m_name}\" items={inv?.GetAllItems().Count ?? 0} " +
                     $"empty={inv?.GetEmptySlots() ?? 0} dist={d:F1}m " +
                     $"pos={chest.transform.position:F1}");
             }
@@ -900,7 +905,7 @@ namespace Companions
 
             Log($"Plan: take {toTake}x fuel \"{fuelName}\" from chest " +
                 $"(dist={bestDist:F1}m) → \"{smelter.m_name}\" (fuel={fuel:F0}/{smelter.m_maxFuel})");
-            if (_talk != null) _talk.Say("Fetching fuel.");
+            if (_talk != null) _talk.Say("Fetching fuel.", "Smelt");
             return true;
         }
 
@@ -990,7 +995,7 @@ namespace Companions
 
             Log($"Plan: take {toTake}x ore \"{bestPrefab}\" from chest " +
                 $"(dist={bestDist:F1}m) → \"{smelter.m_name}\" (queued={queued}/{smelter.m_maxOre})");
-            if (_talk != null) _talk.Say("Fetching materials.");
+            if (_talk != null) _talk.Say("Fetching materials.", "Smelt");
             return true;
         }
 
@@ -1176,6 +1181,7 @@ namespace Companions
             _carryingItemPrefab = null;
             _carryingAmount = 0;
             _collectTriggered = false;
+            _wasMonitoring = false;
             _phase = SmeltPhase.Idle;
             _scanTimer = ScanInterval;
             RestoreFollow();
@@ -1191,6 +1197,7 @@ namespace Companions
             _carryingItemPrefab = null;
             _carryingAmount = 0;
             _collectTriggered = false;
+            _wasMonitoring = false;
             _phase = SmeltPhase.Idle;
             _scanTimer = ScanInterval;
             RestoreFollow();
@@ -1240,6 +1247,7 @@ namespace Companions
         /// </summary>
         private void ClearFollowForMovement()
         {
+            _wasMonitoring = false;
             if (_ai != null)
             {
                 _ai.SetFollowTarget(null);
@@ -1291,6 +1299,12 @@ namespace Companions
         {
             string name = _character?.m_name ?? "?";
             CompanionsPlugin.Log.LogInfo($"[Smelt|{name}] {msg}");
+        }
+
+        private void LogDebug(string msg)
+        {
+            string name = _character?.m_name ?? "?";
+            CompanionsPlugin.Log.LogDebug($"[Smelt|{name}] {msg}");
         }
     }
 }

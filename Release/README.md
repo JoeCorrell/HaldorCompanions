@@ -4,15 +4,19 @@
 
 <h1 align="center">Offline Companions</h1>
 
-<h3 align="center">Hire NPC companions from Haldor's shop - persistent allies with their own AI, inventory, combat, gathering, and smelting systems.</h3>
+<h3 align="center">Hire NPC companions from Haldor's shop - persistent allies with their own AI, inventory, voice lines, combat, gathering, and smelting systems.</h3>
 
 <br/>
 
 <p align="center">
-<a href="https://github.com/JoeCorrell/OfflineCompanions/releases"><img src="https://img.shields.io/badge/Version-0.0.5--beta-c9a44a?style=for-the-badge&labelColor=0d1117" alt="Version"></a>
+<a href="https://github.com/JoeCorrell/OfflineCompanions/releases"><img src="https://img.shields.io/badge/Version-0.0.8--beta-c9a44a?style=for-the-badge&labelColor=0d1117" alt="Version"></a>
 <a href="#-requirements"><img src="https://img.shields.io/badge/BepInEx-5.4.2200+-e06c20?style=for-the-badge&labelColor=0d1117" alt="BepInEx"></a>
 <a href="#-requirements"><img src="https://img.shields.io/badge/Valheim-0.219+-4ade80?style=for-the-badge&labelColor=0d1117" alt="Valheim"></a>
 <a href="#"><img src="https://img.shields.io/badge/License-MIT-7c3aed?style=for-the-badge&labelColor=0d1117" alt="License"></a>
+</p>
+
+<p align="center">
+<a href="https://discord.gg/rBbcrpT2Vq"><img src="https://img.shields.io/badge/Discord-Join_Server-5865F2?style=for-the-badge&logo=discord&logoColor=white&labelColor=0d1117" alt="Discord"></a>
 </p>
 
 <p align="center">
@@ -64,9 +68,11 @@ This is an early development build intended for testing. Expect bugs, rough edge
 <table><tr><td width="900">
 <br/>
 
-Offline Companions adds persistent NPC allies to Valheim through Haldor's trader shop. Companions cost **2,000 coins** and come with their own inventory, equipment, stamina, food system, and custom AI. They aren't pets or tames, they're **teammates**.
+Offline Companions adds persistent NPC allies to Valheim. A companion automatically spawns with you when you enter a new world for the first time. Additional companions can be purchased from Haldor's shop for **2,000 coins** if the optional [Trader Overhaul](https://github.com/JoeCorrell/TraderOverhaul) mod is installed, or spawned via console commands.
 
-Customize their appearance at purchase, gear them up with weapons and armor, feed them food for bonus stats, and command them through a radial wheel or point-and-click hotkey system. They'll fight beside you, gather resources, forage for food, manage your smelting operation, haul your cart, repair their own gear, sit by the fire with you, and sleep in beds when you tell them to.
+Companions come with their own inventory, equipment, stamina, food system, voice lines, and custom AI. They aren't pets or tames, they're **teammates**. Customize their appearance, gear them up with weapons and armor, feed them food for bonus stats, and command them through a radial wheel or point-and-click hotkey system. They'll fight beside you, gather resources, forage for food, manage your smelting operation, haul your cart, repair their own gear, sit by the fire with you, and sleep in beds when you tell them to.
+
+When a companion dies, they leave behind a tombstone. They'll respawn after a short time and automatically walk to their tombstone to recover their items.
 
 Everything persists across sessions, zone transitions, server restarts, and player deaths.
 
@@ -82,8 +88,11 @@ Everything persists across sessions, zone transitions, server restarts, and play
 <table><tr><td width="900">
 <br/>
 
-### Purchase
-Visit Haldor and open the **Companions** tab to recruit a new companion. Each costs **2,000 coins** from your bank balance. Customize their gender, hair, beard, skin tone, and hair color in the 3D preview before confirming.
+### Starter Companion
+A companion automatically spawns with you when you enter a new world for the first time. Each character gets one free companion per world. Disable this with the `SpawnStarterCompanion` config setting.
+
+### Purchase (Optional)
+Install [Trader Overhaul](https://github.com/JoeCorrell/TraderOverhaul) to unlock the **Companions** tab in Haldor's shop and recruit additional companions. Each costs **2,000 coins** from your bank balance. Customize their gender, hair, beard, skin tone, and hair color in the 3D preview before confirming. This dependency is optional — the mod works fully without it.
 
 ### Interact
 **Tap E** on your companion to open their inventory panel. Manage gear, feed food, rename them. **Hold E** (or **X on gamepad**) to open the radial command wheel for quick access to all action modes and toggles.
@@ -465,19 +474,35 @@ While sitting or sleeping, companions heal **2 HP/sec** and their stamina regene
 <table><tr><td width="900">
 <br/>
 
-Companions have context-aware overhead speech that plays every 20-40 seconds. Lines are chosen based on what's happening:
+Companions have context-aware speech that triggers every 20-40 seconds, with a 5-second cooldown between lines. Speech can be **overhead text**, **voice audio**, or both, configured independently per gender.
+
+### Voice Audio
+Male voice audio clips are included with the mod and play automatically. Place additional or custom MP3 files in `Audio/MaleCompanion/{Category}/` and `Audio/FemaleCompanion/{Category}/` alongside the plugin DLL. Categories: `Action`, `Combat`, `Follow`, `Forage`, `Gather`, `Hungry`, `Idle`, `Overweight`, `Repair`, `Smelt`. If a female voice pack is missing clips for a category, male clips are used as fallback.
+
+### Speech Lines
+Text lines are loaded from `speech.json` (auto-generated on first run). Edit this file to customize what companions say. Lines are shared across all companions regardless of gender.
 
 | Context | Example Lines |
 |:---|:---|
-| **Combat** | "Take this!", "For Odin!", "I've got your back!" |
-| **Overweight** | "My back is hurting...", "I can't carry any more..." |
-| **Hungry** | "I'm starving...", "Got any food?" |
-| **Needs Repair** | "My gear is worn.", "Need repairs." |
-| **Gathering** | "Found some!", "This looks promising." |
-| **Foraging** | "Found some berries!", "These mushrooms look good." |
-| **Smelting** | "Fetching fuel.", "Fetching materials.", "Everything's running. I'll keep watch." |
-| **Following** | "Right behind you.", "Lead the way.", "Nice day for an adventure." |
-| **Commands** | "On it!", "As you wish." |
+| **Combat** | "For Odin!", "Taste my steel!", "By Thor's hammer!" |
+| **Overweight** | "By Odin's beard, my back is breaking!" |
+| **Hungry** | "My belly roars like a troll..." |
+| **Needs Repair** | "This blade has seen better days." |
+| **Gathering** | "The land provides, if you know where to look." |
+| **Foraging** | "The meadows offer their gifts." |
+| **Smelting** | "The forge fire burns bright.", "Good ore makes good steel." |
+| **Following** | "Lead on, I am your shield." |
+| **Idle** | "The winds whisper of adventure..." |
+| **Commands** | "By your word!", "So it shall be." |
+
+### Config Options
+
+| Setting | Default | Description |
+|:---|:---|:---|
+| `MaleShowOverheadText` | `false` | Show overhead speech text for male companions |
+| `MaleEnableVoiceAudio` | `true` | Play voice audio clips for male companions |
+| `FemaleShowOverheadText` | `true` | Show overhead speech text for female companions |
+| `FemaleEnableVoiceAudio` | `false` | Play voice audio clips for female companions |
 
 Each directed command type (attack, sit, sleep, repair, deposit, etc.) also triggers its own immediate speech line.
 
@@ -493,12 +518,12 @@ Each directed command type (attack, sit, sleep, repair, deposit, etc.) also trig
 <table><tr><td width="900">
 <br/>
 
-When looking at a companion, the vanilla enemy HUD is extended with two extra bars below the health bar:
+When looking at a companion, the vanilla enemy HUD is extended with extra stat bars below the health bar:
 
 - **Yellow bar** - current stamina
-- **Brown bar** - current inventory weight (percentage of 300 max)
+- **Brown bar** - current inventory weight (percentage of 300 max carry weight)
 
-This lets you check a companion's status at a glance from a distance.
+The weight bar fills as the companion's inventory gets heavier, giving you an at-a-glance indicator of when they're getting full. This lets you check a companion's status from a distance without opening their inventory.
 
 <br/>
 </td></tr></table>
@@ -559,18 +584,15 @@ Saved state includes: appearance, name, inventory, equipment, action mode, home 
 <br/>
 
 **1.** Install [BepInEx](https://valheim.thunderstore.io/package/denikson/BepInExPack_Valheim/) for Valheim<br/>
-**2.** Install [Trader Overhaul](https://github.com/JoeCorrell/TraderOverhaul) (required dependency)<br/>
-**3.** Download the latest release from [Releases](https://github.com/JoeCorrell/OfflineCompanions/releases)<br/>
-**4.** Extract to `BepInEx/plugins/Companions/`<br/>
+**2.** Download the latest release from [Releases](https://github.com/JoeCorrell/OfflineCompanions/releases)<br/>
+**3.** Extract to `BepInEx/plugins/Companions/`<br/>
+**4.** *(Optional)* Install [Trader Overhaul](https://github.com/JoeCorrell/TraderOverhaul) to purchase additional companions from Haldor's shop<br/>
 **5.** Launch the game
 
 <br/>
 </td></tr></table>
 
 <br/>
-
-> [!IMPORTANT]
-> **Trader Overhaul** must be installed first. The Companions tab is injected into its custom trader UI.
 
 <br/>
 
@@ -581,11 +603,11 @@ Saved state includes: appearance, name, inventory, equipment, action mode, home 
 <table><tr><td width="900">
 <br/>
 
-| Dependency | Version | Link |
-|:---|:---|:---|
-| Valheim | `0.219+` | |
-| BepInEx | `5.4.2200+` | [Download](https://valheim.thunderstore.io/package/denikson/BepInExPack_Valheim/) |
-| Trader Overhaul | `latest` | [GitHub](https://github.com/JoeCorrell/TraderOverhaul) |
+| Dependency | Version | Required | Link |
+|:---|:---|:---|:---|
+| Valheim | `0.219+` | Yes | |
+| BepInEx | `5.4.2200+` | Yes | [Download](https://valheim.thunderstore.io/package/denikson/BepInExPack_Valheim/) |
+| Trader Overhaul | `latest` | Optional | [GitHub](https://github.com/JoeCorrell/TraderOverhaul) |
 
 <br/>
 </td></tr></table>
@@ -599,7 +621,7 @@ Saved state includes: appearance, name, inventory, equipment, action mode, home 
 <table><tr><td width="900">
 <br/>
 
-- Requires **Trader Overhaul**. The Companions tab is injected into its custom trader UI
+- **Trader Overhaul** is optional. If installed, the Companions tab is injected into its custom trader UI for purchasing additional companions
 - Companions use a custom `HC_Companion` prefab registered at startup
 - Other NPC / follower mods should be compatible unless they patch `BaseAI` broadly
 - **Multiplayer:** companions are owned by the spawning player via ZDO ownership. Other players cannot interact with companions they don't own
@@ -618,7 +640,7 @@ Saved state includes: appearance, name, inventory, equipment, action mode, home 
 
 Built on [BepInEx](https://github.com/BepInEx/BepInEx) and [Harmony](https://github.com/pardeike/Harmony)
 <br/>
-Integrates with [Trader Overhaul](https://github.com/JoeCorrell/TraderOverhaul) for trader UI
+Optionally integrates with [Trader Overhaul](https://github.com/JoeCorrell/TraderOverhaul) for trader UI
 
 <br/>
 </td></tr></table>
@@ -627,7 +649,7 @@ Integrates with [Trader Overhaul](https://github.com/JoeCorrell/TraderOverhaul) 
 
 <p align="center">
 <a href="https://github.com/JoeCorrell/OfflineCompanions/issues"><img src="https://img.shields.io/badge/GitHub-Issues-181717?style=for-the-badge&logo=github&labelColor=0d1117" alt="GitHub Issues"></a>
-<a href="https://discord.com"><img src="https://img.shields.io/badge/Discord-@profmags-5865F2?style=for-the-badge&logo=discord&logoColor=white&labelColor=0d1117" alt="Discord"></a>
+<a href="https://discord.gg/rBbcrpT2Vq"><img src="https://img.shields.io/badge/Discord-@profmags-5865F2?style=for-the-badge&logo=discord&logoColor=white&labelColor=0d1117" alt="Discord"></a>
 </p>
 
 <p align="center">

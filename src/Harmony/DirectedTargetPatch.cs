@@ -304,7 +304,7 @@ namespace Companions
                 firstTalk = setup.GetComponent<CompanionTalk>();
                 if (firstTalk != null) break;
             }
-            SayRandom(firstTalk, ComeHereLines);
+            SayRandom(firstTalk, ComeHereLines, "Action");
 
             string inputSource = isGamepad ? "gamepad hold" : "keyboard hold";
             CompanionsPlugin.Log.LogDebug($"[Direct] Come-to-me triggered via {inputSource}");
@@ -332,7 +332,7 @@ namespace Companions
                 directed++;
             }
 
-            SayRandom(firstTalk, AttackLines);
+            SayRandom(firstTalk, AttackLines, "Combat");
             CompanionsPlugin.Log.LogDebug(
                 $"[Direct] {directed} companion(s) → attack \"{enemy.m_name}\"");
         }
@@ -365,7 +365,7 @@ namespace Companions
                         if (ai != null && Player.m_localPlayer != null)
                             ai.SetFollowTarget(Player.m_localPlayer.gameObject);
 
-                        SayRandom(setup.GetComponent<CompanionTalk>(), CartReleasedLines);
+                        SayRandom(setup.GetComponent<CompanionTalk>(), CartReleasedLines, "Action");
                         CompanionsPlugin.Log.LogDebug("[Direct] Companion → detach from cart");
                     }
                     return;
@@ -436,7 +436,7 @@ namespace Companions
                     $"[Direct] Cart navigation started — dist={distToAttach:F1}m");
             }
 
-            SayRandom(closest.GetComponent<CompanionTalk>(), CartPullLines);
+            SayRandom(closest.GetComponent<CompanionTalk>(), CartPullLines, "Action");
             CompanionsPlugin.Log.LogDebug(
                 $"[Direct] Companion → cart attach (dist={closestDist:F1}m)");
         }
@@ -459,7 +459,7 @@ namespace Companions
                 directed++;
             }
 
-            SayRandom(firstTalk, DoorLines);
+            SayRandom(firstTalk, DoorLines, "Action");
             CompanionsPlugin.Log.LogDebug(
                 $"[Direct] {directed} companion(s) → open door \"{door.m_name}\"");
         }
@@ -484,7 +484,7 @@ namespace Companions
                 directed++;
             }
 
-            SayRandom(firstTalk, SitLines);
+            SayRandom(firstTalk, SitLines, "Idle");
             CompanionsPlugin.Log.LogDebug(
                 $"[Direct] {directed} companion(s) → sit near fire");
         }
@@ -521,11 +521,11 @@ namespace Companions
             }
 
             if (wokeUp > 0)
-                SayRandom(firstTalk, WakeLines);
+                SayRandom(firstTalk, WakeLines, "Action");
             else if (started > 0)
-                SayRandom(firstTalk, SleepLines);
+                SayRandom(firstTalk, SleepLines, "Idle");
             else
-                SayRandom(firstTalk, CancelLines);
+                SayRandom(firstTalk, CancelLines, "Action");
             CompanionsPlugin.Log.LogDebug(
                 $"[Direct] Sleep command — started={started}, wokeUp={wokeUp}");
         }
@@ -575,13 +575,13 @@ namespace Companions
 
             if (dispatched > 0)
             {
-                SayRandom(firstTalk, DepositLines);
+                SayRandom(firstTalk, DepositLines, "Action");
                 CompanionsPlugin.Log.LogDebug(
                     $"[Direct] Dispatched {dispatched} companion(s) to deposit in \"{chest.m_name}\"");
             }
             else
             {
-                SayRandom(firstTalk, DepositEmptyLines);
+                SayRandom(firstTalk, DepositEmptyLines, "Action");
                 CompanionsPlugin.Log.LogDebug("[Direct] No companions had items to deposit");
             }
         }
@@ -617,13 +617,13 @@ namespace Companions
 
             if (directed > 0)
             {
-                SayRandom(firstTalk, RepairLines);
+                SayRandom(firstTalk, RepairLines, "Repair");
                 CompanionsPlugin.Log.LogDebug(
                     $"[Direct] {directed} companion(s) → repair at \"{station.m_name}\"");
             }
             else
             {
-                SayRandom(firstTalk, RepairNothingLines);
+                SayRandom(firstTalk, RepairNothingLines, "Repair");
                 CompanionsPlugin.Log.LogDebug(
                     $"[Direct] No companions can repair at \"{station.m_name}\"");
             }
@@ -673,7 +673,7 @@ namespace Companions
                 boarded++;
             }
 
-            SayRandom(firstTalk, BoardLines);
+            SayRandom(firstTalk, BoardLines, "Action");
             CompanionsPlugin.Log.LogDebug($"[Direct] {boarded} companion(s) → board ship");
         }
 
@@ -717,7 +717,7 @@ namespace Companions
                 directed++;
             }
 
-            SayRandom(firstTalk, HarvestLines);
+            SayRandom(firstTalk, HarvestLines, "Gather");
             CompanionsPlugin.Log.LogDebug(
                 $"[Direct] {directed} companion(s) → gather mode {modeName}");
         }
@@ -762,7 +762,7 @@ namespace Companions
                 directed++;
             }
 
-            SayRandom(firstTalk, MoveLines);
+            SayRandom(firstTalk, MoveLines, "Action");
             CompanionsPlugin.Log.LogDebug($"[Direct] {directed} companion(s) → move to {point:F1}");
         }
 
@@ -790,7 +790,7 @@ namespace Companions
                 exited++;
             }
 
-            SayRandom(firstTalk, CancelLines);
+            SayRandom(firstTalk, CancelLines, "Action");
             CompanionsPlugin.Log.LogDebug($"[Direct] {exited} companion(s) exited gather mode → follow");
         }
 
@@ -846,7 +846,7 @@ namespace Companions
                     smelt.NotifyActionModeChanged();
             }
 
-            SayRandom(firstTalk, CancelLines);
+            SayRandom(firstTalk, CancelLines, "Action");
             CompanionsPlugin.Log.LogDebug("[Direct] Cancelled all directed commands");
         }
 
@@ -854,10 +854,10 @@ namespace Companions
         //  Helpers
         // ═════════════════════════════════════════════════════════════════════
 
-        private static void SayRandom(CompanionTalk talk, string[] pool)
+        private static void SayRandom(CompanionTalk talk, string[] pool, string audioCategory = null)
         {
             if (talk == null || pool == null || pool.Length == 0) return;
-            talk.Say(pool[Random.Range(0, pool.Length)]);
+            talk.Say(pool[Random.Range(0, pool.Length)], audioCategory);
         }
 
         private static bool IsOwned(CompanionSetup setup, string localId)

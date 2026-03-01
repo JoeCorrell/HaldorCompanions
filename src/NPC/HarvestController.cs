@@ -190,7 +190,7 @@ namespace Companions
                     {
                         if (_talk != null && _overweightMsgTimer <= 0f)
                         {
-                            _talk.Say("No chest nearby to unload!");
+                            _talk.Say("No chest nearby to unload!", "Overweight");
                             _overweightMsgTimer = 15f;
                         }
                         LogWarn($"OVERWEIGHT+StayHome — no chest found, stopping gather");
@@ -201,7 +201,7 @@ namespace Companions
 
                 if (_talk != null && _overweightMsgTimer <= 0f)
                 {
-                    _talk.Say("My back is hurting from all this weight!");
+                    _talk.Say("My back is hurting from all this weight!", "Overweight");
                     _overweightMsgTimer = 15f;
                 }
                 LogWarn($"OVERWEIGHT — weight={GetCurrentWeight():F1} >= {OverweightThreshold}, " +

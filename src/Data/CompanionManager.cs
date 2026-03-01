@@ -218,6 +218,8 @@ namespace Companions
         /// </summary>
         public static void SpawnStarterCompanion()
         {
+            if (!CompanionsPlugin.SpawnStarterCompanion.Value) return;
+
             var player = Player.m_localPlayer;
             if (player == null || ZNet.instance == null) return;
 

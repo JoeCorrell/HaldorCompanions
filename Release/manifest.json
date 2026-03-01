@@ -1,11 +1,10 @@
 {
   "name": "Offline_Companions",
   "author": "ProfMags",
-  "version_number": "0.0.7",
+  "version_number": "0.0.8",
   "website_url": "https://github.com/JoeCorrell/HaldorCompanions",
-  "description": "Hire NPC companions with their own health, stamina, food, weight, inventory, and AI. They fight alongside you, gather resources, forage for food, manage your smelting operation, repair their gear, and follow you across the realms of Valheim.",
+  "description": "Hire NPC companions with their own health, stamina, food, weight, inventory, voice lines, and AI. They fight alongside you, gather resources, forage for food, manage your smelting operation, repair their gear, and follow you across the realms of Valheim.",
   "dependencies": [
-    "denikson-BepInExPack_Valheim-5.4.2200",
-    "ProfMags-TraderOverhaul-0.0.1"
+    "denikson-BepInExPack_Valheim-5.4.2200"
   ]
 }

@@ -48,8 +48,8 @@ namespace Companions
 
         private const float RingRadius     = 210f;
         private const float SegSize        = 100f;
-        private const float HighlightSize  = 84f;
-        private const float IconSize       = 62f;
+        private const float HighlightSize  = 96f;
+        private const float IconSize       = 76f;
         private const float DeadZonePx     = 30f;
         private const float DeadZoneStick  = 0.3f;
 
@@ -63,19 +63,17 @@ namespace Companions
 
         private const float InnerRingRadius    = 80f;
         private const float InnerSegSize       = 72f;
-        private const float InnerIconSize      = 44f;
-        private const float InnerHighlightSize = 58f;
+        private const float InnerIconSize      = 54f;
+        private const float InnerHighlightSize = 68f;
 
         // ── Animation ──────────────────────────────────────────────────────
         private enum AnimState { Closed, Opening, Open, Closing }
-        private const float AnimDuration     = 0.25f;
-        private const float SegStagger       = 0.035f;
+        private const float AnimDuration     = 0.45f;
+        private const float SegStagger       = 0.04f;
         private const float BgAnimFraction   = 0.4f;
 
-        // ── Speech pools ────────────────────────────────────────────────
-        private static readonly string[] ActionSpeech = {
-            "On it!", "As you wish.", "Consider it done.", "Right away!"
-        };
+        // ── Speech pools (loaded from speech.json) ─────────────────────
+        private static string[] ActionSpeech => SpeechConfig.Instance.Action;
 
         // ── Segment data ─────────────────────────────────────────────────
         private struct Segment
@@ -158,6 +156,28 @@ namespace Companions
             var go = new GameObject("HC_CompanionRadialMenu");
             UnityEngine.Object.DontDestroyOnLoad(go);
             go.AddComponent<CompanionRadialMenu>();
+        }
+
+        /// <summary>
+        /// Pre-generates procedural sprites and loads all icon textures so the
+        /// first radial menu open doesn't cause a frame hitch.
+        /// </summary>
+        internal static void WarmCache()
+        {
+            // Procedural background sprites
+            GetCircleSprite();
+            GetDonutSprite();
+
+            // All action icons (outer + inner ring)
+            int[] allActions = {
+                ActionFollow, ActionGatherWood, ActionGatherStone, ActionGatherOre,
+                ActionForage, ActionSmelt, ActionStayHome, ActionSetHome,
+                ActionWander, ActionAutoPickup, ActionCommand,
+                ActionStanceBalanced, ActionStanceAggressive, ActionStanceDefensive,
+                ActionStancePassive, ActionStanceMelee, ActionStanceRanged
+            };
+            foreach (int id in allActions)
+                GetActionIcon(id);
         }
 
         private void Awake()  { Instance = this; }
@@ -552,8 +572,8 @@ namespace Companions
                     // Scale
                     _segRTs[i].localScale = Vector3.one * Mathf.Max(0f, eased);
 
-                    // Rotation: spiral from starting angle to 0
-                    float startRot = -180f + i * 20f;
+                    // Rotation: full spin from starting angle to 0
+                    float startRot = -360f + i * 30f;
                     float rotT = Mathf.Clamp01(eased);
                     _segRTs[i].localEulerAngles = new Vector3(0f, 0f,
                         Mathf.Lerp(startRot, 0f, rotT));
@@ -589,7 +609,7 @@ namespace Companions
                     if (i < _innerFinalPositions.Count)
                         _innerRTs[i].anchoredPosition = _innerFinalPositions[i] * eased;
                     _innerRTs[i].localScale = Vector3.one * Mathf.Max(0f, eased);
-                    float startRot = -120f + i * 30f;
+                    float startRot = -270f + i * 40f;
                     float rotT = Mathf.Clamp01(eased);
                     _innerRTs[i].localEulerAngles = new Vector3(0f, 0f,
                         Mathf.Lerp(startRot, 0f, rotT));
@@ -673,7 +693,7 @@ namespace Companions
                     $"[Radial] Set stance={newStance} label=\"{seg.Label}\"");
 
                 if (_companionTalk != null && ActionSpeech.Length > 0)
-                    _companionTalk.Say(ActionSpeech[UnityEngine.Random.Range(0, ActionSpeech.Length)]);
+                    _companionTalk.Say(ActionSpeech[UnityEngine.Random.Range(0, ActionSpeech.Length)], "Action");
                 return;
             }
 
@@ -717,7 +737,7 @@ namespace Companions
 
             // Overhead speech on any action
             if (_companionTalk != null && ActionSpeech.Length > 0)
-                _companionTalk.Say(ActionSpeech[UnityEngine.Random.Range(0, ActionSpeech.Length)]);
+                _companionTalk.Say(ActionSpeech[UnityEngine.Random.Range(0, ActionSpeech.Length)], "Action");
         }
 
         private void SetActionMode(int mode)
@@ -1109,7 +1129,7 @@ namespace Companions
                 hlRT.anchorMax = new Vector2(0.5f, 0.5f);
                 hlRT.pivot = new Vector2(0.5f, 0.5f);
                 hlRT.sizeDelta = new Vector2(HighlightSize, HighlightSize);
-                hlRT.anchoredPosition = new Vector2(0f, 4f);
+                hlRT.anchoredPosition = Vector2.zero;
                 var hlImg = hlGO.GetComponent<Image>();
                 hlImg.sprite = GetCircleSprite();
                 hlImg.color = Color.clear;
@@ -1123,7 +1143,7 @@ namespace Companions
                 iconBgRT.anchorMax = new Vector2(0.5f, 0.5f);
                 iconBgRT.pivot = new Vector2(0.5f, 0.5f);
                 iconBgRT.sizeDelta = new Vector2(IconSize, IconSize);
-                iconBgRT.anchoredPosition = new Vector2(0f, 6f);
+                iconBgRT.anchoredPosition = Vector2.zero;
                 var iconBgImg = iconBgGO.GetComponent<Image>();
                 iconBgImg.sprite = GetCircleSprite();
                 var bgTint = seg.IconColor * 0.35f;
@@ -1138,7 +1158,7 @@ namespace Companions
                 iconRT.anchorMax = new Vector2(0.5f, 0.5f);
                 iconRT.pivot = new Vector2(0.5f, 0.5f);
                 iconRT.sizeDelta = new Vector2(IconSize * 0.78f, IconSize * 0.78f);
-                iconRT.anchoredPosition = new Vector2(0f, 6f);
+                iconRT.anchoredPosition = Vector2.zero;
                 var iconImg = iconGO.GetComponent<Image>();
                 iconImg.sprite = GetActionIcon(seg.ActionId);
                 iconImg.color = new Color(0.9f, 0.9f, 0.9f, 0.85f);
@@ -1229,7 +1249,7 @@ namespace Companions
                     hlRT.anchorMax = new Vector2(0.5f, 0.5f);
                     hlRT.pivot = new Vector2(0.5f, 0.5f);
                     hlRT.sizeDelta = new Vector2(InnerHighlightSize, InnerHighlightSize);
-                    hlRT.anchoredPosition = new Vector2(0f, 3f);
+                    hlRT.anchoredPosition = Vector2.zero;
                     var hlImg = hlGO.GetComponent<Image>();
                     hlImg.sprite = GetCircleSprite();
                     hlImg.color = Color.clear;
@@ -1243,7 +1263,7 @@ namespace Companions
                     iconBgRT.anchorMax = new Vector2(0.5f, 0.5f);
                     iconBgRT.pivot = new Vector2(0.5f, 0.5f);
                     iconBgRT.sizeDelta = new Vector2(InnerIconSize, InnerIconSize);
-                    iconBgRT.anchoredPosition = new Vector2(0f, 4f);
+                    iconBgRT.anchoredPosition = Vector2.zero;
                     var iconBgImg = iconBgGO.GetComponent<Image>();
                     iconBgImg.sprite = GetCircleSprite();
                     var bgTint = seg.IconColor * 0.35f;
@@ -1258,7 +1278,7 @@ namespace Companions
                     iconRT.anchorMax = new Vector2(0.5f, 0.5f);
                     iconRT.pivot = new Vector2(0.5f, 0.5f);
                     iconRT.sizeDelta = new Vector2(InnerIconSize * 0.78f, InnerIconSize * 0.78f);
-                    iconRT.anchoredPosition = new Vector2(0f, 6f);
+                    iconRT.anchoredPosition = Vector2.zero;
                     var iconImg = iconGO.GetComponent<Image>();
                     iconImg.sprite = GetActionIcon(seg.ActionId);
                     iconImg.color = new Color(0.9f, 0.9f, 0.9f, 0.85f);

@@ -68,6 +68,18 @@
     <Reference Include="UnityEngine.TextRenderingModule">
       <HintPath>C:\Program Files (x86)\Steam\steamapps\common\Valheim\Valheim_Data\Managed\UnityEngine.TextRenderingModule.dll</HintPath>
     </Reference>
+    <Reference Include="UnityEngine.JSONSerializeModule">
+      <HintPath>C:\Program Files (x86)\Steam\steamapps\common\Valheim\Valheim_Data\Managed\UnityEngine.JSONSerializeModule.dll</HintPath>
+    </Reference>
+    <Reference Include="UnityEngine.AudioModule">
+      <HintPath>C:\Program Files (x86)\Steam\steamapps\common\Valheim\Valheim_Data\Managed\UnityEngine.AudioModule.dll</HintPath>
+    </Reference>
+    <Reference Include="UnityEngine.UnityWebRequestModule">
+      <HintPath>C:\Program Files (x86)\Steam\steamapps\common\Valheim\Valheim_Data\Managed\UnityEngine.UnityWebRequestModule.dll</HintPath>
+    </Reference>
+    <Reference Include="UnityEngine.UnityWebRequestAudioModule">
+      <HintPath>C:\Program Files (x86)\Steam\steamapps\common\Valheim\Valheim_Data\Managed\UnityEngine.UnityWebRequestAudioModule.dll</HintPath>
+    </Reference>
     <!-- TraderOverhaul (hard dependency) -->
     <Reference Include="TraderOverhaul">
       <HintPath>C:\Program Files (x86)\Steam\steamapps\common\Valheim\BepInEx\plugins\TraderOverhaul\TraderOverhaul.dll</HintPath>
@@ -87,6 +99,13 @@
           SkipUnchangedFiles="true" />
     <Copy SourceFiles="$(TargetPath)"
           DestinationFolder="$(ReleaseDir)"
+          SkipUnchangedFiles="true" />
+    <!-- Deploy Audio folder alongside DLL -->
+    <ItemGroup>
+      <AudioFiles Include="$(MSBuildProjectDirectory)\Resources\Audio\**\*.mp3" />
+    </ItemGroup>
+    <Copy SourceFiles="@(AudioFiles)"
+          DestinationFiles="@(AudioFiles->'$(PluginDir)\Audio\%(RecursiveDir)%(Filename)%(Extension)')"
           SkipUnchangedFiles="true" />
     <Message Text="Deployed $(AssemblyName).dll to $(PluginDir)" Importance="high" />
     <Message Text="Copied $(AssemblyName).dll to $(ReleaseDir)" Importance="high" />

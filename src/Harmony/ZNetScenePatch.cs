@@ -102,6 +102,8 @@ namespace Companions
         static void Postfix()
         {
             CompanionInteractPanel.EnsureInstance();
+            CompanionRadialMenu.EnsureInstance();
+            CompanionRadialMenu.WarmCache();
         }
     }
 }

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.0.8
+- Added voice audio system: companions play MP3 voice clips alongside or instead of overhead speech text
+- Gender-specific voice packs: separate `Audio/MaleCompanion/` and `Audio/FemaleCompanion/` folders, with automatic MaleCompanion fallback when female clips are missing
+- Per-gender speech config: independent toggles for overhead text and voice audio per gender (male defaults to voice-only, female defaults to text-only)
+- Added starter companion: a free companion automatically spawns when entering a new world for the first time (configurable via `SpawnStarterCompanion` setting)
+- Externalized speech lines to `speech.json` for easy customization without recompiling
+- Added 5-second per-companion speech cooldown to prevent overlapping text and audio
+- Added voice audio categories for all speech events: Action, Combat, Follow, Forage, Gather, Hungry, Idle, Overweight, Repair, Smelt
+- Merged RadialAction speech pool into Action (radial commands now use the same lines as mode changes)
+
 ## 0.0.7
 - Fixed smelter interaction deadlock: companion got stuck when pathfinding reached closest point but 3D distance exceeded threshold (moveOk=True at 2.6m vs 2.5m UseDistance)
 - SmeltController now accepts pathfinding "arrived" with relaxed distance tolerance for smelter insert and output collection

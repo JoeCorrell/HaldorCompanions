@@ -1787,7 +1787,9 @@ namespace Companions
 
             bool harvesting = _harvest != null && _harvest.IsInGatherMode;
             bool repairing = _repair != null && _repair.IsActive;
-            bool smelting = _smelt != null && _smelt.IsActive;
+            // Use IsSmeltMode (ZDO assignment) rather than IsActive (processing phase)
+            // to suppress stuck detection during idle gaps between scan cycles.
+            bool smelting = _smelt != null && (_smelt.IsActive || _smelt.IsSmeltMode());
             bool handlingDoor = _doorHandler != null && _doorHandler.IsActive;
 
             // StayHome with wander OFF: companion is intentionally stationary
