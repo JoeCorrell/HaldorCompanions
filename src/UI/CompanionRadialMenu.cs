@@ -233,6 +233,16 @@ namespace Companions
             _animState = AnimState.Closed;
             if (_root != null) _root.SetActive(false);
 
+            // Prevent camera jerk when closing while right stick is held.
+            // Matches vanilla RadialBase.Close() behavior.
+            if (ZInput.IsGamepadActive())
+            {
+                Vector2 rs = new Vector2(ZInput.GetJoyRightStickX(),
+                                         -ZInput.GetJoyRightStickY());
+                if (rs.sqrMagnitude > 0.01f)
+                    PlayerController.cameraDirectionLock = rs.normalized;
+            }
+
             _companion        = null;
             _companionNview   = null;
             _companionAI      = null;
@@ -302,9 +312,12 @@ namespace Companions
 
             if (isGamepad)
             {
-                float lx = ZInput.GetJoyLeftStickX();
-                float ly = ZInput.GetJoyLeftStickY();
-                input = new Vector2(lx, ly);
+                // Support both sticks — use whichever has greater magnitude.
+                // Vanilla's RadialStick binding can map to either stick,
+                // and both are free during radial (movement + camera blocked).
+                Vector2 left  = new Vector2(ZInput.GetJoyLeftStickX(),  ZInput.GetJoyLeftStickY());
+                Vector2 right = new Vector2(ZInput.GetJoyRightStickX(), ZInput.GetJoyRightStickY());
+                input = left.sqrMagnitude >= right.sqrMagnitude ? left : right;
                 deadZone = DeadZoneStick;
             }
             else
@@ -1276,10 +1289,10 @@ namespace Companions
                 case ActionWander:      return "Wander";
                 case ActionAutoPickup:  return "AutoPickup";
                 case ActionCommand:          return "Command";
-                case ActionStanceBalanced:   return "StanceBalanced";
-                case ActionStanceAggressive: return "StanceAggressive";
-                case ActionStanceDefensive:  return "StanceDefensive";
-                case ActionStancePassive:    return "StancePassive";
+                case ActionStanceBalanced:   return "Balanced";
+                case ActionStanceAggressive: return "Aggressive";
+                case ActionStanceDefensive:  return "Defend";
+                case ActionStancePassive:    return "Passive";
                 default:                     return null;
             }
         }
