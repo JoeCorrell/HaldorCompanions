@@ -30,6 +30,7 @@ namespace Companions
         private  static readonly int StarterGearHash = StringExtensionMethods.GetStableHashCode("HC_StarterGear");
         internal static readonly int FollowHash     = StringExtensionMethods.GetStableHashCode("HC_Follow");
         internal static readonly int CombatStanceHash = StringExtensionMethods.GetStableHashCode("HC_CombatStance");
+        internal static readonly int TombstoneIdHash  = StringExtensionMethods.GetStableHashCode("HC_TombstoneId");
 
         // Fast lookup for VisEquipmentPatches — avoids GetComponent per frame
         private static readonly HashSet<VisEquipment> _companionVisEquips = new HashSet<VisEquipment>();
@@ -48,6 +49,8 @@ namespace Companions
         internal const int StanceAggressive = 1;
         internal const int StanceDefensive  = 2;
         internal const int StancePassive    = 3;
+        internal const int StanceMelee      = 4;
+        internal const int StanceRanged     = 5;
 
         internal const float MaxLeashDistance = 50f;
         private const int ActionModeSchemaVersion = 2;
@@ -97,6 +100,10 @@ namespace Companions
 
             if (_visEquip != null)
                 _companionVisEquips.Add(_visEquip);
+
+            // Subscribe to death event — fires before Character.OnDeath destroys the object
+            if (_humanoid != null)
+                _humanoid.m_onDeath = (Action)Delegate.Combine(_humanoid.m_onDeath, new Action(OnCompanionDeath));
 
             TryInit();
         }
@@ -206,6 +213,9 @@ namespace Companions
                 if (_ai.PendingCartAttach != null || _ai.PendingMoveTarget != null ||
                     _ai.PendingDepositContainer != null)
                     return; // Navigating to a directed position
+
+                if (_ai.IsRecoveringTombstone)
+                    return; // Tombstone recovery is driving movement
 
                 // Follow toggle OFF: don't restore follow target
                 if (!GetFollow())
@@ -500,6 +510,115 @@ namespace Companions
             if (inv == null) return;
             inv.m_onChanged = (Action)Delegate.Remove(inv.m_onChanged, _inventoryCallback);
             _inventoryCallback = null;
+        }
+
+        // ── Death System ──────────────────────────────────────────────────
+
+        private void OnCompanionDeath()
+        {
+            if (_nview == null || !_nview.IsOwner()) return;
+            var zdo = _nview.GetZDO();
+            if (zdo == null) return;
+
+            // Capture identity before destruction
+            string companionName = _humanoid != null ? _humanoid.m_name : "Companion";
+            string zdoName = zdo.GetString(NameHash, "");
+            if (!string.IsNullOrEmpty(zdoName)) companionName = zdoName;
+
+            string appearance = zdo.GetString(AppearanceHash, "");
+            string owner = zdo.GetString(OwnerHash, "");
+            int stance = zdo.GetInt(CombatStanceHash, StanceBalanced);
+            Vector3 deathPos = _humanoid != null ? _humanoid.GetCenterPoint() : transform.position;
+
+            // Resolve prefab name from ZDO hash
+            int prefabHash = zdo.GetPrefab();
+            string prefabName = CompanionTierData.Companion.PrefabName;
+            var resolvedPrefab = ZNetScene.instance?.GetPrefab(prefabHash);
+            if (resolvedPrefab != null) prefabName = resolvedPrefab.name;
+
+            CompanionsPlugin.Log.LogInfo(
+                $"[Setup] Companion \"{companionName}\" died at {deathPos:F1} — prefab={prefabName}");
+
+            // Generate unique tombstone ID for precise matching after respawn
+            long tombstoneId = System.DateTime.UtcNow.Ticks;
+
+            // Spawn tombstone with all inventory items
+            CreateCompanionTombstone(companionName, deathPos, tombstoneId);
+
+            // Queue respawn at world spawn
+            CompanionManager.QueueRespawn(new CompanionManager.RespawnData
+            {
+                PrefabName = prefabName,
+                Name = companionName,
+                AppearanceSerialized = appearance,
+                OwnerId = owner,
+                CombatStance = stance,
+                TombstoneId = tombstoneId,
+                Timer = 5f
+            });
+        }
+
+        private void CreateCompanionTombstone(string companionName, Vector3 position, long tombstoneId)
+        {
+            if (_humanoid == null) return;
+            var inv = _humanoid.GetInventory();
+            if (inv == null || inv.NrOfItems() == 0)
+            {
+                CompanionsPlugin.Log.LogInfo("[Setup] No items to drop — skipping tombstone");
+                return;
+            }
+
+            // Get tombstone prefab from local player
+            GameObject tombPrefab = Player.m_localPlayer?.m_tombstone;
+            if (tombPrefab == null)
+            {
+                CompanionsPlugin.Log.LogError("[Setup] Could not find tombstone prefab!");
+                return;
+            }
+
+            // Suppress auto-equip during item transfer
+            SuppressAutoEquip = true;
+
+            int itemCount = inv.NrOfItems();
+            CompanionsPlugin.Log.LogInfo(
+                $"[Setup] Creating tombstone for \"{companionName}\" — {itemCount} items, tombstoneId={tombstoneId}");
+
+            // Unequip all items so MoveInventoryToGrave transfers everything
+            _humanoid.UnequipAllItems();
+            CompanionsPlugin.Log.LogDebug("[Setup] Unequipped all items for grave transfer");
+
+            // Spawn tombstone at companion's position
+            var tombGo = UnityEngine.Object.Instantiate(tombPrefab, position, transform.rotation);
+            CompanionsPlugin.Log.LogDebug($"[Setup] Tombstone spawned at {position:F1}");
+
+            // Transfer inventory to tombstone container
+            var container = tombGo.GetComponent<Container>();
+            if (container != null)
+            {
+                container.GetInventory().MoveInventoryToGrave(inv);
+                int transferred = container.GetInventory().NrOfItems();
+                int remaining = inv.NrOfItems();
+                CompanionsPlugin.Log.LogInfo(
+                    $"[Setup] Grave transfer complete — {transferred} items in tombstone, {remaining} remaining on companion");
+            }
+            else
+            {
+                CompanionsPlugin.Log.LogError("[Setup] Tombstone has no Container component!");
+            }
+
+            // Set tombstone ownership (companion name as label, tombstoneId for matching)
+            var tombstone = tombGo.GetComponent<TombStone>();
+            if (tombstone != null)
+            {
+                tombstone.Setup(companionName, tombstoneId);
+                CompanionsPlugin.Log.LogDebug(
+                    $"[Setup] Tombstone ownership set — name=\"{companionName}\" id={tombstoneId}");
+            }
+
+            // Tag the tombstone with our unique ID for companion AI to find
+            var tombNview = tombGo.GetComponent<ZNetView>();
+            if (tombNview?.GetZDO() != null)
+                tombNview.GetZDO().Set(TombstoneIdHash, tombstoneId);
         }
 
         private void OnDestroy()
@@ -873,12 +992,12 @@ namespace Companions
             var zdo = _nview?.GetZDO();
             if (zdo == null) return StanceBalanced;
             int v = zdo.GetInt(CombatStanceHash, StanceBalanced);
-            return (v < StanceBalanced || v > StancePassive) ? StanceBalanced : v;
+            return (v < StanceBalanced || v > StanceRanged) ? StanceBalanced : v;
         }
 
         internal void SetCombatStance(int stance)
         {
-            if (stance < StanceBalanced || stance > StancePassive) stance = StanceBalanced;
+            if (stance < StanceBalanced || stance > StanceRanged) stance = StanceBalanced;
             _nview?.GetZDO()?.Set(CombatStanceHash, stance);
         }
 

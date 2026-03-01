@@ -342,10 +342,14 @@ namespace Companions
             bool isFleeingAnimal = target.GetComponent<AnimalAI>() != null;
             bool hasBow = HasBowAndArrows();
 
-            // Fleeing animals: always use bow, never chase on foot
+            // Stance overrides: Melee stance never uses bow, Ranged stance always prefers bow
+            bool forceMelee  = stance == CompanionSetup.StanceMelee;
+            bool forceRanged = stance == CompanionSetup.StanceRanged;
+
+            // Fleeing animals: use bow unless Melee stance forces melee
             if (isFleeingAnimal)
             {
-                if (hasBow)
+                if (hasBow && !forceMelee)
                 {
                     if (_phase != CombatPhase.Ranged)
                     {
@@ -353,6 +357,17 @@ namespace Companions
                         TransitionTo(CombatPhase.Ranged);
                     }
                     UpdateRanged(target, dt);
+                }
+                else if (forceMelee)
+                {
+                    // Melee stance: chase the animal on foot
+                    if (_phase != CombatPhase.Melee)
+                    {
+                        RestoreMeleeLoadout();
+                        TransitionTo(CombatPhase.Melee);
+                        EnsureShieldEquipped();
+                    }
+                    UpdateMelee(target, dt, stance);
                 }
                 else
                 {
@@ -362,6 +377,37 @@ namespace Companions
                     _ai.ClearTargets();
                     if (_phase != CombatPhase.Idle) ExitCombat("no bow for animal");
                 }
+                return;
+            }
+
+            // ── Melee stance: never switch to bow ──
+            if (forceMelee)
+            {
+                if (_phase == CombatPhase.Ranged)
+                {
+                    RestoreMeleeLoadout();
+                    TransitionTo(CombatPhase.Melee);
+                    EnsureShieldEquipped();
+                }
+                if (_phase != CombatPhase.Melee)
+                {
+                    RestoreMeleeLoadout();
+                    TransitionTo(CombatPhase.Melee);
+                    EnsureShieldEquipped();
+                }
+                UpdateMelee(target, dt, stance);
+                return;
+            }
+
+            // ── Ranged stance: always use bow if available ──
+            if (forceRanged && hasBow)
+            {
+                if (_phase != CombatPhase.Ranged)
+                {
+                    EquipBow();
+                    TransitionTo(CombatPhase.Ranged);
+                }
+                UpdateRanged(target, dt);
                 return;
             }
 
@@ -940,6 +986,9 @@ namespace Companions
             // Fire when fully drawn and on target
             if (_bowDrawTimer >= BowDrawTime && onTarget && _bowFireCooldown <= 0f)
             {
+                // Sync draw time so Humanoid.GetAttackDrawPercentage() returns 1.0
+                // instead of 0 — this drives projectile velocity and accuracy.
+                ReflectionHelper.TrySetAttackDrawTime(_humanoid, _bowDrawTimer);
                 bool fired = _humanoid.StartAttack(target, false);
                 _bowDrawTimer = 0f;
                 _bowFireCooldown = BowFireInterval;
@@ -1306,6 +1355,8 @@ namespace Companions
                 case CompanionSetup.StanceAggressive: stanceName = "Aggressive"; break;
                 case CompanionSetup.StanceDefensive:  stanceName = "Defensive"; break;
                 case CompanionSetup.StancePassive:    stanceName = "Passive"; break;
+                case CompanionSetup.StanceMelee:      stanceName = "Melee"; break;
+                case CompanionSetup.StanceRanged:     stanceName = "Ranged"; break;
                 default:                              stanceName = "Balanced"; break;
             }
 

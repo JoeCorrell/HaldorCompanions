@@ -123,6 +123,17 @@ namespace Companions
         private const float DepositItemInterval = 0.6f; // seconds between each item transfer
 
         // ══════════════════════════════════════════════════════════════════════
+        //  Tombstone Recovery (after respawn)
+        // ══════════════════════════════════════════════════════════════════════
+
+        private TombStone _pendingTombstone;
+        private float _tombstoneScanTimer;
+        private float _tombstoneNavTimeout;
+        private const float TombstoneScanInterval = 5f;
+        private const float TombstoneNavTimeoutMax = 120f;
+        private const float TombstoneLootRange = 3f;
+
+        // ══════════════════════════════════════════════════════════════════════
         //  Constants
         // ══════════════════════════════════════════════════════════════════════
 
@@ -370,6 +381,194 @@ namespace Companions
                 SetFollowTarget(null);
                 CompanionsPlugin.Log.LogDebug("[AI] RestoreFollowOrPatrol → idle (Follow OFF, no StayHome)");
             }
+        }
+
+        // ══════════════════════════════════════════════════════════════════════
+        //  Tombstone Recovery
+        // ══════════════════════════════════════════════════════════════════════
+
+        /// <summary>
+        /// Returns true if tombstone recovery is driving movement (caller should return true).
+        /// After respawn, the companion has HC_TombstoneId set on its ZDO. It scans for
+        /// a TombStone with a matching ID, navigates to it, and loots all items.
+        /// </summary>
+        private bool UpdateTombstoneRecovery(float dt)
+        {
+            // Already navigating to a tombstone — use Unity's overloaded != to detect destroyed objects
+            if (_pendingTombstone != null)
+            {
+                _tombstoneNavTimeout -= dt;
+                if (_tombstoneNavTimeout <= 0f)
+                {
+                    CompanionsPlugin.Log.LogInfo("[AI] Tombstone navigation timed out — giving up");
+                    _pendingTombstone = null;
+                    ClearTombstoneId();
+                    RestoreFollowOrPatrol();
+                    return false;
+                }
+
+                Vector3 tombPos = _pendingTombstone.transform.position;
+                float dist = Vector3.Distance(transform.position, tombPos);
+
+                if (dist < TombstoneLootRange)
+                {
+                    StopMoving();
+                    LookAtPoint(tombPos);
+                    CompanionsPlugin.Log.LogInfo(
+                        $"[AI] Reached tombstone at {tombPos:F1} — looting items");
+                    LootTombstone(_pendingTombstone);
+                    _pendingTombstone = null;
+                    ClearTombstoneId();
+                    RestoreFollowOrPatrol();
+                    return false;
+                }
+
+                // Log navigation progress periodically
+                _tombstoneScanTimer -= dt;
+                if (_tombstoneScanTimer <= 0f)
+                {
+                    _tombstoneScanTimer = TombstoneScanInterval;
+                    CompanionsPlugin.Log.LogDebug(
+                        $"[AI] Navigating to tombstone — dist={dist:F1}m timeout={_tombstoneNavTimeout:F0}s");
+                }
+
+                // Run to tombstone
+                bool run = dist > 10f;
+                MoveTo(dt, tombPos, TombstoneLootRange - 0.5f, run);
+                return true;
+            }
+
+            // If C# reference is non-null but Unity considers it destroyed (player looted / despawned),
+            // the above Unity != check returns false. Detect this via ReferenceEquals.
+            if (!System.Object.ReferenceEquals(_pendingTombstone, null))
+            {
+                CompanionsPlugin.Log.LogInfo(
+                    "[AI] Tombstone was destroyed during navigation (player looted or despawned) — stopping recovery");
+                _pendingTombstone = null;
+                ClearTombstoneId();
+                RestoreFollowOrPatrol();
+                return false;
+            }
+
+            // No pending tombstone — check if we have a tombstone ID to look for
+            var zdo = m_nview?.GetZDO();
+            if (zdo == null) return false;
+            long tombstoneId = zdo.GetLong(CompanionSetup.TombstoneIdHash, 0L);
+            if (tombstoneId == 0L) return false;
+
+            // Periodic scan for matching tombstone
+            _tombstoneScanTimer -= dt;
+            if (_tombstoneScanTimer > 0f) return false;
+            _tombstoneScanTimer = TombstoneScanInterval;
+
+            var tombstones = UnityEngine.Object.FindObjectsByType<TombStone>(FindObjectsSortMode.None);
+            CompanionsPlugin.Log.LogDebug(
+                $"[AI] Scanning for tombstone id={tombstoneId} — {tombstones.Length} tombstones in scene");
+
+            foreach (var ts in tombstones)
+            {
+                if (ts == null) continue;
+                var tsNview = ts.GetComponent<ZNetView>();
+                if (tsNview?.GetZDO() == null) continue;
+
+                long tsId = tsNview.GetZDO().GetLong(CompanionSetup.TombstoneIdHash, 0L);
+                if (tsId != tombstoneId) continue;
+
+                // Found our tombstone
+                _pendingTombstone = ts;
+                _tombstoneNavTimeout = TombstoneNavTimeoutMax;
+
+                float dist = Vector3.Distance(transform.position, ts.transform.position);
+                CompanionsPlugin.Log.LogInfo(
+                    $"[AI] Found tombstone at {ts.transform.position:F1} — dist={dist:F1}m, navigating to recover items");
+
+                if (_talk != null)
+                    _talk.Say("My belongings!");
+
+                // Override follow to navigate
+                SetFollowTarget(null);
+                return true;
+            }
+
+            return false;
+        }
+
+        /// <summary>True when the companion is navigating to or scanning for its tombstone.</summary>
+        internal bool IsRecoveringTombstone
+        {
+            get
+            {
+                if (_pendingTombstone != null) return true;
+                var zdo = m_nview?.GetZDO();
+                return zdo != null && zdo.GetLong(CompanionSetup.TombstoneIdHash, 0L) != 0L;
+            }
+        }
+
+        private void LootTombstone(TombStone tombstone)
+        {
+            var container = tombstone.GetComponent<Container>();
+            if (container == null)
+            {
+                CompanionsPlugin.Log.LogError("[AI] Tombstone has no Container — cannot loot");
+                return;
+            }
+
+            var tombInv = container.GetInventory();
+            var humanoid = m_character as Humanoid;
+            if (tombInv == null || humanoid == null)
+            {
+                CompanionsPlugin.Log.LogError(
+                    $"[AI] Cannot loot tombstone — tombInv={tombInv != null} humanoid={humanoid != null}");
+                return;
+            }
+
+            var myInv = humanoid.GetInventory();
+            if (myInv == null)
+            {
+                CompanionsPlugin.Log.LogError("[AI] Companion has no inventory — cannot loot");
+                return;
+            }
+
+            int totalInTomb = tombInv.NrOfItems();
+            CompanionsPlugin.Log.LogInfo(
+                $"[AI] Looting tombstone — {totalInTomb} items to recover");
+
+            // Move all items from tombstone to companion inventory
+            // AddItem calls Changed() internally; tombstone auto-despawns when NrOfItems()==0
+            var items = new System.Collections.Generic.List<ItemDrop.ItemData>(tombInv.GetAllItems());
+            int moved = 0;
+            int failed = 0;
+            foreach (var item in items)
+            {
+                if (myInv.AddItem(item))
+                {
+                    tombInv.RemoveItem(item);
+                    moved++;
+                    CompanionsPlugin.Log.LogDebug(
+                        $"[AI]   Recovered: \"{item.m_shared?.m_name ?? "?"}\" x{item.m_stack}");
+                }
+                else
+                {
+                    failed++;
+                    CompanionsPlugin.Log.LogWarning(
+                        $"[AI]   Failed to recover: \"{item.m_shared?.m_name ?? "?"}\" x{item.m_stack} — inventory full?");
+                }
+            }
+
+            CompanionsPlugin.Log.LogInfo(
+                $"[AI] Tombstone loot complete — recovered {moved}/{totalInTomb} items" +
+                (failed > 0 ? $" ({failed} could not fit)" : "") +
+                $", {tombInv.NrOfItems()} remaining in tombstone");
+
+            if (_talk != null)
+                _talk.Say(moved > 0 ? "Got everything back." : "Nothing left to take.");
+        }
+
+        private void ClearTombstoneId()
+        {
+            var zdo = m_nview?.GetZDO();
+            if (zdo != null)
+                zdo.Set(CompanionSetup.TombstoneIdHash, 0L);
         }
 
         /// <summary>
@@ -704,6 +903,10 @@ namespace Companions
                 }
                 return true;
             }
+
+            // Tombstone recovery — navigate to and loot our tombstone after respawn
+            if (UpdateTombstoneRecovery(dt))
+                return true;
 
             // Directed target lock countdown
             if (DirectedTargetLockTimer > 0f)
@@ -1655,6 +1858,8 @@ namespace Companions
                     case CompanionSetup.StanceAggressive: stanceName = "Aggressive"; break;
                     case CompanionSetup.StanceDefensive:  stanceName = "Defensive"; break;
                     case CompanionSetup.StancePassive:    stanceName = "Passive"; break;
+                    case CompanionSetup.StanceMelee:      stanceName = "Melee"; break;
+                    case CompanionSetup.StanceRanged:     stanceName = "Ranged"; break;
                     default:                              stanceName = "Balanced"; break;
                 }
 

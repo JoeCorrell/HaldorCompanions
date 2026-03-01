@@ -46,6 +46,7 @@ namespace Companions
             }
 
             SceneManager.sceneLoaded += OnSceneLoaded;
+            Game.m_playerInitialSpawn += CompanionManager.SpawnStarterCompanion;
             EnsureTmpDefaultFont("awake");
         }
 
@@ -55,9 +56,15 @@ namespace Companions
             EnsureTmpDefaultFont("start");
         }
 
+        private void Update()
+        {
+            CompanionManager.ProcessRespawns(Time.deltaTime);
+        }
+
         private void OnDestroy()
         {
             SceneManager.sceneLoaded -= OnSceneLoaded;
+            Game.m_playerInitialSpawn -= CompanionManager.SpawnStarterCompanion;
             _harmony?.UnpatchSelf();
             Log?.LogInfo($"{PluginName} unloaded.");
         }

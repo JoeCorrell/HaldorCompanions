@@ -27,6 +27,8 @@ namespace Companions
             AccessTools.Field(typeof(Humanoid), "m_rightItem");
         private static readonly FieldInfo _blockTimerField =
             AccessTools.Field(typeof(Humanoid), "m_blockTimer");
+        private static readonly FieldInfo _attackDrawTimeField =
+            AccessTools.Field(typeof(Humanoid), "m_attackDrawTime");
 
         // ── VisEquipment ─────────────────────────────────────────────────────
         internal static readonly MethodInfo UpdateVisualsMethod =
@@ -112,6 +114,21 @@ namespace Companions
             if (h == null || _blockTimerField == null) return -1f;
             try { return (float)_blockTimerField.GetValue(h); }
             catch { return -1f; }
+        }
+
+        // ══════════════════════════════════════════════════════════════════════
+        //  Humanoid.m_attackDrawTime — bow draw percentage source
+        // ══════════════════════════════════════════════════════════════════════
+
+        internal static bool TrySetAttackDrawTime(Humanoid h, float value)
+        {
+            if (h == null || _attackDrawTimeField == null) return false;
+            try
+            {
+                _attackDrawTimeField.SetValue(h, value);
+                return true;
+            }
+            catch { return false; }
         }
 
         // ══════════════════════════════════════════════════════════════════════

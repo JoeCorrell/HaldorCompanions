@@ -58,11 +58,13 @@ namespace Companions
         private const int ActionStanceAggressive = 21;
         private const int ActionStanceDefensive  = 22;
         private const int ActionStancePassive    = 23;
+        private const int ActionStanceMelee      = 24;
+        private const int ActionStanceRanged     = 25;
 
-        private const float InnerRingRadius    = 105f;
-        private const float InnerSegSize       = 100f;
-        private const float InnerIconSize      = 62f;
-        private const float InnerHighlightSize = 84f;
+        private const float InnerRingRadius    = 80f;
+        private const float InnerSegSize       = 72f;
+        private const float InnerIconSize      = 44f;
+        private const float InnerHighlightSize = 58f;
 
         // ── Animation ──────────────────────────────────────────────────────
         private enum AnimState { Closed, Opening, Open, Closing }
@@ -99,7 +101,8 @@ namespace Companions
         private bool      _built;
         private Canvas    _canvas;
         private GameObject _root;
-        private GameObject _bgCircle;
+        private GameObject _bgCircle;       // outer ring donut
+        private GameObject _innerBgCircle;   // inner ring circle
         private GameObject _centerContainer;
         private TextMeshProUGUI _centerName;
         private TextMeshProUGUI _centerAction;
@@ -136,6 +139,7 @@ namespace Companions
         private AnimState _animState = AnimState.Closed;
         private float     _animTimer;
         private CanvasGroup _bgCanvasGroup;
+        private CanvasGroup _innerBgCanvasGroup;
         private CanvasGroup _centerCanvasGroup;
         private readonly List<CanvasGroup>    _segCanvasGroups  = new List<CanvasGroup>();
         private readonly List<RectTransform>  _segRTs           = new List<RectTransform>();
@@ -165,6 +169,7 @@ namespace Companions
             // Clear static caches to prevent stale textures surviving scene reload
             _iconCache.Clear();
             _circleSprite = null;
+            _donutSprite = null;
         }
 
         // ══════════════════════════════════════════════════════════════════
@@ -451,10 +456,13 @@ namespace Companions
 
         private void InitAnimationState()
         {
-            // Background — start invisible and collapsed
+            // Backgrounds — start invisible and collapsed
             if (_bgCanvasGroup != null) _bgCanvasGroup.alpha = 0f;
             var bgRT = _bgCircle.GetComponent<RectTransform>();
             bgRT.localScale = Vector3.zero;
+            if (_innerBgCanvasGroup != null) _innerBgCanvasGroup.alpha = 0f;
+            if (_innerBgCircle != null)
+                _innerBgCircle.GetComponent<RectTransform>().localScale = Vector3.zero;
 
             // Center text — start invisible
             if (_centerCanvasGroup != null) _centerCanvasGroup.alpha = 0f;
@@ -492,7 +500,7 @@ namespace Companions
             float rawProgress = Mathf.Clamp01(_animTimer / AnimDuration);
             bool closing = _animState == AnimState.Closing;
 
-            // ── Background ──
+            // ── Backgrounds ──
             float bgP = closing ? 1f - rawProgress : rawProgress;
             float bgT = Mathf.Clamp01(bgP / BgAnimFraction);
             float bgEased = EaseOutBack(bgT);
@@ -500,6 +508,13 @@ namespace Companions
             bgRT.localScale = Vector3.one * Mathf.Max(0f, bgEased);
             if (_bgCanvasGroup != null)
                 _bgCanvasGroup.alpha = Mathf.Clamp01(EaseOutQuad(bgT));
+            if (_innerBgCircle != null)
+            {
+                _innerBgCircle.GetComponent<RectTransform>().localScale =
+                    Vector3.one * Mathf.Max(0f, bgEased);
+                if (_innerBgCanvasGroup != null)
+                    _innerBgCanvasGroup.alpha = Mathf.Clamp01(EaseOutQuad(bgT));
+            }
 
             // ── Center text ──
             if (_centerCanvasGroup != null)
@@ -593,6 +608,9 @@ namespace Companions
                     // Snap to final state
                     bgRT.localScale = Vector3.one;
                     if (_bgCanvasGroup != null) _bgCanvasGroup.alpha = 1f;
+                    if (_innerBgCircle != null)
+                        _innerBgCircle.GetComponent<RectTransform>().localScale = Vector3.one;
+                    if (_innerBgCanvasGroup != null) _innerBgCanvasGroup.alpha = 1f;
                     if (_centerCanvasGroup != null) _centerCanvasGroup.alpha = 1f;
                     for (int i = 0; i < count; i++)
                     {
@@ -917,6 +935,16 @@ namespace Companions
                     IsMode = true, IsActive = stance == CompanionSetup.StancePassive,
                     IconColor = new Color(0.55f, 0.75f, 0.40f)
                 });
+                _innerSegments.Add(new Segment {
+                    Label = "Melee", ActionId = ActionStanceMelee,
+                    IsMode = true, IsActive = stance == CompanionSetup.StanceMelee,
+                    IconColor = new Color(0.80f, 0.55f, 0.20f)
+                });
+                _innerSegments.Add(new Segment {
+                    Label = "Ranged", ActionId = ActionStanceRanged,
+                    IsMode = true, IsActive = stance == CompanionSetup.StanceRanged,
+                    IconColor = new Color(0.50f, 0.70f, 0.80f)
+                });
             }
         }
 
@@ -950,8 +978,8 @@ namespace Companions
             rootRT.pivot = new Vector2(0.5f, 0.5f);
             rootRT.sizeDelta = new Vector2(560f, 560f);
 
-            // Background circle — dark semi-transparent sphere
-            _bgCircle = new GameObject("BgCircle", typeof(RectTransform), typeof(Image),
+            // Outer ring background — donut with transparent centre hole
+            _bgCircle = new GameObject("BgDonut", typeof(RectTransform), typeof(Image),
                 typeof(CanvasGroup));
             _bgCircle.transform.SetParent(_root.transform, false);
             var bgRT = _bgCircle.GetComponent<RectTransform>();
@@ -960,11 +988,27 @@ namespace Companions
             bgRT.pivot = new Vector2(0.5f, 0.5f);
             bgRT.sizeDelta = new Vector2(540f, 540f);
             var bgImg = _bgCircle.GetComponent<Image>();
-            bgImg.sprite = GetCircleSprite();
+            bgImg.sprite = GetDonutSprite();
             bgImg.color = BgColor;
             bgImg.raycastTarget = false;
             _bgCanvasGroup = _bgCircle.GetComponent<CanvasGroup>();
             _bgCanvasGroup.blocksRaycasts = false;
+
+            // Inner ring background — smaller filled circle
+            _innerBgCircle = new GameObject("BgInnerCircle", typeof(RectTransform), typeof(Image),
+                typeof(CanvasGroup));
+            _innerBgCircle.transform.SetParent(_root.transform, false);
+            var innerBgRT = _innerBgCircle.GetComponent<RectTransform>();
+            innerBgRT.anchorMin = new Vector2(0.5f, 0.5f);
+            innerBgRT.anchorMax = new Vector2(0.5f, 0.5f);
+            innerBgRT.pivot = new Vector2(0.5f, 0.5f);
+            innerBgRT.sizeDelta = new Vector2(240f, 240f);
+            var innerBgImg = _innerBgCircle.GetComponent<Image>();
+            innerBgImg.sprite = GetCircleSprite();
+            innerBgImg.color = BgColor;
+            innerBgImg.raycastTarget = false;
+            _innerBgCanvasGroup = _innerBgCircle.GetComponent<CanvasGroup>();
+            _innerBgCanvasGroup.blocksRaycasts = false;
 
             // Center container — groups name, action, state text
             _centerContainer = new GameObject("CenterContainer",
@@ -1221,14 +1265,14 @@ namespace Companions
                     iconImg.raycastTarget = false;
 
                     // Label
-                    var label = MakeText(segGO.transform, "Label", seg.Label, font, 9f,
+                    var label = MakeText(segGO.transform, "Label", seg.Label, font, 8f,
                         TextNormal, TextAlignmentOptions.Center);
                     var labelRT = label.GetComponent<RectTransform>();
                     labelRT.anchorMin = new Vector2(0f, 0f);
                     labelRT.anchorMax = new Vector2(1f, 0f);
                     labelRT.pivot = new Vector2(0.5f, 1f);
-                    labelRT.sizeDelta = new Vector2(0f, 14f);
-                    labelRT.anchoredPosition = new Vector2(0f, 14f);
+                    labelRT.sizeDelta = new Vector2(0f, 12f);
+                    labelRT.anchoredPosition = new Vector2(0f, 10f);
 
                     // Active dot
                     Image dotImg = null;
@@ -1238,8 +1282,8 @@ namespace Companions
                     dotRT.anchorMin = new Vector2(0.5f, 0f);
                     dotRT.anchorMax = new Vector2(0.5f, 0f);
                     dotRT.pivot = new Vector2(0.5f, 0.5f);
-                    dotRT.sizeDelta = new Vector2(8f, 8f);
-                    dotRT.anchoredPosition = new Vector2(0f, 6f);
+                    dotRT.sizeDelta = new Vector2(6f, 6f);
+                    dotRT.anchoredPosition = new Vector2(0f, 3f);
                     dotImg = dotGO.GetComponent<Image>();
                     dotImg.sprite = GetCircleSprite();
                     dotImg.color = seg.IsActive ? ActiveDot : InactiveDot;
@@ -1293,6 +1337,8 @@ namespace Companions
                 case ActionStanceAggressive: return "Aggressive";
                 case ActionStanceDefensive:  return "Defend";
                 case ActionStancePassive:    return "Passive";
+                case ActionStanceMelee:      return "Melee";
+                case ActionStanceRanged:     return "Ranged";
                 default:                     return null;
             }
         }
@@ -1372,6 +1418,27 @@ namespace Companions
                     // Pause symbol — two vertical bars
                     DrawLine(pixels, size, c - 10, c - 18, c - 10, c + 18, w, 7f);
                     DrawLine(pixels, size, c + 10, c - 18, c + 10, c + 18, w, 7f);
+                    break;
+
+                case ActionStanceMelee:
+                    // Crossed swords — two diagonal blades
+                    DrawLine(pixels, size, c - 20, c + 24, c + 20, c - 24, w, 5f);
+                    DrawLine(pixels, size, c + 20, c + 24, c - 20, c - 24, w, 5f);
+                    // Pommels at bottom of each blade
+                    DrawLine(pixels, size, c - 22, c + 26, c - 16, c + 26, w, 4f);
+                    DrawLine(pixels, size, c + 16, c + 26, c + 22, c + 26, w, 4f);
+                    break;
+
+                case ActionStanceRanged:
+                    // Bow with arrow — curved bow + straight arrow
+                    DrawArc(pixels, size, c - 6, c, 24f, 270f, 450f, w, 5f);
+                    // Bowstring
+                    DrawLine(pixels, size, c - 6, c + 24, c - 6, c - 24, w, 3f);
+                    // Arrow shaft
+                    DrawLine(pixels, size, c - 2, c - 20, c + 24, c, w, 4f);
+                    // Arrowhead
+                    DrawLine(pixels, size, c + 20, c + 6, c + 26, c, w, 3f);
+                    DrawLine(pixels, size, c + 20, c - 6, c + 26, c, w, 3f);
                     break;
             }
 
@@ -1493,6 +1560,48 @@ namespace Companions
             tex.Apply();
             _circleSprite = Sprite.Create(tex, new Rect(0, 0, s, s), new Vector2(0.5f, 0.5f), 100f);
             return _circleSprite;
+        }
+
+        /// <summary>
+        /// Procedural donut (ring) sprite — filled circle with a transparent
+        /// hole in the centre, used for the outer ring background so the gap
+        /// between inner and outer rings is transparent.
+        /// </summary>
+        private static Sprite _donutSprite;
+        private static Sprite GetDonutSprite()
+        {
+            if (_donutSprite != null) return _donutSprite;
+            int s = 256;
+            var tex = new Texture2D(s, s, TextureFormat.RGBA32, false);
+            tex.filterMode = FilterMode.Bilinear;
+            var px = new Color[s * s];
+            float c = (s - 1) * 0.5f;
+            float outerR = c;
+            // Inner hole at ~56% of outer radius
+            // Visual: outer BG 540px (radius 270), hole at visual radius ~152 → 152/270 ≈ 0.563
+            float innerR = c * 0.563f;
+            for (int y = 0; y < s; y++)
+                for (int x = 0; x < s; x++)
+                {
+                    float dx = x - c, dy = y - c;
+                    float dist = Mathf.Sqrt(dx * dx + dy * dy);
+                    if (dist <= innerR - 1.5f)
+                        px[y * s + x] = Color.clear;
+                    else if (dist <= innerR)
+                        px[y * s + x] = new Color(1f, 1f, 1f,
+                            Mathf.Clamp01((dist - innerR + 1.5f) / 1.5f));
+                    else if (dist <= outerR)
+                        px[y * s + x] = Color.white;
+                    else if (dist <= outerR + 1.5f)
+                        px[y * s + x] = new Color(1f, 1f, 1f,
+                            Mathf.Clamp01((outerR + 1.5f - dist) / 1.5f));
+                    else
+                        px[y * s + x] = Color.clear;
+                }
+            tex.SetPixels(px);
+            tex.Apply();
+            _donutSprite = Sprite.Create(tex, new Rect(0, 0, s, s), new Vector2(0.5f, 0.5f), 100f);
+            return _donutSprite;
         }
 
         // ══════════════════════════════════════════════════════════════════
