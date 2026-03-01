@@ -46,12 +46,23 @@ namespace Companions
         private static readonly Color ActiveDot        = new Color(0.40f, 0.85f, 0.40f, 1f);
         private static readonly Color InactiveDot      = new Color(0.5f, 0.5f, 0.5f, 0.5f);
 
-        private const float RingRadius     = 165f;
-        private const float SegSize        = 95f;
-        private const float HighlightSize  = 78f;
-        private const float IconSize       = 58f;
+        private const float RingRadius     = 210f;
+        private const float SegSize        = 100f;
+        private const float HighlightSize  = 84f;
+        private const float IconSize       = 62f;
         private const float DeadZonePx     = 30f;
         private const float DeadZoneStick  = 0.3f;
+
+        // ── Inner ring (combat stances) ───────────────────────────────────
+        private const int ActionStanceBalanced   = 20;
+        private const int ActionStanceAggressive = 21;
+        private const int ActionStanceDefensive  = 22;
+        private const int ActionStancePassive    = 23;
+
+        private const float InnerRingRadius    = 105f;
+        private const float InnerSegSize       = 70f;
+        private const float InnerIconSize      = 42f;
+        private const float InnerHighlightSize = 56f;
 
         // ── Animation ──────────────────────────────────────────────────────
         private enum AnimState { Closed, Opening, Open, Closing }
@@ -101,6 +112,18 @@ namespace Companions
         private readonly List<TextMeshProUGUI> _segLabels = new List<TextMeshProUGUI>();
         private readonly List<Image>      _segDots    = new List<Image>();
         private int _hoveredIndex = -1;
+
+        // ── Inner ring (combat stances) ───────────────────────────────────
+        private readonly List<Segment>    _innerSegments   = new List<Segment>();
+        private readonly List<GameObject> _innerSegmentGOs = new List<GameObject>();
+        private readonly List<Image>      _innerHighlights = new List<Image>();
+        private readonly List<Image>      _innerIcons      = new List<Image>();
+        private readonly List<TextMeshProUGUI> _innerLabels = new List<TextMeshProUGUI>();
+        private readonly List<Image>      _innerDots       = new List<Image>();
+        private readonly List<CanvasGroup>    _innerCanvasGroups  = new List<CanvasGroup>();
+        private readonly List<RectTransform>  _innerRTs           = new List<RectTransform>();
+        private readonly List<Vector2>        _innerFinalPositions = new List<Vector2>();
+        private int _hoveredInner = -1;
 
         /// <summary>
         /// Tracks whether the Use key has been released at least once since
@@ -170,6 +193,7 @@ namespace Companions
             _root.SetActive(true);
             _visible = true;
             _hoveredIndex = -1;
+            _hoveredInner = -1;
             _useReleasedSinceOpen = false;
 
             // Clear any overhead speech text from this companion
@@ -198,6 +222,7 @@ namespace Companions
             _animState = AnimState.Closing;
             _animTimer = 0f;
             _hoveredIndex = -1;
+            _hoveredInner = -1;
 
             CompanionsPlugin.Log.LogDebug("[Radial] Hide (closing)");
         }
@@ -273,8 +298,9 @@ namespace Companions
 
             Vector2 input;
             float deadZone;
+            bool isGamepad = ZInput.IsGamepadActive();
 
-            if (ZInput.IsGamepadActive())
+            if (isGamepad)
             {
                 float lx = ZInput.GetJoyLeftStickX();
                 float ly = ZInput.GetJoyLeftStickY();
@@ -288,28 +314,54 @@ namespace Companions
                 deadZone = DeadZonePx;
             }
 
-            if (input.magnitude < deadZone) return;
+            if (input.magnitude < deadZone)
+            {
+                _hoveredIndex = -1;
+                _hoveredInner = -1;
+                return;
+            }
 
             float angle = Mathf.Atan2(input.y, input.x) * Mathf.Rad2Deg;
             if (angle < 0f) angle += 360f;
 
-            // Segments arranged clockwise from top (90 degrees)
-            float segArc = 360f / _segments.Count;
+            // Determine which ring the cursor is in based on distance
+            float dist = input.magnitude;
+            // For gamepad, scale stick magnitude to pixel-space boundary
+            float innerBoundary = isGamepad
+                ? (InnerRingRadius + InnerSegSize * 0.5f) / RingRadius
+                : InnerRingRadius + InnerSegSize * 0.5f;
+
+            if (_innerSegments.Count > 0 && dist < innerBoundary)
+            {
+                // Inner ring
+                _hoveredInner = ComputeSegmentIndex(angle, _innerSegments.Count);
+                _hoveredIndex = -1;
+            }
+            else
+            {
+                // Outer ring
+                _hoveredIndex = ComputeSegmentIndex(angle, _segments.Count);
+                _hoveredInner = -1;
+            }
+        }
+
+        private static int ComputeSegmentIndex(float angle, int count)
+        {
+            if (count <= 0) return -1;
+            float segArc = 360f / count;
             float adjusted = (90f - angle + 360f + segArc * 0.5f) % 360f;
             int index = Mathf.FloorToInt(adjusted / segArc);
-            index = Mathf.Clamp(index, 0, _segments.Count - 1);
-
-            _hoveredIndex = index;
+            return Mathf.Clamp(index, 0, count - 1);
         }
 
         private void RefreshVisuals()
         {
+            // Outer ring
             for (int i = 0; i < _segmentGOs.Count; i++)
             {
                 bool hovered = i == _hoveredIndex;
                 var seg = _segments[i];
 
-                // Highlight circle
                 if (_segHighlights[i] != null)
                 {
                     Color hlCol;
@@ -322,19 +374,48 @@ namespace Companions
                     _segHighlights[i].color = hlCol;
                 }
 
-                // Label
                 if (_segLabels[i] != null)
                     _segLabels[i].color = hovered ? TextHover : TextNormal;
 
-                // Icon brightness
                 if (_segIcons[i] != null)
                     _segIcons[i].color = hovered ? Color.white : new Color(0.9f, 0.9f, 0.9f, 0.85f);
             }
 
-            // Center text
+            // Inner ring
+            for (int i = 0; i < _innerSegmentGOs.Count; i++)
+            {
+                bool hovered = i == _hoveredInner;
+                var seg = _innerSegments[i];
+
+                if (_innerHighlights[i] != null)
+                {
+                    Color hlCol;
+                    if (hovered)
+                        hlCol = HighlightHover;
+                    else if (seg.IsActive)
+                        hlCol = HighlightActive;
+                    else
+                        hlCol = Color.clear;
+                    _innerHighlights[i].color = hlCol;
+                }
+
+                if (_innerLabels[i] != null)
+                    _innerLabels[i].color = hovered ? TextHover : TextNormal;
+
+                if (_innerIcons[i] != null)
+                    _innerIcons[i].color = hovered ? Color.white : new Color(0.9f, 0.9f, 0.9f, 0.85f);
+            }
+
+            // Center text — show hovered segment from either ring
             if (_centerAction != null)
             {
-                if (_hoveredIndex >= 0 && _hoveredIndex < _segments.Count)
+                if (_hoveredInner >= 0 && _hoveredInner < _innerSegments.Count)
+                {
+                    var seg = _innerSegments[_hoveredInner];
+                    _centerAction.text = seg.Label;
+                    _centerState.text = seg.IsActive ? "ACTIVE" : "";
+                }
+                else if (_hoveredIndex >= 0 && _hoveredIndex < _segments.Count)
                 {
                     var seg = _segments[_hoveredIndex];
                     _centerAction.text = seg.Label;
@@ -365,7 +446,7 @@ namespace Companions
             // Center text — start invisible
             if (_centerCanvasGroup != null) _centerCanvasGroup.alpha = 0f;
 
-            // Segments — start at center, collapsed, rotated
+            // Outer segments — start at center, collapsed, rotated
             for (int i = 0; i < _segmentGOs.Count; i++)
             {
                 if (i < _segRTs.Count && _segRTs[i] != null)
@@ -376,6 +457,19 @@ namespace Companions
                 }
                 if (i < _segCanvasGroups.Count && _segCanvasGroups[i] != null)
                     _segCanvasGroups[i].alpha = 0f;
+            }
+
+            // Inner segments — same treatment
+            for (int i = 0; i < _innerSegmentGOs.Count; i++)
+            {
+                if (i < _innerRTs.Count && _innerRTs[i] != null)
+                {
+                    _innerRTs[i].anchoredPosition = Vector2.zero;
+                    _innerRTs[i].localScale = Vector3.zero;
+                    _innerRTs[i].localEulerAngles = new Vector3(0f, 0f, -120f + i * 30f);
+                }
+                if (i < _innerCanvasGroups.Count && _innerCanvasGroups[i] != null)
+                    _innerCanvasGroups[i].alpha = 0f;
             }
         }
 
@@ -442,6 +536,41 @@ namespace Companions
                     _segCanvasGroups[i].alpha = Mathf.Clamp01(EaseOutQuad(segVis));
             }
 
+            // ── Inner segments ──
+            int innerCount = _innerSegmentGOs.Count;
+            float innerStagger = innerCount * SegStagger;
+            float innerAnimDur = Mathf.Max(0.01f, AnimDuration - innerStagger);
+            // Offset inner ring slightly — starts a hair after outer ring
+            float innerOffset = 0.02f;
+
+            for (int i = 0; i < innerCount; i++)
+            {
+                int staggerIdx = closing ? (innerCount - 1 - i) : i;
+                float segDelay = staggerIdx * SegStagger + innerOffset;
+
+                float segVis;
+                if (closing)
+                    segVis = 1f - Mathf.Clamp01((_animTimer - segDelay) / innerAnimDur);
+                else
+                    segVis = Mathf.Clamp01((_animTimer - segDelay) / innerAnimDur);
+
+                float eased = closing ? (segVis * segVis) : EaseOutBack(segVis);
+
+                if (i < _innerRTs.Count && _innerRTs[i] != null)
+                {
+                    if (i < _innerFinalPositions.Count)
+                        _innerRTs[i].anchoredPosition = _innerFinalPositions[i] * eased;
+                    _innerRTs[i].localScale = Vector3.one * Mathf.Max(0f, eased);
+                    float startRot = -120f + i * 30f;
+                    float rotT = Mathf.Clamp01(eased);
+                    _innerRTs[i].localEulerAngles = new Vector3(0f, 0f,
+                        Mathf.Lerp(startRot, 0f, rotT));
+                }
+
+                if (i < _innerCanvasGroups.Count && _innerCanvasGroups[i] != null)
+                    _innerCanvasGroups[i].alpha = Mathf.Clamp01(EaseOutQuad(segVis));
+            }
+
             // ── Complete ──
             if (rawProgress >= 1f)
             {
@@ -463,6 +592,18 @@ namespace Companions
                         }
                         if (i < _segCanvasGroups.Count && _segCanvasGroups[i] != null)
                             _segCanvasGroups[i].alpha = 1f;
+                    }
+                    for (int i = 0; i < innerCount; i++)
+                    {
+                        if (i < _innerRTs.Count && _innerRTs[i] != null)
+                        {
+                            if (i < _innerFinalPositions.Count)
+                                _innerRTs[i].anchoredPosition = _innerFinalPositions[i];
+                            _innerRTs[i].localScale = Vector3.one;
+                            _innerRTs[i].localEulerAngles = Vector3.zero;
+                        }
+                        if (i < _innerCanvasGroups.Count && _innerCanvasGroups[i] != null)
+                            _innerCanvasGroups[i].alpha = 1f;
                     }
                 }
                 else if (_animState == AnimState.Closing)
@@ -488,15 +629,33 @@ namespace Companions
 
         private void ExecuteSelectedAction()
         {
-            if (_hoveredIndex < 0 || _hoveredIndex >= _segments.Count) return;
             if (_companion == null || _companionNview == null) return;
 
-            var seg = _segments[_hoveredIndex];
+            // Inner ring — combat stances
+            if (_hoveredInner >= 0 && _hoveredInner < _innerSegments.Count)
+            {
+                var seg = _innerSegments[_hoveredInner];
+                EnsureOwnership();
+                int newStance = seg.ActionId - ActionStanceBalanced;
+                _companion.SetCombatStance(newStance);
+                CompanionsPlugin.Log.LogDebug(
+                    $"[Radial] Set stance={newStance} label=\"{seg.Label}\"");
+
+                if (_companionTalk != null && ActionSpeech.Length > 0)
+                    _companionTalk.Say(ActionSpeech[UnityEngine.Random.Range(0, ActionSpeech.Length)]);
+                return;
+            }
+
+            // Outer ring — action modes / toggles
+            if (_hoveredIndex < 0 || _hoveredIndex >= _segments.Count) return;
+
+            var outerSeg = _segments[_hoveredIndex];
             EnsureOwnership();
 
-            CompanionsPlugin.Log.LogDebug($"[Radial] Execute action={seg.ActionId} label=\"{seg.Label}\"");
+            CompanionsPlugin.Log.LogDebug(
+                $"[Radial] Execute action={outerSeg.ActionId} label=\"{outerSeg.Label}\"");
 
-            switch (seg.ActionId)
+            switch (outerSeg.ActionId)
             {
                 case ActionFollow:
                     ToggleFollow();
@@ -506,7 +665,7 @@ namespace Companions
                 case ActionGatherOre:
                 case ActionForage:
                 case ActionSmelt:
-                    SetActionMode(seg.ActionId);
+                    SetActionMode(outerSeg.ActionId);
                     break;
                 case ActionStayHome:
                     ToggleStayHome();
@@ -634,6 +793,11 @@ namespace Companions
                 if (_segDots[i] != null)
                     _segDots[i].color = _segments[i].IsActive ? ActiveDot : InactiveDot;
             }
+            for (int i = 0; i < _innerSegments.Count && i < _innerDots.Count; i++)
+            {
+                if (_innerDots[i] != null)
+                    _innerDots[i].color = _innerSegments[i].IsActive ? ActiveDot : InactiveDot;
+            }
         }
 
         // ══════════════════════════════════════════════════════════════════
@@ -714,6 +878,33 @@ namespace Companions
                 IsToggle = true, IsActive = commandable,
                 IconColor = new Color(0.80f, 0.35f, 0.35f)
             });
+
+            // ── Inner ring: combat stances ──
+            _innerSegments.Clear();
+            if (!_isDverger)
+            {
+                int stance = _companion.GetCombatStance();
+                _innerSegments.Add(new Segment {
+                    Label = "Balanced", ActionId = ActionStanceBalanced,
+                    IsMode = true, IsActive = stance == CompanionSetup.StanceBalanced,
+                    IconColor = new Color(0.65f, 0.65f, 0.65f)
+                });
+                _innerSegments.Add(new Segment {
+                    Label = "Aggressive", ActionId = ActionStanceAggressive,
+                    IsMode = true, IsActive = stance == CompanionSetup.StanceAggressive,
+                    IconColor = new Color(0.85f, 0.30f, 0.25f)
+                });
+                _innerSegments.Add(new Segment {
+                    Label = "Defensive", ActionId = ActionStanceDefensive,
+                    IsMode = true, IsActive = stance == CompanionSetup.StanceDefensive,
+                    IconColor = new Color(0.30f, 0.55f, 0.85f)
+                });
+                _innerSegments.Add(new Segment {
+                    Label = "Passive", ActionId = ActionStancePassive,
+                    IsMode = true, IsActive = stance == CompanionSetup.StancePassive,
+                    IconColor = new Color(0.55f, 0.75f, 0.40f)
+                });
+            }
         }
 
         // ══════════════════════════════════════════════════════════════════
@@ -744,7 +935,7 @@ namespace Companions
             rootRT.anchorMin = new Vector2(0.5f, 0.5f);
             rootRT.anchorMax = new Vector2(0.5f, 0.5f);
             rootRT.pivot = new Vector2(0.5f, 0.5f);
-            rootRT.sizeDelta = new Vector2(440f, 440f);
+            rootRT.sizeDelta = new Vector2(560f, 560f);
 
             // Background circle — dark semi-transparent sphere
             _bgCircle = new GameObject("BgCircle", typeof(RectTransform), typeof(Image),
@@ -754,7 +945,7 @@ namespace Companions
             bgRT.anchorMin = new Vector2(0.5f, 0.5f);
             bgRT.anchorMax = new Vector2(0.5f, 0.5f);
             bgRT.pivot = new Vector2(0.5f, 0.5f);
-            bgRT.sizeDelta = new Vector2(420f, 420f);
+            bgRT.sizeDelta = new Vector2(540f, 540f);
             var bgImg = _bgCircle.GetComponent<Image>();
             bgImg.sprite = GetCircleSprite();
             bgImg.color = BgColor;
@@ -933,6 +1124,124 @@ namespace Companions
                 _segRTs.Add(segRT);
             }
 
+            // ── Inner ring segments ──
+            for (int i = 0; i < _innerSegmentGOs.Count; i++)
+                if (_innerSegmentGOs[i] != null)
+                    Destroy(_innerSegmentGOs[i]);
+            _innerSegmentGOs.Clear();
+            _innerHighlights.Clear();
+            _innerIcons.Clear();
+            _innerLabels.Clear();
+            _innerDots.Clear();
+            _innerCanvasGroups.Clear();
+            _innerRTs.Clear();
+            _innerFinalPositions.Clear();
+
+            if (_innerSegments.Count > 0)
+            {
+                float innerArc = 360f / _innerSegments.Count;
+
+                for (int i = 0; i < _innerSegments.Count; i++)
+                {
+                    var seg = _innerSegments[i];
+
+                    float angle = 90f - innerArc * i;
+                    float rad = angle * Mathf.Deg2Rad;
+                    float x = Mathf.Cos(rad) * InnerRingRadius;
+                    float y = Mathf.Sin(rad) * InnerRingRadius;
+
+                    _innerFinalPositions.Add(new Vector2(x, y));
+
+                    var segGO = new GameObject($"InnerSeg_{i}",
+                        typeof(RectTransform), typeof(CanvasGroup));
+                    segGO.transform.SetParent(_root.transform, false);
+                    var segRT = segGO.GetComponent<RectTransform>();
+                    segRT.anchorMin = new Vector2(0.5f, 0.5f);
+                    segRT.anchorMax = new Vector2(0.5f, 0.5f);
+                    segRT.pivot = new Vector2(0.5f, 0.5f);
+                    segRT.sizeDelta = new Vector2(InnerSegSize, InnerSegSize);
+                    segRT.anchoredPosition = new Vector2(x, y);
+                    var segCG = segGO.GetComponent<CanvasGroup>();
+                    segCG.blocksRaycasts = false;
+
+                    // Highlight circle
+                    var hlGO = new GameObject("Highlight", typeof(RectTransform), typeof(Image));
+                    hlGO.transform.SetParent(segGO.transform, false);
+                    var hlRT = hlGO.GetComponent<RectTransform>();
+                    hlRT.anchorMin = new Vector2(0.5f, 0.5f);
+                    hlRT.anchorMax = new Vector2(0.5f, 0.5f);
+                    hlRT.pivot = new Vector2(0.5f, 0.5f);
+                    hlRT.sizeDelta = new Vector2(InnerHighlightSize, InnerHighlightSize);
+                    hlRT.anchoredPosition = new Vector2(0f, 3f);
+                    var hlImg = hlGO.GetComponent<Image>();
+                    hlImg.sprite = GetCircleSprite();
+                    hlImg.color = Color.clear;
+                    hlImg.raycastTarget = false;
+
+                    // Icon background
+                    var iconBgGO = new GameObject("IconBg", typeof(RectTransform), typeof(Image));
+                    iconBgGO.transform.SetParent(segGO.transform, false);
+                    var iconBgRT = iconBgGO.GetComponent<RectTransform>();
+                    iconBgRT.anchorMin = new Vector2(0.5f, 0.5f);
+                    iconBgRT.anchorMax = new Vector2(0.5f, 0.5f);
+                    iconBgRT.pivot = new Vector2(0.5f, 0.5f);
+                    iconBgRT.sizeDelta = new Vector2(InnerIconSize, InnerIconSize);
+                    iconBgRT.anchoredPosition = new Vector2(0f, 4f);
+                    var iconBgImg = iconBgGO.GetComponent<Image>();
+                    iconBgImg.sprite = GetCircleSprite();
+                    var bgTint = seg.IconColor * 0.35f;
+                    iconBgImg.color = new Color(bgTint.r, bgTint.g, bgTint.b, 0.5f);
+                    iconBgImg.raycastTarget = false;
+
+                    // Icon
+                    var iconGO = new GameObject("Icon", typeof(RectTransform), typeof(Image));
+                    iconGO.transform.SetParent(segGO.transform, false);
+                    var iconRT = iconGO.GetComponent<RectTransform>();
+                    iconRT.anchorMin = new Vector2(0.5f, 0.5f);
+                    iconRT.anchorMax = new Vector2(0.5f, 0.5f);
+                    iconRT.pivot = new Vector2(0.5f, 0.5f);
+                    iconRT.sizeDelta = new Vector2(InnerIconSize * 0.78f, InnerIconSize * 0.78f);
+                    iconRT.anchoredPosition = new Vector2(0f, 4f);
+                    var iconImg = iconGO.GetComponent<Image>();
+                    iconImg.sprite = GetActionIcon(seg.ActionId);
+                    iconImg.color = new Color(0.9f, 0.9f, 0.9f, 0.85f);
+                    iconImg.raycastTarget = false;
+
+                    // Label
+                    var label = MakeText(segGO.transform, "Label", seg.Label, font, 8f,
+                        TextNormal, TextAlignmentOptions.Center);
+                    var labelRT = label.GetComponent<RectTransform>();
+                    labelRT.anchorMin = new Vector2(0f, 0f);
+                    labelRT.anchorMax = new Vector2(1f, 0f);
+                    labelRT.pivot = new Vector2(0.5f, 1f);
+                    labelRT.sizeDelta = new Vector2(0f, 12f);
+                    labelRT.anchoredPosition = new Vector2(0f, 12f);
+
+                    // Active dot
+                    Image dotImg = null;
+                    var dotGO = new GameObject("Dot", typeof(RectTransform), typeof(Image));
+                    dotGO.transform.SetParent(segGO.transform, false);
+                    var dotRT = dotGO.GetComponent<RectTransform>();
+                    dotRT.anchorMin = new Vector2(0.5f, 0f);
+                    dotRT.anchorMax = new Vector2(0.5f, 0f);
+                    dotRT.pivot = new Vector2(0.5f, 0.5f);
+                    dotRT.sizeDelta = new Vector2(6f, 6f);
+                    dotRT.anchoredPosition = new Vector2(0f, 6f);
+                    dotImg = dotGO.GetComponent<Image>();
+                    dotImg.sprite = GetCircleSprite();
+                    dotImg.color = seg.IsActive ? ActiveDot : InactiveDot;
+                    dotImg.raycastTarget = false;
+
+                    _innerSegmentGOs.Add(segGO);
+                    _innerHighlights.Add(hlImg);
+                    _innerIcons.Add(iconImg);
+                    _innerLabels.Add(label);
+                    _innerDots.Add(dotImg);
+                    _innerCanvasGroups.Add(segCG);
+                    _innerRTs.Add(segRT);
+                }
+            }
+
             // Update center name
             if (_centerName != null)
             {
@@ -966,8 +1275,12 @@ namespace Companions
                 case ActionSetHome:     return "SetHome";
                 case ActionWander:      return "Wander";
                 case ActionAutoPickup:  return "AutoPickup";
-                case ActionCommand:     return "Command";
-                default:                return null;
+                case ActionCommand:          return "Command";
+                case ActionStanceBalanced:   return "StanceBalanced";
+                case ActionStanceAggressive: return "StanceAggressive";
+                case ActionStanceDefensive:  return "StanceDefensive";
+                case ActionStancePassive:    return "StancePassive";
+                default:                     return null;
             }
         }
 
@@ -1013,6 +1326,39 @@ namespace Companions
                     DrawLine(pixels, size, c + 8, c + 22, c + 20, c + 22, w, 4f);
                     DrawArc(pixels, size, c, c + 4, 24f, 210f, 240f, w, 2.5f);
                     DrawArc(pixels, size, c, c + 4, 24f, 300f, 330f, w, 2.5f);
+                    break;
+
+                case ActionStanceBalanced:
+                    // Yin-yang style — two opposing arcs
+                    DrawArc(pixels, size, c, c, 20f, 0f, 180f, w, 5f);
+                    DrawArc(pixels, size, c, c, 20f, 180f, 360f, w, 3f);
+                    DrawArc(pixels, size, c + 10f, c, 10f, 0f, 180f, w, 3f);
+                    DrawArc(pixels, size, c - 10f, c, 10f, 180f, 360f, w, 5f);
+                    break;
+
+                case ActionStanceAggressive:
+                    // Upward sword blade
+                    DrawLine(pixels, size, c, c - 26, c, c + 16, w, 5f);
+                    DrawLine(pixels, size, c - 12, c + 4, c + 12, c + 4, w, 5f);
+                    DrawLine(pixels, size, c - 6, c - 26, c, c - 32, w, 4f);
+                    DrawLine(pixels, size, c + 6, c - 26, c, c - 32, w, 4f);
+                    DrawLine(pixels, size, c - 4, c + 20, c + 4, c + 20, w, 4f);
+                    break;
+
+                case ActionStanceDefensive:
+                    // Shield shape
+                    DrawLine(pixels, size, c - 18, c + 20, c + 18, c + 20, w, 5f);
+                    DrawLine(pixels, size, c - 18, c + 20, c - 18, c - 4, w, 5f);
+                    DrawLine(pixels, size, c + 18, c + 20, c + 18, c - 4, w, 5f);
+                    DrawArc(pixels, size, c, c - 4, 18f, 180f, 360f, w, 5f);
+                    DrawLine(pixels, size, c, c + 18, c, c - 16, w, 4f);
+                    DrawLine(pixels, size, c - 12, c + 8, c + 12, c + 8, w, 4f);
+                    break;
+
+                case ActionStancePassive:
+                    // Pause symbol — two vertical bars
+                    DrawLine(pixels, size, c - 10, c - 18, c - 10, c + 18, w, 7f);
+                    DrawLine(pixels, size, c + 10, c - 18, c + 10, c + 18, w, 7f);
                     break;
             }
 
@@ -1175,6 +1521,18 @@ namespace Companions
             _segCanvasGroups.Clear();
             _segRTs.Clear();
             _segFinalPositions.Clear();
+
+            for (int i = 0; i < _innerSegmentGOs.Count; i++)
+                if (_innerSegmentGOs[i] != null) Destroy(_innerSegmentGOs[i]);
+            _innerSegmentGOs.Clear();
+            _innerHighlights.Clear();
+            _innerIcons.Clear();
+            _innerLabels.Clear();
+            _innerDots.Clear();
+            _innerCanvasGroups.Clear();
+            _innerRTs.Clear();
+            _innerFinalPositions.Clear();
+
             _built = false;
         }
 

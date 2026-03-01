@@ -4,12 +4,12 @@
 
 <h1 align="center">Offline Companions</h1>
 
-<h3 align="center">Hire NPC companions from Haldor's shop - persistent allies with their own AI, inventory, combat, and gathering systems.</h3>
+<h3 align="center">Hire NPC companions from Haldor's shop - persistent allies with their own AI, inventory, combat, gathering, and smelting systems.</h3>
 
 <br/>
 
 <p align="center">
-<a href="https://github.com/JoeCorrell/OfflineCompanions/releases"><img src="https://img.shields.io/badge/Version-0.0.4--beta-c9a44a?style=for-the-badge&labelColor=0d1117" alt="Version"></a>
+<a href="https://github.com/JoeCorrell/OfflineCompanions/releases"><img src="https://img.shields.io/badge/Version-0.0.5--beta-c9a44a?style=for-the-badge&labelColor=0d1117" alt="Version"></a>
 <a href="#-requirements"><img src="https://img.shields.io/badge/BepInEx-5.4.2200+-e06c20?style=for-the-badge&labelColor=0d1117" alt="BepInEx"></a>
 <a href="#-requirements"><img src="https://img.shields.io/badge/Valheim-0.219+-4ade80?style=for-the-badge&labelColor=0d1117" alt="Valheim"></a>
 <a href="#"><img src="https://img.shields.io/badge/License-MIT-7c3aed?style=for-the-badge&labelColor=0d1117" alt="License"></a>
@@ -66,7 +66,7 @@ This is an early development build intended for testing. Expect bugs, rough edge
 
 Offline Companions adds persistent NPC allies to Valheim through Haldor's trader shop. Companions cost **2,000 coins** and come with their own inventory, equipment, stamina, food system, and custom AI. They aren't pets or tames, they're **teammates**.
 
-Customize their appearance at purchase, gear them up with weapons and armor, feed them food for bonus stats, and command them through a radial wheel or point-and-click hotkey system. They'll fight beside you, gather resources while you build, haul your cart, repair their own gear, sit by the fire with you, and sleep in beds when you tell them to.
+Customize their appearance at purchase, gear them up with weapons and armor, feed them food for bonus stats, and command them through a radial wheel or point-and-click hotkey system. They'll fight beside you, gather resources, forage for food, manage your smelting operation, haul your cart, repair their own gear, sit by the fire with you, and sleep in beds when you tell them to.
 
 Everything persists across sessions, zone transitions, server restarts, and player deaths.
 
@@ -208,6 +208,29 @@ Companions use a **defensive-first combat system**. They actively scan for incom
 
 ### Stamina System
 Companions have their own stamina pool (base 25 + food bonus) with regeneration. Stamina is consumed by attacks, blocking, running, and swimming. When stamina hits zero, attacks fail and blocks don't hold.
+
+<br/>
+</td></tr></table>
+
+<br/>
+
+<p align="center">
+<img src="https://img.shields.io/badge/%F0%9F%9B%A1%EF%B8%8F_COMBAT_STANCES-c9444a?style=for-the-badge&labelColor=0d1117" alt="Combat Stances">
+</p>
+
+<table><tr><td width="900">
+<br/>
+
+The radial menu has an **inner ring** with four combat stances that control how companions fight. Move the mouse closer to the center of the radial wheel to select a stance. The active stance is highlighted and persists across sessions.
+
+| Stance | Effect |
+|:---|:---|
+| **Balanced** | Default behavior. Standard retreat thresholds, normal blocking, dodging, and power attacks |
+| **Aggressive** | Extended aggro range (50m), no blocking or dodging, lower retreat thresholds (15% HP / 5% stamina), halved power attack cooldown, tighter flanking |
+| **Defensive** | Only engages enemies within 5m or those targeting the player. Higher retreat thresholds (45% HP / 25% stamina), faster dodge cooldown, tighter formation around the player |
+| **Passive** | Never attacks. Suppresses all targeting and combat. The companion simply follows you or idles at home |
+
+Stances affect all combat parameters: target acquisition, retreat thresholds, dodge timing, block behavior, power attack cooldowns, flanking distance, and formation spacing.
 
 <br/>
 </td></tr></table>

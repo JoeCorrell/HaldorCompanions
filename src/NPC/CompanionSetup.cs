@@ -29,6 +29,7 @@ namespace Companions
         private  static readonly int HomePosSetHash = StringExtensionMethods.GetStableHashCode("HC_HomePosSet");
         private  static readonly int StarterGearHash = StringExtensionMethods.GetStableHashCode("HC_StarterGear");
         internal static readonly int FollowHash     = StringExtensionMethods.GetStableHashCode("HC_Follow");
+        internal static readonly int CombatStanceHash = StringExtensionMethods.GetStableHashCode("HC_CombatStance");
 
         // Fast lookup for VisEquipmentPatches — avoids GetComponent per frame
         private static readonly HashSet<VisEquipment> _companionVisEquips = new HashSet<VisEquipment>();
@@ -41,6 +42,12 @@ namespace Companions
         internal const int ModeStay        = 4;
         internal const int ModeForage     = 5;
         internal const int ModeSmelt      = 6;
+
+        // ── Combat stances ────────────────────────────────────────────────────
+        internal const int StanceBalanced   = 0;
+        internal const int StanceAggressive = 1;
+        internal const int StanceDefensive  = 2;
+        internal const int StancePassive    = 3;
 
         internal const float MaxLeashDistance = 50f;
         private const int ActionModeSchemaVersion = 2;
@@ -858,6 +865,22 @@ namespace Companions
         internal bool GetWander() => _nview?.GetZDO()?.GetBool(WanderHash, false) ?? false;
 
         internal void SetWander(bool v) => _nview?.GetZDO()?.Set(WanderHash, v);
+
+        // ── Combat stance accessor ──────────────────────────────────────────
+
+        internal int GetCombatStance()
+        {
+            var zdo = _nview?.GetZDO();
+            if (zdo == null) return StanceBalanced;
+            int v = zdo.GetInt(CombatStanceHash, StanceBalanced);
+            return (v < StanceBalanced || v > StancePassive) ? StanceBalanced : v;
+        }
+
+        internal void SetCombatStance(int stance)
+        {
+            if (stance < StanceBalanced || stance > StancePassive) stance = StanceBalanced;
+            _nview?.GetZDO()?.Set(CombatStanceHash, stance);
+        }
 
         // ── Commandable accessor ─────────────────────────────────────────
 

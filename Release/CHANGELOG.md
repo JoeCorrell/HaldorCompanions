@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.0.5
+- Added combat stances: Balanced, Aggressive, Defensive, and Passive selectable from inner radial ring
+- Aggressive stance: extended 50m aggro range, no blocking/dodging, 15%/5% retreat thresholds, halved power attack cooldown, tighter flanking
+- Defensive stance: only engages enemies within 5m or targeting the player, 45%/25% retreat thresholds, faster dodge cooldown, tighter formation
+- Passive stance: suppresses all targeting and combat, companion only follows or idles
+- Enlarged radial menu with two-ring layout: outer ring for action modes, inner ring for combat stances
+- Added procedural fallback icons for all four combat stances
+- Added stance info to periodic debug logs (CompanionAI state dump and CombatController heartbeat)
+- Fixed SuppressAttack not clearing when switching from Passive to another stance without a combat target
+
 ## 0.0.4
 - Added Smelt mode: companions autonomously refill kilns and furnaces with fuel and ore from nearby chests
 - Companions collect smelted output (bars, coal) from furnace ground drops and queued output
@@ -13,6 +23,7 @@
 - Added Smelt segment to radial command wheel with custom icon
 - Added Auto Pickup custom icon to radial command wheel
 - Companions speak contextual lines while smelting ("Fetching fuel.", "Everything's running.", etc.)
+- Updated README with Forage and Smelting Automation documentation
 
 ## 0.0.3
 - Added Forage gather mode: companions find and pick berry bushes, mushrooms, flowers, branches, and stones

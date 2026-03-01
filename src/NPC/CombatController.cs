@@ -296,9 +296,23 @@ namespace Companions
             }
             _lastStuckPos = transform.position;
 
-            // ── Retreat check ──
+            // Read combat stance
+            int stance = _setup != null ? _setup.GetCombatStance() : CompanionSetup.StanceBalanced;
+
+            // ── Retreat check (stance-aware thresholds) ──
             float healthPct = _character.GetHealthPercentage();
             float staminaPct = _stamina != null ? _stamina.GetStaminaPercentage() : 1f;
+
+            float retreatHpPct, retreatStamPct;
+            switch (stance)
+            {
+                case CompanionSetup.StanceAggressive:
+                    retreatHpPct = 0.15f; retreatStamPct = 0.05f; break;
+                case CompanionSetup.StanceDefensive:
+                    retreatHpPct = 0.45f; retreatStamPct = 0.25f; break;
+                default:
+                    retreatHpPct = HealthRetreatPct; retreatStamPct = StaminaRetreatPct; break;
+            }
 
             if (_phase == CombatPhase.Retreat)
             {
@@ -310,16 +324,16 @@ namespace Companions
                 }
                 else
                 {
-                    UpdateRetreat(target, dt);
+                    UpdateRetreat(target, dt, stance);
                     return;
                 }
             }
-            else if (healthPct < HealthRetreatPct || staminaPct < StaminaRetreatPct)
+            else if (healthPct < retreatHpPct || staminaPct < retreatStamPct)
             {
                 TransitionTo(CombatPhase.Retreat);
                 CompanionsPlugin.Log.LogDebug(
-                    $"[Combat] Entering RETREAT — hp={healthPct:P0} stam={staminaPct:P0}");
-                UpdateRetreat(target, dt);
+                    $"[Combat] Entering RETREAT — hp={healthPct:P0} stam={staminaPct:P0} stance={stance}");
+                UpdateRetreat(target, dt, stance);
                 return;
             }
 
@@ -363,7 +377,7 @@ namespace Companions
                     RestoreMeleeLoadout();
                     TransitionTo(CombatPhase.Melee);
                     EnsureShieldEquipped();
-                    UpdateMelee(target, dt);
+                    UpdateMelee(target, dt, stance);
                 }
                 else
                 {
@@ -389,7 +403,7 @@ namespace Companions
                         TransitionTo(CombatPhase.Melee);
                         EnsureShieldEquipped();
                     }
-                    UpdateMelee(target, dt);
+                    UpdateMelee(target, dt, stance);
                 }
             }
         }
@@ -495,7 +509,7 @@ namespace Companions
         //  Melee Combat — defensive-first: block threats, then counter-attack
         // ════════════════════════════════════════════════════════════════════
 
-        private void UpdateMelee(Character target, float dt)
+        private void UpdateMelee(Character target, float dt, int stance = CompanionSetup.StanceBalanced)
         {
             // Use center-to-surface distance (consistent with CompanionAI.UpdateCombat)
             float dist = Vector3.Distance(transform.position, target.transform.position)
@@ -542,8 +556,10 @@ namespace Companions
             }
 
             // ── 1b. Dodge check — before block decision ──
+            // Aggressive: never dodge
             if (_dodgeCooldown <= 0f && !_isDodging && !_character.InAttack() &&
                 !ReflectionHelper.GetBlocking(_character) &&
+                stance != CompanionSetup.StanceAggressive &&
                 closestAttacker != null)
             {
                 // Check if attacker is facing us
@@ -568,12 +584,15 @@ namespace Companions
                     _dodgeDirection = perp;
                     _isDodging = true;
                     _dodgeDuration = DodgeDurationTime;
-                    _dodgeCooldown = DodgeCooldownTime;
+                    float cooldown = stance == CompanionSetup.StanceDefensive
+                        ? DodgeCooldownTime * 0.6f
+                        : DodgeCooldownTime;
+                    _dodgeCooldown = cooldown;
                     _stamina?.UseStamina(DodgeStaminaCost);
 
                     CompanionsPlugin.Log.LogDebug(
                         $"[Combat] DODGE — attacker=\"{closestAttacker.m_name}\" " +
-                        $"dist={closestAttackerDist:F1} cd={DodgeCooldownTime:F1}s");
+                        $"dist={closestAttackerDist:F1} cd={cooldown:F1}s");
                     return; // skip block/attack this frame
                 }
             }
@@ -656,7 +675,8 @@ namespace Companions
                     $"[Combat] Block ended (threats cleared) — entering {CounterWindowDuration:F1}s counter window");
             }
 
-            bool shouldBlock = wantBlock && !inCounterWindow;
+            // Aggressive: never block — pure offense
+            bool shouldBlock = wantBlock && !inCounterWindow && stance != CompanionSetup.StanceAggressive;
 
             if (shouldBlock)
             {
@@ -751,7 +771,9 @@ namespace Companions
                     if (weapon != null && weapon.HaveSecondaryAttack())
                     {
                         _humanoid.StartAttack(target, true);
-                        _powerAttackTimer = PowerAttackCooldown;
+                        float paCooldown = stance == CompanionSetup.StanceAggressive
+                            ? PowerAttackCooldown * 0.5f : PowerAttackCooldown;
+                        _powerAttackTimer = paCooldown;
                         _attackCooldownTimer = AttackCooldown;
                         _counterWindow = 0f;
                         CompanionsPlugin.Log.LogDebug(
@@ -770,7 +792,9 @@ namespace Companions
                 if (weapon != null && weapon.HaveSecondaryAttack())
                 {
                     _humanoid.StartAttack(target, true);
-                    _powerAttackTimer = PowerAttackCooldown;
+                    float paCooldown2 = stance == CompanionSetup.StanceAggressive
+                        ? PowerAttackCooldown * 0.5f : PowerAttackCooldown;
+                    _powerAttackTimer = paCooldown2;
                     _attackCooldownTimer = AttackCooldown;
                     CompanionsPlugin.Log.LogDebug(
                         $"[Combat] POWER ATTACK on staggered \"{target.m_name}\" " +
@@ -939,7 +963,7 @@ namespace Companions
         //  Retreat + Consumables
         // ════════════════════════════════════════════════════════════════════
 
-        private void UpdateRetreat(Character target, float dt)
+        private void UpdateRetreat(Character target, float dt, int stance = CompanionSetup.StanceBalanced)
         {
             _retreatTimer += dt;
 
@@ -959,7 +983,7 @@ namespace Companions
                 // and enemy isn't too close to the player
                 if (dotCheck > -0.5f && enemyToPlayer > 5f)
                 {
-                    float playerWeight = 0.7f;
+                    float playerWeight = stance == CompanionSetup.StanceDefensive ? 0.85f : 0.7f;
                     awayDir = (toPlayer * playerWeight + awayDir * (1f - playerWeight)).normalized;
                 }
             }
@@ -1275,8 +1299,18 @@ namespace Companions
                 ? Vector3.Distance(transform.position, followTarget.transform.position)
                 : -1f;
 
+            int curStance = _setup != null ? _setup.GetCombatStance() : CompanionSetup.StanceBalanced;
+            string stanceName;
+            switch (curStance)
+            {
+                case CompanionSetup.StanceAggressive: stanceName = "Aggressive"; break;
+                case CompanionSetup.StanceDefensive:  stanceName = "Defensive"; break;
+                case CompanionSetup.StancePassive:    stanceName = "Passive"; break;
+                default:                              stanceName = "Balanced"; break;
+            }
+
             CompanionsPlugin.Log.LogDebug(
-                $"[Combat] ♥ phase={_phase} " +
+                $"[Combat] ♥ phase={_phase} stance={stanceName} " +
                 $"target=\"{target?.m_name ?? "null"}\" dist={distToTarget:F1} " +
                 $"follow=\"{followTarget?.name ?? "null"}\" followDist={distToFollow:F1} " +
                 $"weapon=\"{weapon?.m_shared?.m_name ?? "null"}\" " +

@@ -709,6 +709,37 @@ namespace Companions
             if (DirectedTargetLockTimer > 0f)
                 DirectedTargetLockTimer -= dt;
 
+            // Read combat stance
+            int stance = _setup != null ? _setup.GetCombatStance() : CompanionSetup.StanceBalanced;
+
+            // Passive stance: never target, never attack, just follow
+            if (stance == CompanionSetup.StancePassive)
+            {
+                ClearTargets();
+                if (IsAlerted()) SetAlerted(false);
+                SuppressAttack = true;
+
+                if ((_harvest != null && _harvest.IsActive) ||
+                    (_repair != null && _repair.IsActive) ||
+                    (_smelt != null && _smelt.IsActive) ||
+                    (_doorHandler != null && _doorHandler.IsActive))
+                    return true;
+
+                if (m_follow != null)
+                    FollowWithFormation(m_follow, dt);
+                else
+                {
+                    if (!EnforceHomePatrol(dt))
+                        IdleMovement(dt);
+                }
+                return true;
+            }
+
+            // Clear SuppressAttack if we just left Passive stance
+            // (Passive sets it true; CombatController only clears it during active combat)
+            if (SuppressAttack && m_targetCreature == null)
+                SuppressAttack = false;
+
             // Humanoid ref needed by heal check and combat below
             Humanoid humanoid = m_character as Humanoid;
 
@@ -789,7 +820,7 @@ namespace Companions
             }
 
             // Target acquisition with companion-specific suppression
-            UpdateTarget(humanoid, dt);
+            UpdateTarget(humanoid, dt, stance);
 
             // Debug logging (replaces TargetPatches.UpdateAI_DebugLog)
             UpdateDebugLog(dt);
@@ -819,7 +850,7 @@ namespace Companions
 
             // Has target — combat movement + attack
             if (humanoid != null)
-                UpdateCombat(humanoid, dt);
+                UpdateCombat(humanoid, dt, stance);
 
             return true;
         }
@@ -829,7 +860,7 @@ namespace Companions
         //  Replaces MonsterAI.UpdateTarget + TargetPatches
         // ══════════════════════════════════════════════════════════════════════
 
-        private void UpdateTarget(Humanoid humanoid, float dt)
+        private void UpdateTarget(Humanoid humanoid, float dt, int stance = CompanionSetup.StanceBalanced)
         {
             m_updateTargetTimer -= dt;
 
@@ -908,12 +939,41 @@ namespace Companions
                 bool playerNear = Player.IsPlayerInRange(transform.position, 50f);
                 m_updateTargetTimer = playerNear ? UpdateTargetIntervalNear : UpdateTargetIntervalFar;
 
+                // Aggressive: boost view range for wider scan
+                float savedRange = m_viewRange;
+                if (stance == CompanionSetup.StanceAggressive)
+                    m_viewRange = Mathf.Max(m_viewRange, 50f);
+
                 Character enemy = FindEnemy();
+
+                if (stance == CompanionSetup.StanceAggressive)
+                    m_viewRange = savedRange;
 
                 if (enemy != null)
                 {
-                    m_targetCreature = enemy;
-                    m_targetStatic = null;
+                    // Defensive: only engage enemies within 5m OR targeting the player
+                    if (stance == CompanionSetup.StanceDefensive)
+                    {
+                        float eDist = Vector3.Distance(transform.position, enemy.transform.position);
+                        bool targetsPlayer = false;
+                        var eAI = enemy.GetBaseAI();
+                        if (eAI != null)
+                        {
+                            var aiTarget = eAI.GetTargetCreature();
+                            if (aiTarget != null && aiTarget.IsPlayer())
+                                targetsPlayer = true;
+                        }
+                        if (eDist > 5f && !targetsPlayer)
+                            enemy = null;
+                    }
+
+                    if (enemy != null)
+                    {
+                        m_targetCreature = enemy;
+                        m_targetStatic = null;
+                        if (stance == CompanionSetup.StanceAggressive)
+                            SetAlerted(true);
+                    }
                 }
             }
 
@@ -996,7 +1056,7 @@ namespace Companions
         //  Combat Movement + Attack
         // ══════════════════════════════════════════════════════════════════════
 
-        private void UpdateCombat(Humanoid humanoid, float dt)
+        private void UpdateCombat(Humanoid humanoid, float dt, int stance = CompanionSetup.StanceBalanced)
         {
             if (m_targetCreature == null) return;
 
@@ -1050,13 +1110,18 @@ namespace Companions
                     Vector3 moveTarget = m_lastKnownTargetPos;
 
                     // Flanking: approach from opposite side of player
-                    if (m_follow != null && dist > weaponRange * 2f)
+                    if (stance != CompanionSetup.StancePassive &&
+                        stance != CompanionSetup.StanceDefensive &&
+                        m_follow != null && dist > weaponRange * 2f)
                     {
                         float playerToTarget = Vector3.Distance(m_follow.transform.position, m_lastKnownTargetPos);
                         if (playerToTarget < 15f && playerToTarget > 1f)
                         {
                             Vector3 behindTarget = (m_lastKnownTargetPos - m_follow.transform.position).normalized;
-                            moveTarget = m_lastKnownTargetPos + behindTarget * weaponRange;
+                            float flankDist = stance == CompanionSetup.StanceAggressive
+                                ? weaponRange * 0.5f
+                                : weaponRange;
+                            moveTarget = m_lastKnownTargetPos + behindTarget * flankDist;
                         }
                     }
 
@@ -1175,7 +1240,9 @@ namespace Companions
             // Compute formation offset relative to player's facing
             Vector3 playerFwd = target.transform.forward;
             Vector3 playerRight = target.transform.right;
-            Vector3 offset = GetFormationOffset(_formationSlot, playerFwd, playerRight);
+            int stance = _setup != null ? _setup.GetCombatStance() : CompanionSetup.StanceBalanced;
+            float offsetScale = stance == CompanionSetup.StanceDefensive ? 0.6f : 1f;
+            Vector3 offset = GetFormationOffset(_formationSlot, playerFwd, playerRight) * offsetScale;
 
             Vector3 formationPos = target.transform.position + offset;
 
@@ -1581,11 +1648,21 @@ namespace Companions
                 var weapon = (m_character as Humanoid)?.GetCurrentWeapon();
                 var combat = _combat;
 
+                int curStance = _setup != null ? _setup.GetCombatStance() : CompanionSetup.StanceBalanced;
+                string stanceName;
+                switch (curStance)
+                {
+                    case CompanionSetup.StanceAggressive: stanceName = "Aggressive"; break;
+                    case CompanionSetup.StanceDefensive:  stanceName = "Defensive"; break;
+                    case CompanionSetup.StancePassive:    stanceName = "Passive"; break;
+                    default:                              stanceName = "Balanced"; break;
+                }
+
                 CompanionsPlugin.Log.LogDebug(
                     $"[CompanionAI] target=\"{m_targetCreature?.m_name ?? "null"}\"({distToTarget:F1}) " +
                     $"follow=\"{follow?.name ?? "null"}\"({distToFollow:F1}) " +
                     $"weapon=\"{weapon?.m_shared?.m_name ?? "null"}\" " +
-                    $"combat={combat?.Phase} " +
+                    $"combat={combat?.Phase} stance={stanceName} " +
                     $"alerted={IsAlerted()} suppress={SuppressAttack} " +
                     $"vel={m_character?.GetVelocity().magnitude ?? 0f:F1} " +
                     $"moved={moved:F2}");
