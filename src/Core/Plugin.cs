@@ -17,7 +17,7 @@ namespace Companions
     {
         public const string PluginGUID = "com.profmags.companions";
         public const string PluginName = "Offline Companions";
-        public const string PluginVersion = "0.0.2";
+        public const string PluginVersion = "0.0.3";
 
         private static Harmony _harmony;
         internal static ManualLogSource Log;

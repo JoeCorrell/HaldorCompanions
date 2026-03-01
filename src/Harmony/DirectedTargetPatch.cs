@@ -811,11 +811,13 @@ namespace Companions
                     ai.CancelMoveTarget();
                     ai.CancelPendingDeposit();
 
-                    // Restore follow target to player — handles ship disembark,
-                    // move-to leftovers, or any other state where follow was
-                    // pointed at something other than the player.
-                    if (Player.m_localPlayer != null)
+                    // Restore follow target to player if Follow toggle is ON.
+                    // Handles ship disembark, move-to leftovers, or any other state
+                    // where follow was pointed at something other than the player.
+                    if (Player.m_localPlayer != null && setup.GetFollow())
                         ai.SetFollowTarget(Player.m_localPlayer.gameObject);
+                    else if (!setup.GetFollow())
+                        ai.SetFollowTarget(null);
                 }
 
                 var harvest = setup.GetComponent<HarvestController>();

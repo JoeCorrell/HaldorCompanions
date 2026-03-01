@@ -75,6 +75,21 @@ namespace Companions
 
         private readonly Collider[] _proximityBuffer = new Collider[16];
 
+        // ── Door cache (avoids FindObjectsByType every scan) ────────────
+        private static Door[] _doorCache;
+        private static float  _doorCacheTimer;
+        private const float   DoorCacheInterval = 5f;
+
+        private static Door[] GetDoorCache()
+        {
+            if (_doorCache == null || _doorCacheTimer <= 0f)
+            {
+                _doorCache = Object.FindObjectsByType<Door>(FindObjectsSortMode.None);
+                _doorCacheTimer = DoorCacheInterval;
+            }
+            return _doorCache;
+        }
+
         // ══════════════════════════════════════════════════════════════════════
         //  Lifecycle
         // ══════════════════════════════════════════════════════════════════════
@@ -101,6 +116,7 @@ namespace Companions
             if (mode == CompanionSetup.ModeStay) return;
 
             float dt = Time.deltaTime;
+            _doorCacheTimer -= dt;
 
             // Heartbeat logging
             _heartbeatTimer -= dt;
@@ -320,7 +336,7 @@ namespace Companions
             // Search Door components directly instead of OverlapSphere.
             // Inside buildings the collider buffer was saturated by wall/floor/beam
             // colliders (32+) and door colliders were never reached.
-            var allDoors = Object.FindObjectsByType<Door>(FindObjectsSortMode.None);
+            var allDoors = GetDoorCache();
             Door closest = null;
             float closestDist = float.MaxValue;
             int doorsSeen = 0;
@@ -389,7 +405,7 @@ namespace Companions
 
         private void ScanForDoorProactive(Vector3 playerPos)
         {
-            var allDoors = Object.FindObjectsByType<Door>(FindObjectsSortMode.None);
+            var allDoors = GetDoorCache();
             Door best = null;
             float bestScore = float.MaxValue;
             float bestDistToMe = 0f;

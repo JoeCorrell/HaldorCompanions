@@ -20,8 +20,27 @@ namespace Companions
             public GuiBar WeightBar;
         }
 
-        private static readonly Dictionary<Character, CompanionBars> _bars =
-            new Dictionary<Character, CompanionBars>();
+        // Keyed by instance ID to avoid destroyed-Unity-object dictionary key issues
+        private static readonly Dictionary<int, CompanionBars> _bars =
+            new Dictionary<int, CompanionBars>();
+        // Track Character refs for update iteration (separate from key)
+        private static readonly Dictionary<int, Character> _barCharacters =
+            new Dictionary<int, Character>();
+
+        // Cached m_huds field to avoid per-frame Traverse reflection
+        private static System.Collections.IDictionary _cachedHuds;
+        private static EnemyHud _cachedHudInstance;
+
+        private static System.Collections.IDictionary GetHuds(EnemyHud instance)
+        {
+            if (_cachedHudInstance != instance || _cachedHuds == null)
+            {
+                _cachedHuds = Traverse.Create(instance).Field("m_huds")
+                    .GetValue() as System.Collections.IDictionary;
+                _cachedHudInstance = instance;
+            }
+            return _cachedHuds;
+        }
 
         private static GuiBar CreateBar(Transform healthTransform, Transform guiParent,
             string name, Color color, float yOffset)
@@ -54,10 +73,10 @@ namespace Companions
             static void Postfix(EnemyHud __instance, Character c)
             {
                 if (c == null || c.GetComponent<CompanionStamina>() == null) return;
-                if (_bars.ContainsKey(c)) return;
+                int id = c.GetInstanceID();
+                if (_bars.ContainsKey(id)) return;
 
-                var huds = Traverse.Create(__instance).Field("m_huds")
-                    .GetValue() as System.Collections.IDictionary;
+                var huds = GetHuds(__instance);
                 if (huds == null || !huds.Contains(c)) return;
 
                 var hudData = huds[c];
@@ -100,11 +119,12 @@ namespace Companions
                     }
                 }
 
-                _bars[c] = new CompanionBars
+                _bars[id] = new CompanionBars
                 {
                     StaminaBar = staminaBar,
                     WeightBar  = weightBar
                 };
+                _barCharacters[id] = c;
 
                 CompanionsPlugin.Log.LogDebug(
                     $"[HUD] Created companion bars — stamina={staminaBar != null} " +
@@ -118,21 +138,28 @@ namespace Companions
             static void Postfix()
             {
                 _bars.Clear();
+                _barCharacters.Clear();
+                _cachedHuds = null;
+                _cachedHudInstance = null;
             }
         }
 
         [HarmonyPatch(typeof(EnemyHud), "UpdateHuds")]
         private static class UpdateHuds_Patch
         {
-            static void Postfix()
+            static void Postfix(EnemyHud __instance)
             {
-                List<Character> toRemove = null;
+                // Hide the overhead HUD for the companion targeted by the radial menu
+                HideHudForRadialTarget(__instance);
+
+                List<int> toRemove = null;
                 foreach (var kvp in _bars)
                 {
-                    if (kvp.Key == null ||
+                    _barCharacters.TryGetValue(kvp.Key, out var character);
+                    if (character == null ||
                         (kvp.Value.StaminaBar == null && kvp.Value.WeightBar == null))
                     {
-                        if (toRemove == null) toRemove = new List<Character>();
+                        if (toRemove == null) toRemove = new List<int>();
                         toRemove.Add(kvp.Key);
                         continue;
                     }
@@ -142,7 +169,7 @@ namespace Companions
                     // Update stamina bar
                     if (bars.StaminaBar != null)
                     {
-                        var stamina = kvp.Key.GetComponent<CompanionStamina>();
+                        var stamina = character.GetComponent<CompanionStamina>();
                         if (stamina != null)
                             bars.StaminaBar.SetValue(stamina.GetStaminaPercentage());
                     }
@@ -150,7 +177,7 @@ namespace Companions
                     // Update weight bar
                     if (bars.WeightBar != null)
                     {
-                        var humanoid = kvp.Key as Humanoid;
+                        var humanoid = character as Humanoid;
                         if (humanoid != null)
                         {
                             var inv = humanoid.GetInventory();
@@ -169,9 +196,35 @@ namespace Companions
                         CompanionsPlugin.Log.LogDebug(
                             $"[HUD] Removing stale companion bars — character destroyed or null");
                         _bars.Remove(toRemove[i]);
+                        _barCharacters.Remove(toRemove[i]);
                     }
                 }
             }
+        }
+
+        /// <summary>
+        /// Hides the overhead HUD (name, health, stamina, weight) for the companion
+        /// that the radial command menu is currently targeting.
+        /// </summary>
+        private static void HideHudForRadialTarget(EnemyHud instance)
+        {
+            if (CompanionRadialMenu.Instance == null || !CompanionRadialMenu.Instance.IsVisible)
+                return;
+
+            var companion = CompanionRadialMenu.Instance.CurrentCompanion;
+            if (companion == null) return;
+
+            var character = companion.GetComponent<Character>();
+            if (character == null) return;
+
+            var huds = GetHuds(instance);
+            if (huds == null || !huds.Contains(character)) return;
+
+            var hudData = huds[character];
+            var gui = Traverse.Create(hudData).Field("m_gui")
+                .GetValue<GameObject>();
+            if (gui != null)
+                gui.SetActive(false);
         }
     }
 }

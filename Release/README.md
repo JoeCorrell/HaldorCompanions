@@ -2,28 +2,30 @@
 
 <br/>
 
-# Offline Companions
+<h1 align="center">Offline Companions</h1>
 
-### Hire NPC companions from Haldor's shop - persistent allies with their own AI, inventory, combat, and gathering systems.
-
-<br/>
-
-[![Version](https://img.shields.io/badge/Version-0.0.1--beta-c9a44a?style=for-the-badge&labelColor=0d1117)](https://github.com/JoeCorrell/OfflineCompanions/releases)
-[![BepInEx](https://img.shields.io/badge/BepInEx-5.4.2200+-e06c20?style=for-the-badge&labelColor=0d1117)](#-requirements)
-[![Valheim](https://img.shields.io/badge/Valheim-0.219+-4ade80?style=for-the-badge&labelColor=0d1117)](#-requirements)
-[![License](https://img.shields.io/badge/License-MIT-7c3aed?style=for-the-badge&labelColor=0d1117)](#)
+<h3 align="center">Hire NPC companions from Haldor's shop - persistent allies with their own AI, inventory, combat, and gathering systems.</h3>
 
 <br/>
 
+<p align="center">
+<a href="https://github.com/JoeCorrell/OfflineCompanions/releases"><img src="https://img.shields.io/badge/Version-0.0.3--beta-c9a44a?style=for-the-badge&labelColor=0d1117" alt="Version"></a>
+<a href="#-requirements"><img src="https://img.shields.io/badge/BepInEx-5.4.2200+-e06c20?style=for-the-badge&labelColor=0d1117" alt="BepInEx"></a>
+<a href="#-requirements"><img src="https://img.shields.io/badge/Valheim-0.219+-4ade80?style=for-the-badge&labelColor=0d1117" alt="Valheim"></a>
+<a href="#"><img src="https://img.shields.io/badge/License-MIT-7c3aed?style=for-the-badge&labelColor=0d1117" alt="License"></a>
+</p>
+
+<p align="center">
 <a href="https://ko-fi.com/profmags">
 <img src="https://storage.ko-fi.com/cdn/kofi3.png?v=3" alt="Support me on Ko-fi" width="280"/>
 </a>
+</p>
 
-<br/><br/>
+<p align="center">
+<img src="https://img.shields.io/badge/%E2%9A%A0%EF%B8%8F_EARLY_ACCESS_BETA-cc3333?style=for-the-badge&labelColor=0d1117" alt="Warning">
+</p>
 
-![Warning](https://img.shields.io/badge/%E2%9A%A0%EF%B8%8F_EARLY_ACCESS_BETA-cc3333?style=for-the-badge&labelColor=0d1117)
-
-<table><tr><td width="900">
+<table><tr><td width="900" align="center">
 <br/>
 
 This is an early development build intended for testing. Expect bugs, rough edges, and incomplete features. Saves should be safe, but **back up your world before installing**. Feedback and bug reports are greatly appreciated. You're helping shape the mod by testing it now!
@@ -33,9 +35,11 @@ This is an early development build intended for testing. Expect bugs, rough edge
 
 <br/>
 
-![Screenshots](https://img.shields.io/badge/%F0%9F%93%B8_SCREENSHOTS-4a4a4a?style=for-the-badge&labelColor=4a4a4a)
+<p align="center">
+<img src="https://img.shields.io/badge/%F0%9F%93%B8_SCREENSHOTS-4a4a4a?style=for-the-badge&labelColor=4a4a4a" alt="Screenshots">
+</p>
 
-<table><tr><td width="900">
+<table><tr><td width="900" align="center">
 <br/>
 
 <img src="https://raw.githubusercontent.com/JoeCorrell/HaldorCompanions/main/Screenshots/Radial.png" alt="Radial Command Wheel" width="800"/>
@@ -53,7 +57,9 @@ This is an early development build intended for testing. Expect bugs, rough edge
 
 <br/>
 
-![Overview](https://img.shields.io/badge/%F0%9F%93%96_OVERVIEW-2b3a4a?style=for-the-badge&labelColor=2b3a4a)
+<p align="center">
+<img src="https://img.shields.io/badge/%F0%9F%93%96_OVERVIEW-2b3a4a?style=for-the-badge&labelColor=2b3a4a" alt="Overview">
+</p>
 
 <table><tr><td width="900">
 <br/>
@@ -69,7 +75,9 @@ Everything persists across sessions, zone transitions, server restarts, and play
 
 <br/>
 
-![Getting Started](https://img.shields.io/badge/%F0%9F%9B%92_GETTING_STARTED-3a2b4a?style=for-the-badge&labelColor=3a2b4a)
+<p align="center">
+<img src="https://img.shields.io/badge/%F0%9F%9B%92_GETTING_STARTED-3a2b4a?style=for-the-badge&labelColor=3a2b4a" alt="Getting Started">
+</p>
 
 <table><tr><td width="900">
 <br/>
@@ -88,7 +96,9 @@ Point your crosshair at objects in the world and press the command hotkey to iss
 
 <br/>
 
-![Radial Menu](https://img.shields.io/badge/%F0%9F%8E%AF_RADIAL_COMMAND_WHEEL-d4a017?style=for-the-badge&labelColor=0d1117)
+<p align="center">
+<img src="https://img.shields.io/badge/%F0%9F%8E%AF_RADIAL_COMMAND_WHEEL-d4a017?style=for-the-badge&labelColor=0d1117" alt="Radial Menu">
+</p>
 
 <table><tr><td width="900">
 <br/>
@@ -99,24 +109,27 @@ The companion's name is shown in the center. Active toggles show their current O
 
 | Segment | Type | Description |
 |:---|:---|:---|
-| **Follow** | Mode | Default. Companion follows you and fights by your side |
+| **Follow** | Toggle | Companion follows you (default ON). Can be combined with any gather mode. Overrides Stay Home when ON |
 | **Gather Wood** | Mode | Autonomously find and chop trees, logs, and stumps nearby |
 | **Gather Stone** | Mode | Autonomously find and mine rocks nearby |
 | **Gather Ore** | Mode | Autonomously find and mine ore deposits nearby |
+| **Forage** | Mode | Autonomously find and pick berry bushes, mushrooms, flowers, and ground items nearby |
 | **Stay Home** | Toggle | Patrol the home position instead of following you |
 | **Set Home** | Action | Save the companion's current position as their home point |
 | **Wander** | Toggle | Roam up to 50m around home (ON) or stay put (OFF) |
 | **Auto Pickup** | Toggle | Automatically pick up nearby dropped items |
 | **Command** | Toggle | Accept directed commands from the point-to-command hotkey |
 
-> Modes are mutually exclusive. Selecting a gather mode switches away from Follow and vice versa. Toggles can be combined freely.
+> Gather modes are mutually exclusive. Selecting a gather mode switches away from the previous one. Tapping an active gather mode deselects it. Follow is an independent toggle that can be combined with any mode.
 
 <br/>
 </td></tr></table>
 
 <br/>
 
-![Inventory](https://img.shields.io/badge/%F0%9F%8E%92_INVENTORY_%26_EQUIPMENT-2896a5?style=for-the-badge&labelColor=0d1117)
+<p align="center">
+<img src="https://img.shields.io/badge/%F0%9F%8E%92_INVENTORY_%26_EQUIPMENT-2896a5?style=for-the-badge&labelColor=0d1117" alt="Inventory">
+</p>
 
 <table><tr><td width="900">
 <br/>
@@ -136,7 +149,9 @@ Right-click an item to use/equip it. Right-click food to feed it to the companio
 
 <br/>
 
-![AI System](https://img.shields.io/badge/%F0%9F%A7%A0_AI_SYSTEM-5b3a8a?style=for-the-badge&labelColor=0d1117)
+<p align="center">
+<img src="https://img.shields.io/badge/%F0%9F%A7%A0_AI_SYSTEM-5b3a8a?style=for-the-badge&labelColor=0d1117" alt="AI System">
+</p>
 
 <table><tr><td width="900">
 <br/>
@@ -163,7 +178,9 @@ When Stay Home is active, the AI switches from following you to patrolling the h
 
 <br/>
 
-![Combat AI](https://img.shields.io/badge/%E2%9A%94%EF%B8%8F_COMBAT_AI-c9444a?style=for-the-badge&labelColor=0d1117)
+<p align="center">
+<img src="https://img.shields.io/badge/%E2%9A%94%EF%B8%8F_COMBAT_AI-c9444a?style=for-the-badge&labelColor=0d1117" alt="Combat AI">
+</p>
 
 <table><tr><td width="900">
 <br/>
@@ -196,17 +213,20 @@ Companions have their own stamina pool (base 25 + food bonus) with regeneration.
 
 <br/>
 
-![Resource Gathering](https://img.shields.io/badge/%F0%9F%AA%93_RESOURCE_GATHERING-4a9c5e?style=for-the-badge&labelColor=0d1117)
+<p align="center">
+<img src="https://img.shields.io/badge/%F0%9F%AA%93_RESOURCE_GATHERING-4a9c5e?style=for-the-badge&labelColor=0d1117" alt="Resource Gathering">
+</p>
 
 <table><tr><td width="900">
 <br/>
 
-Set a companion to **Gather Wood**, **Gather Stone**, or **Gather Ore** via the radial wheel or directed command. They'll autonomously find, walk to, and harvest nearby resources.
+Set a companion to **Gather Wood**, **Gather Stone**, **Gather Ore**, or **Forage** via the radial wheel or directed command. They'll autonomously find, walk to, and harvest nearby resources.
 
 ### Gather Behavior
 - **Wood** - chops trees, fallen logs, and stumps. Prioritizes fallen logs and stumps over standing trees (3x distance penalty on standing trees).
 - **Stone** - mines rock formations (MineRock, MineRock5).
 - **Ore** - mines ore deposits (pickaxe-vulnerable destructibles that are chop-immune).
+- **Forage** - walks to and picks berry bushes, mushrooms, flowers, dandelions, branches, and stones. No tool required.
 
 ### Smart Tool Use
 The companion automatically equips the best matching tool from their inventory. Axe for wood, pickaxe for stone and ore. The tool stays equipped until gathering stops.
@@ -227,7 +247,9 @@ If an enemy enters within 10m during gathering, the companion pauses to fight, t
 
 <br/>
 
-![Directed Commands](https://img.shields.io/badge/%F0%9F%91%86_POINT--TO--COMMAND-d4a017?style=for-the-badge&labelColor=0d1117)
+<p align="center">
+<img src="https://img.shields.io/badge/%F0%9F%91%86_POINT--TO--COMMAND-d4a017?style=for-the-badge&labelColor=0d1117" alt="Directed Commands">
+</p>
 
 <table><tr><td width="900">
 <br/>
@@ -257,7 +279,9 @@ Point your crosshair at objects in the world and press the **command hotkey** to
 
 <br/>
 
-![Stay Home](https://img.shields.io/badge/%F0%9F%8F%A0_STAY_HOME_%26_AUTO--DEPOSIT-4a7cc9?style=for-the-badge&labelColor=0d1117)
+<p align="center">
+<img src="https://img.shields.io/badge/%F0%9F%8F%A0_STAY_HOME_%26_AUTO--DEPOSIT-4a7cc9?style=for-the-badge&labelColor=0d1117" alt="Stay Home">
+</p>
 
 <table><tr><td width="900">
 <br/>
@@ -277,7 +301,9 @@ Toggle **Wander** to control patrol range:
 
 <br/>
 
-![Auto-Repair](https://img.shields.io/badge/%F0%9F%94%A7_AUTO--REPAIR-e06c20?style=for-the-badge&labelColor=0d1117)
+<p align="center">
+<img src="https://img.shields.io/badge/%F0%9F%94%A7_AUTO--REPAIR-e06c20?style=for-the-badge&labelColor=0d1117" alt="Auto-Repair">
+</p>
 
 <table><tr><td width="900">
 <br/>
@@ -291,7 +317,9 @@ Point at a specific crafting station and press the command hotkey to direct them
 
 <br/>
 
-![Food System](https://img.shields.io/badge/%F0%9F%8D%96_FOOD_SYSTEM-d4577a?style=for-the-badge&labelColor=0d1117)
+<p align="center">
+<img src="https://img.shields.io/badge/%F0%9F%8D%96_FOOD_SYSTEM-d4577a?style=for-the-badge&labelColor=0d1117" alt="Food System">
+</p>
 
 <table><tr><td width="900">
 <br/>
@@ -312,7 +340,9 @@ Feed food by right-clicking consumables in the companion's inventory, or let aut
 
 <br/>
 
-![Durability](https://img.shields.io/badge/%F0%9F%9B%A1%EF%B8%8F_EQUIPMENT_%26_DURABILITY-7c3aed?style=for-the-badge&labelColor=0d1117)
+<p align="center">
+<img src="https://img.shields.io/badge/%F0%9F%9B%A1%EF%B8%8F_EQUIPMENT_%26_DURABILITY-7c3aed?style=for-the-badge&labelColor=0d1117" alt="Durability">
+</p>
 
 <table><tr><td width="900">
 <br/>
@@ -329,7 +359,9 @@ Companion gear works like player gear:
 
 <br/>
 
-![Door Handling](https://img.shields.io/badge/%F0%9F%9A%AA_DOOR_HANDLING-7c6c4f?style=for-the-badge&labelColor=0d1117)
+<p align="center">
+<img src="https://img.shields.io/badge/%F0%9F%9A%AA_DOOR_HANDLING-7c6c4f?style=for-the-badge&labelColor=0d1117" alt="Door Handling">
+</p>
 
 <table><tr><td width="900">
 <br/>
@@ -345,7 +377,9 @@ Respects ward protection and locked doors. Companions won't open doors they shou
 
 <br/>
 
-![Rest](https://img.shields.io/badge/%F0%9F%94%A5_REST_%26_CAMPFIRE-e06c20?style=for-the-badge&labelColor=0d1117)
+<p align="center">
+<img src="https://img.shields.io/badge/%F0%9F%94%A5_REST_%26_CAMPFIRE-e06c20?style=for-the-badge&labelColor=0d1117" alt="Rest">
+</p>
 
 <table><tr><td width="900">
 <br/>
@@ -366,7 +400,9 @@ While sitting or sleeping, companions heal **2 HP/sec** and their stamina regene
 
 <br/>
 
-![Speech](https://img.shields.io/badge/%F0%9F%92%AC_COMPANION_SPEECH-4a7cc9?style=for-the-badge&labelColor=0d1117)
+<p align="center">
+<img src="https://img.shields.io/badge/%F0%9F%92%AC_COMPANION_SPEECH-4a7cc9?style=for-the-badge&labelColor=0d1117" alt="Speech">
+</p>
 
 <table><tr><td width="900">
 <br/>
@@ -380,6 +416,7 @@ Companions have context-aware overhead speech that plays every 20-40 seconds. Li
 | **Hungry** | "I'm starving...", "Got any food?" |
 | **Needs Repair** | "My gear is worn.", "Need repairs." |
 | **Gathering** | "Found some!", "This looks promising." |
+| **Foraging** | "Found some berries!", "These mushrooms look good." |
 | **Following** | "Right behind you.", "Lead the way.", "Nice day for an adventure." |
 | **Commands** | "On it!", "As you wish." |
 
@@ -390,7 +427,9 @@ Each directed command type (attack, sit, sleep, repair, deposit, etc.) also trig
 
 <br/>
 
-![HUD](https://img.shields.io/badge/%F0%9F%93%8A_OVERHEAD_HUD-2b4a3a?style=for-the-badge&labelColor=0d1117)
+<p align="center">
+<img src="https://img.shields.io/badge/%F0%9F%93%8A_OVERHEAD_HUD-2b4a3a?style=for-the-badge&labelColor=0d1117" alt="HUD">
+</p>
 
 <table><tr><td width="900">
 <br/>
@@ -407,7 +446,9 @@ This lets you check a companion's status at a glance from a distance.
 
 <br/>
 
-![Stats](https://img.shields.io/badge/%F0%9F%93%8B_COMPANION_STATS-2b4a3a?style=for-the-badge&labelColor=2b4a3a)
+<p align="center">
+<img src="https://img.shields.io/badge/%F0%9F%93%8B_COMPANION_STATS-2b4a3a?style=for-the-badge&labelColor=2b4a3a" alt="Stats">
+</p>
 
 <table><tr><td width="900">
 <br/>
@@ -431,7 +472,9 @@ This lets you check a companion's status at a glance from a distance.
 
 <br/>
 
-![Persistence](https://img.shields.io/badge/%F0%9F%92%BE_PERSISTENCE-2d7d4f?style=for-the-badge&labelColor=0d1117)
+<p align="center">
+<img src="https://img.shields.io/badge/%F0%9F%92%BE_PERSISTENCE-2d7d4f?style=for-the-badge&labelColor=0d1117" alt="Persistence">
+</p>
 
 <table><tr><td width="900">
 <br/>
@@ -449,7 +492,9 @@ Saved state includes: appearance, name, inventory, equipment, action mode, home 
 
 <br/>
 
-![Installation](https://img.shields.io/badge/%F0%9F%93%A6_INSTALLATION-4a3a2b?style=for-the-badge&labelColor=4a3a2b)
+<p align="center">
+<img src="https://img.shields.io/badge/%F0%9F%93%A6_INSTALLATION-4a3a2b?style=for-the-badge&labelColor=4a3a2b" alt="Installation">
+</p>
 
 <table><tr><td width="900">
 <br/>
@@ -470,7 +515,9 @@ Saved state includes: appearance, name, inventory, equipment, action mode, home 
 
 <br/>
 
-![Requirements](https://img.shields.io/badge/%F0%9F%93%8B_REQUIREMENTS-3a4a2b?style=for-the-badge&labelColor=3a4a2b)
+<p align="center">
+<img src="https://img.shields.io/badge/%F0%9F%93%8B_REQUIREMENTS-3a4a2b?style=for-the-badge&labelColor=3a4a2b" alt="Requirements">
+</p>
 
 <table><tr><td width="900">
 <br/>
@@ -486,7 +533,9 @@ Saved state includes: appearance, name, inventory, equipment, action mode, home 
 
 <br/>
 
-![Compatibility](https://img.shields.io/badge/%F0%9F%94%97_COMPATIBILITY-4a2b3a?style=for-the-badge&labelColor=4a2b3a)
+<p align="center">
+<img src="https://img.shields.io/badge/%F0%9F%94%97_COMPATIBILITY-4a2b3a?style=for-the-badge&labelColor=4a2b3a" alt="Compatibility">
+</p>
 
 <table><tr><td width="900">
 <br/>
@@ -501,29 +550,29 @@ Saved state includes: appearance, name, inventory, equipment, action mode, home 
 
 <br/>
 
-![Credits](https://img.shields.io/badge/%F0%9F%99%8F_CREDITS-2b2b4a?style=for-the-badge&labelColor=2b2b4a)
+<p align="center">
+<img src="https://img.shields.io/badge/%F0%9F%99%8F_CREDITS-2b2b4a?style=for-the-badge&labelColor=2b2b4a" alt="Credits">
+</p>
 
-<table><tr><td width="900">
+<table><tr><td width="900" align="center">
 <br/>
-
-<div align="center">
 
 Built on [BepInEx](https://github.com/BepInEx/BepInEx) and [Harmony](https://github.com/pardeike/Harmony)
 <br/>
 Integrates with [Trader Overhaul](https://github.com/JoeCorrell/TraderOverhaul) for trader UI
-
-</div>
 
 <br/>
 </td></tr></table>
 
 <br/>
 
-[![GitHub Issues](https://img.shields.io/badge/GitHub-Issues-181717?style=for-the-badge&logo=github&labelColor=0d1117)](https://github.com/JoeCorrell/OfflineCompanions/issues)
-[![Discord](https://img.shields.io/badge/Discord-@profmags-5865F2?style=for-the-badge&logo=discord&logoColor=white&labelColor=0d1117)](https://discord.com)
+<p align="center">
+<a href="https://github.com/JoeCorrell/OfflineCompanions/issues"><img src="https://img.shields.io/badge/GitHub-Issues-181717?style=for-the-badge&logo=github&labelColor=0d1117" alt="GitHub Issues"></a>
+<a href="https://discord.com"><img src="https://img.shields.io/badge/Discord-@profmags-5865F2?style=for-the-badge&logo=discord&logoColor=white&labelColor=0d1117" alt="Discord"></a>
+</p>
 
-<br/>
-
+<p align="center">
 <sub>Forged for the Valheim community ❤️ Skol, Vikings.</sub>
+</p>
 
 </div>

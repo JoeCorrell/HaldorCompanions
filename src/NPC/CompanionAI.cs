@@ -345,22 +345,28 @@ namespace Companions
         }
 
         /// <summary>
-        /// Restore follow to player OR patrol at home, depending on StayHome state.
+        /// Restore follow to player OR patrol at home, depending on Follow toggle and StayHome state.
         /// Used after cancelling pending actions.
         /// </summary>
         private void RestoreFollowOrPatrol()
         {
-            if (_setup != null && _setup.GetStayHome() && _setup.HasHomePosition())
+            bool follow = _setup != null && _setup.GetFollow();
+            if (follow && Player.m_localPlayer != null)
+            {
+                SetFollowTarget(Player.m_localPlayer.gameObject);
+                CompanionsPlugin.Log.LogDebug("[AI] RestoreFollowOrPatrol → follow player (Follow ON)");
+            }
+            else if (_setup != null && _setup.GetStayHome() && _setup.HasHomePosition())
             {
                 SetFollowTarget(null);
                 SetPatrolPointAt(_setup.GetHomePosition());
                 CompanionsPlugin.Log.LogDebug(
                     $"[AI] RestoreFollowOrPatrol → patrol at home {_setup.GetHomePosition():F1}");
             }
-            else if (Player.m_localPlayer != null)
+            else
             {
-                SetFollowTarget(Player.m_localPlayer.gameObject);
-                CompanionsPlugin.Log.LogDebug("[AI] RestoreFollowOrPatrol → follow player");
+                SetFollowTarget(null);
+                CompanionsPlugin.Log.LogDebug("[AI] RestoreFollowOrPatrol → idle (Follow OFF, no StayHome)");
             }
         }
 
@@ -382,6 +388,17 @@ namespace Companions
         /// </summary>
         private bool EnforceHomePatrol(float dt)
         {
+            // Follow toggle ON overrides StayHome — companion follows player
+            if (_setup != null && _setup.GetFollow())
+            {
+                _returningHome = false;
+                if (m_randomMoveRange > 10f)
+                    m_randomMoveRange = 4f;
+                if (m_randomMoveInterval < 100f)
+                    m_randomMoveInterval = SuppressedMoveInterval;
+                return false;
+            }
+
             if (_setup == null || !_setup.GetStayHome() || !_setup.HasHomePosition())
             {
                 // Not in StayHome — restore defaults
@@ -1501,9 +1518,12 @@ namespace Companions
 
             // StayHome with wander OFF: companion is intentionally stationary
             // at home — don't flag as stuck. Also suppress during return-home.
+            // Follow OFF + StayHome OFF: companion is idle with no movement target.
             bool stayingHome = _setup != null && _setup.GetStayHome()
                 && !_setup.GetWander() && !harvesting;
-            bool intentionallyStationary = stayingHome || _returningHome;
+            bool followOffIdle = _setup != null && !_setup.GetFollow()
+                && !_setup.GetStayHome() && !harvesting;
+            bool intentionallyStationary = stayingHome || _returningHome || followOffIdle;
 
             if (moved < 0.1f && !inAttack && !atFollowDist && !harvesting
                 && !repairing && !handlingDoor && !intentionallyStationary)

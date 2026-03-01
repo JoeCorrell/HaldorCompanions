@@ -66,5 +66,48 @@ namespace Companions
                 return null;
             }
         }
+
+        /// <summary>
+        /// Load a radial menu icon texture by name (e.g. "Follow", "GatherWood").
+        /// </summary>
+        public static Texture2D LoadRadialTexture(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return null;
+
+            string cacheKey = "Radial_" + name;
+            if (Cache.TryGetValue(cacheKey, out Texture2D cached))
+                return cached;
+
+            if (LoadImageMethod == null)
+            {
+                CompanionsPlugin.Log.LogWarning("TextureLoader: ImageConversion.LoadImage not found via reflection.");
+                return null;
+            }
+
+            string resourceName = $"Companions.Resources.Textures.UI.RadialMenu.{name}.png";
+            using (Stream stream = ModAssembly.GetManifestResourceStream(resourceName))
+            {
+                if (stream == null)
+                {
+                    CompanionsPlugin.Log.LogDebug($"TextureLoader: Radial resource '{resourceName}' not found.");
+                    return null;
+                }
+
+                byte[] data = new byte[stream.Length];
+                stream.Read(data, 0, data.Length);
+
+                var tex = new Texture2D(2, 2, TextureFormat.RGBA32, false);
+                bool loaded = (bool)LoadImageMethod.Invoke(null, new object[] { tex, data });
+                if (loaded)
+                {
+                    tex.name = name;
+                    Cache[cacheKey] = tex;
+                    return tex;
+                }
+
+                UnityEngine.Object.Destroy(tex);
+                return null;
+            }
+        }
     }
 }

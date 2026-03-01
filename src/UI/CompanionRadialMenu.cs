@@ -29,6 +29,7 @@ namespace Companions
         private const int ActionGatherWood  = 1;
         private const int ActionGatherStone = 2;
         private const int ActionGatherOre   = 3;
+        private const int ActionForage      = 5;
         private const int ActionStayHome    = 10;
         private const int ActionSetHome     = 11;
         private const int ActionWander      = 12;
@@ -36,7 +37,7 @@ namespace Companions
         private const int ActionCommand     = 14;
 
         // ── Style ──────────────────────────────────────────────────────────
-        private static readonly Color BgColor          = new Color(0.08f, 0.06f, 0.04f, 0.85f);
+        private static readonly Color BgColor          = new Color(0.14f, 0.11f, 0.08f, 0.82f);
         private static readonly Color HighlightHover   = new Color(0.83f, 0.64f, 0.31f, 0.30f);
         private static readonly Color HighlightActive  = new Color(0.45f, 0.35f, 0.18f, 0.15f);
         private static readonly Color TextNormal       = new Color(0.85f, 0.80f, 0.65f, 1f);
@@ -44,12 +45,18 @@ namespace Companions
         private static readonly Color ActiveDot        = new Color(0.40f, 0.85f, 0.40f, 1f);
         private static readonly Color InactiveDot      = new Color(0.5f, 0.5f, 0.5f, 0.5f);
 
-        private const float RingRadius     = 140f;
-        private const float SegSize        = 80f;
-        private const float HighlightSize  = 62f;
-        private const float IconSize       = 36f;
+        private const float RingRadius     = 165f;
+        private const float SegSize        = 95f;
+        private const float HighlightSize  = 78f;
+        private const float IconSize       = 58f;
         private const float DeadZonePx     = 30f;
         private const float DeadZoneStick  = 0.3f;
+
+        // ── Animation ──────────────────────────────────────────────────────
+        private enum AnimState { Closed, Opening, Open, Closing }
+        private const float AnimDuration     = 0.25f;
+        private const float SegStagger       = 0.035f;
+        private const float BgAnimFraction   = 0.4f;
 
         // ── Speech pools ────────────────────────────────────────────────
         private static readonly string[] ActionSpeech = {
@@ -81,6 +88,7 @@ namespace Companions
         private Canvas    _canvas;
         private GameObject _root;
         private GameObject _bgCircle;
+        private GameObject _centerContainer;
         private TextMeshProUGUI _centerName;
         private TextMeshProUGUI _centerAction;
         private TextMeshProUGUI _centerState;
@@ -99,6 +107,15 @@ namespace Companions
         /// immediately triggering an action execution.
         /// </summary>
         private bool _useReleasedSinceOpen;
+
+        // ── Animation state ─────────────────────────────────────────────
+        private AnimState _animState = AnimState.Closed;
+        private float     _animTimer;
+        private CanvasGroup _bgCanvasGroup;
+        private CanvasGroup _centerCanvasGroup;
+        private readonly List<CanvasGroup>    _segCanvasGroups  = new List<CanvasGroup>();
+        private readonly List<RectTransform>  _segRTs           = new List<RectTransform>();
+        private readonly List<Vector2>        _segFinalPositions = new List<Vector2>();
 
         // ── Icon cache ───────────────────────────────────────────────────
         private static readonly Dictionary<int, Sprite> _iconCache = new Dictionary<int, Sprite>();
@@ -120,6 +137,10 @@ namespace Companions
         {
             if (Instance == this) Instance = null;
             Teardown();
+
+            // Clear static caches to prevent stale textures surviving scene reload
+            _iconCache.Clear();
+            _circleSprite = null;
         }
 
         // ══════════════════════════════════════════════════════════════════
@@ -129,6 +150,9 @@ namespace Companions
         public void Show(CompanionSetup companion)
         {
             if (companion == null) return;
+
+            // Cancel any in-progress close
+            _animState = AnimState.Closed;
 
             _companion        = companion;
             _companionNview   = companion.GetComponent<ZNetView>();
@@ -147,6 +171,15 @@ namespace Companions
             _hoveredIndex = -1;
             _useReleasedSinceOpen = false;
 
+            // Clear any overhead speech text from this companion
+            if (Chat.instance != null)
+                Chat.instance.ClearNpcText(companion.gameObject);
+
+            // Start opening animation
+            _animState = AnimState.Opening;
+            _animTimer = 0f;
+            InitAnimationState();
+
             // Unlock cursor for mouse selection (Hud.InRadial patch handles
             // subsequent frames via GameCamera.UpdateMouseCapture)
             Cursor.lockState = CursorLockMode.None;
@@ -159,19 +192,29 @@ namespace Companions
         public void Hide()
         {
             if (!_visible) return;
+            if (_animState == AnimState.Closing) return;
+
+            _animState = AnimState.Closing;
+            _animTimer = 0f;
+            _hoveredIndex = -1;
+
+            CompanionsPlugin.Log.LogDebug("[Radial] Hide (closing)");
+        }
+
+        private void CompleteHide()
+        {
             _visible = false;
+            _animState = AnimState.Closed;
             if (_root != null) _root.SetActive(false);
 
             _companion        = null;
             _companionNview   = null;
             _companionAI      = null;
             _companionHarvest = null;
-            _hoveredIndex     = -1;
+            _companionTalk    = null;
 
             // Let GameCamera.UpdateMouseCapture restore cursor state
             // on the next frame via its normal checks.
-
-            CompanionsPlugin.Log.LogDebug("[Radial] Hide");
         }
 
         // ══════════════════════════════════════════════════════════════════
@@ -181,6 +224,13 @@ namespace Companions
         private void Update()
         {
             if (!_visible) return;
+
+            // Drive animation
+            if (_animState == AnimState.Opening || _animState == AnimState.Closing)
+                UpdateAnimation();
+
+            // Block all input during close animation
+            if (_animState == AnimState.Closing) return;
 
             // Companion destroyed?
             if (_companion == null || !_companion)
@@ -204,7 +254,8 @@ namespace Companions
             UpdateSelection();
 
             // Execute on left click, or E/Use tap (after initial release)
-            if (_useReleasedSinceOpen &&
+            // Only allow execution when fully open
+            if (_animState == AnimState.Open && _useReleasedSinceOpen &&
                 (Input.GetMouseButtonDown(0)
                 || ZInput.GetButtonDown("Use") || ZInput.GetButtonDown("JoyUse")))
             {
@@ -300,6 +351,137 @@ namespace Companions
         }
 
         // ══════════════════════════════════════════════════════════════════
+        //  Animation
+        // ══════════════════════════════════════════════════════════════════
+
+        private void InitAnimationState()
+        {
+            // Background — start invisible and collapsed
+            if (_bgCanvasGroup != null) _bgCanvasGroup.alpha = 0f;
+            var bgRT = _bgCircle.GetComponent<RectTransform>();
+            bgRT.localScale = Vector3.zero;
+
+            // Center text — start invisible
+            if (_centerCanvasGroup != null) _centerCanvasGroup.alpha = 0f;
+
+            // Segments — start at center, collapsed, rotated
+            for (int i = 0; i < _segmentGOs.Count; i++)
+            {
+                if (i < _segRTs.Count && _segRTs[i] != null)
+                {
+                    _segRTs[i].anchoredPosition = Vector2.zero;
+                    _segRTs[i].localScale = Vector3.zero;
+                    _segRTs[i].localEulerAngles = new Vector3(0f, 0f, -180f + i * 20f);
+                }
+                if (i < _segCanvasGroups.Count && _segCanvasGroups[i] != null)
+                    _segCanvasGroups[i].alpha = 0f;
+            }
+        }
+
+        private void UpdateAnimation()
+        {
+            _animTimer += Time.unscaledDeltaTime;
+            float rawProgress = Mathf.Clamp01(_animTimer / AnimDuration);
+            bool closing = _animState == AnimState.Closing;
+
+            // ── Background ──
+            float bgP = closing ? 1f - rawProgress : rawProgress;
+            float bgT = Mathf.Clamp01(bgP / BgAnimFraction);
+            float bgEased = EaseOutBack(bgT);
+            var bgRT = _bgCircle.GetComponent<RectTransform>();
+            bgRT.localScale = Vector3.one * Mathf.Max(0f, bgEased);
+            if (_bgCanvasGroup != null)
+                _bgCanvasGroup.alpha = Mathf.Clamp01(EaseOutQuad(bgT));
+
+            // ── Center text ──
+            if (_centerCanvasGroup != null)
+            {
+                float centerT = Mathf.Clamp01((bgP - 0.3f) / 0.3f);
+                _centerCanvasGroup.alpha = Mathf.Clamp01(centerT);
+            }
+
+            // ── Segments ──
+            int count = _segmentGOs.Count;
+            float totalStagger = count * SegStagger;
+            float segAnimDur = Mathf.Max(0.01f, AnimDuration - totalStagger);
+
+            for (int i = 0; i < count; i++)
+            {
+                // Reverse stagger order when closing
+                int staggerIdx = closing ? (count - 1 - i) : i;
+                float segDelay = staggerIdx * SegStagger;
+
+                float segVis;
+                if (closing)
+                    segVis = 1f - Mathf.Clamp01((_animTimer - segDelay) / segAnimDur);
+                else
+                    segVis = Mathf.Clamp01((_animTimer - segDelay) / segAnimDur);
+
+                // Different easing for open vs close
+                float eased = closing ? (segVis * segVis) : EaseOutBack(segVis);
+
+                if (i < _segRTs.Count && _segRTs[i] != null)
+                {
+                    // Position: center → final ring position
+                    if (i < _segFinalPositions.Count)
+                        _segRTs[i].anchoredPosition = _segFinalPositions[i] * eased;
+
+                    // Scale
+                    _segRTs[i].localScale = Vector3.one * Mathf.Max(0f, eased);
+
+                    // Rotation: spiral from starting angle to 0
+                    float startRot = -180f + i * 20f;
+                    float rotT = Mathf.Clamp01(eased);
+                    _segRTs[i].localEulerAngles = new Vector3(0f, 0f,
+                        Mathf.Lerp(startRot, 0f, rotT));
+                }
+
+                // Alpha
+                if (i < _segCanvasGroups.Count && _segCanvasGroups[i] != null)
+                    _segCanvasGroups[i].alpha = Mathf.Clamp01(EaseOutQuad(segVis));
+            }
+
+            // ── Complete ──
+            if (rawProgress >= 1f)
+            {
+                if (_animState == AnimState.Opening)
+                {
+                    _animState = AnimState.Open;
+                    // Snap to final state
+                    bgRT.localScale = Vector3.one;
+                    if (_bgCanvasGroup != null) _bgCanvasGroup.alpha = 1f;
+                    if (_centerCanvasGroup != null) _centerCanvasGroup.alpha = 1f;
+                    for (int i = 0; i < count; i++)
+                    {
+                        if (i < _segRTs.Count && _segRTs[i] != null)
+                        {
+                            if (i < _segFinalPositions.Count)
+                                _segRTs[i].anchoredPosition = _segFinalPositions[i];
+                            _segRTs[i].localScale = Vector3.one;
+                            _segRTs[i].localEulerAngles = Vector3.zero;
+                        }
+                        if (i < _segCanvasGroups.Count && _segCanvasGroups[i] != null)
+                            _segCanvasGroups[i].alpha = 1f;
+                    }
+                }
+                else if (_animState == AnimState.Closing)
+                {
+                    CompleteHide();
+                }
+            }
+        }
+
+        private static float EaseOutBack(float t)
+        {
+            const float c1 = 1.4f;
+            const float c3 = c1 + 1f;
+            float tm1 = t - 1f;
+            return 1f + c3 * (tm1 * tm1 * tm1) + c1 * (tm1 * tm1);
+        }
+
+        private static float EaseOutQuad(float t) => 1f - (1f - t) * (1f - t);
+
+        // ══════════════════════════════════════════════════════════════════
         //  Action execution
         // ══════════════════════════════════════════════════════════════════
 
@@ -316,9 +498,12 @@ namespace Companions
             switch (seg.ActionId)
             {
                 case ActionFollow:
+                    ToggleFollow();
+                    break;
                 case ActionGatherWood:
                 case ActionGatherStone:
                 case ActionGatherOre:
+                case ActionForage:
                     SetActionMode(seg.ActionId);
                     break;
                 case ActionStayHome:
@@ -347,18 +532,24 @@ namespace Companions
         {
             var zdo = _companionNview.GetZDO();
             if (zdo == null) return;
-            zdo.Set(CompanionSetup.ActionModeHash, mode);
+
+            // Toggle: tapping an already-active gather mode deselects it
+            int currentMode = zdo.GetInt(CompanionSetup.ActionModeHash, CompanionSetup.ModeFollow);
+            int newMode = (currentMode == mode) ? CompanionSetup.ModeFollow : mode;
+
+            zdo.Set(CompanionSetup.ActionModeHash, newMode);
             _companionHarvest?.NotifyActionModeChanged();
-            _companion.ApplyFollowMode(mode);
+            _companion.ApplyFollowMode(newMode);
 
             string name;
-            switch (mode)
+            switch (newMode)
             {
-                case CompanionSetup.ModeFollow:      name = "Follow into Battle"; break;
+                case CompanionSetup.ModeFollow:      name = "Idle"; break;
                 case CompanionSetup.ModeGatherWood:  name = "Gather Wood"; break;
                 case CompanionSetup.ModeGatherStone: name = "Gather Stone"; break;
                 case CompanionSetup.ModeGatherOre:   name = "Gather Ore"; break;
-                default:                             name = "Follow"; break;
+                case CompanionSetup.ModeForage:      name = "Forage"; break;
+                default:                             name = "Idle"; break;
             }
             MessageHud.instance?.ShowMessage(MessageHud.MessageType.Center, name);
         }
@@ -373,7 +564,8 @@ namespace Companions
             {
                 if (!_companion.HasHomePosition())
                     _companion.SetHomePosition(_companion.transform.position);
-                if (_companionAI != null)
+                // Only set patrol if Follow toggle is OFF — Follow overrides StayHome
+                if (_companionAI != null && !_companion.GetFollow())
                 {
                     _companionAI.SetFollowTarget(null);
                     _companionAI.SetPatrolPointAt(_companion.GetHomePosition());
@@ -427,6 +619,18 @@ namespace Companions
                 MessageHud.MessageType.Center, !current ? "Command: ON" : "Command: OFF");
         }
 
+        private void ToggleFollow()
+        {
+            bool next = !_companion.GetFollow();
+            _companion.SetFollow(next);
+            var zdo = _companionNview?.GetZDO();
+            int mode = zdo?.GetInt(CompanionSetup.ActionModeHash, CompanionSetup.ModeFollow)
+                       ?? CompanionSetup.ModeFollow;
+            _companion.ApplyFollowMode(mode);
+            MessageHud.instance?.ShowMessage(
+                MessageHud.MessageType.Center, next ? "Follow: ON" : "Follow: OFF");
+        }
+
         private void EnsureOwnership()
         {
             if (_companionNview == null || _companionNview.GetZDO() == null) return;
@@ -459,6 +663,7 @@ namespace Companions
             var zdo = _companionNview?.GetZDO();
             int currentMode = zdo?.GetInt(CompanionSetup.ActionModeHash, CompanionSetup.ModeFollow)
                               ?? CompanionSetup.ModeFollow;
+            bool follow      = _companion.GetFollow();
             bool stayHome    = _companion.GetStayHome();
             bool wander      = _companion.GetWander();
             bool autoPickup  = zdo?.GetBool(CompanionSetup.AutoPickupHash, true) ?? true;
@@ -466,7 +671,7 @@ namespace Companions
 
             _segments.Add(new Segment {
                 Label = "Follow", ActionId = ActionFollow,
-                IsMode = true, IsActive = currentMode == CompanionSetup.ModeFollow,
+                IsToggle = true, IsActive = follow,
                 IconColor = new Color(0.40f, 0.75f, 0.40f)
             });
 
@@ -486,6 +691,11 @@ namespace Companions
                     Label = "Gather Ore", ActionId = ActionGatherOre,
                     IsMode = true, IsActive = currentMode == CompanionSetup.ModeGatherOre,
                     IconColor = new Color(0.75f, 0.55f, 0.15f)
+                });
+                _segments.Add(new Segment {
+                    Label = "Forage", ActionId = ActionForage,
+                    IsMode = true, IsActive = currentMode == CompanionSetup.ModeForage,
+                    IconColor = new Color(0.45f, 0.75f, 0.30f)
                 });
             }
 
@@ -545,23 +755,38 @@ namespace Companions
             rootRT.anchorMin = new Vector2(0.5f, 0.5f);
             rootRT.anchorMax = new Vector2(0.5f, 0.5f);
             rootRT.pivot = new Vector2(0.5f, 0.5f);
-            rootRT.sizeDelta = new Vector2(400f, 400f);
+            rootRT.sizeDelta = new Vector2(440f, 440f);
 
             // Background circle — dark semi-transparent sphere
-            _bgCircle = new GameObject("BgCircle", typeof(RectTransform), typeof(Image));
+            _bgCircle = new GameObject("BgCircle", typeof(RectTransform), typeof(Image),
+                typeof(CanvasGroup));
             _bgCircle.transform.SetParent(_root.transform, false);
             var bgRT = _bgCircle.GetComponent<RectTransform>();
             bgRT.anchorMin = new Vector2(0.5f, 0.5f);
             bgRT.anchorMax = new Vector2(0.5f, 0.5f);
             bgRT.pivot = new Vector2(0.5f, 0.5f);
-            bgRT.sizeDelta = new Vector2(360f, 360f);
+            bgRT.sizeDelta = new Vector2(420f, 420f);
             var bgImg = _bgCircle.GetComponent<Image>();
             bgImg.sprite = GetCircleSprite();
             bgImg.color = BgColor;
             bgImg.raycastTarget = false;
+            _bgCanvasGroup = _bgCircle.GetComponent<CanvasGroup>();
+            _bgCanvasGroup.blocksRaycasts = false;
+
+            // Center container — groups name, action, state text
+            _centerContainer = new GameObject("CenterContainer",
+                typeof(RectTransform), typeof(CanvasGroup));
+            _centerContainer.transform.SetParent(_root.transform, false);
+            var ccRT = _centerContainer.GetComponent<RectTransform>();
+            ccRT.anchorMin = new Vector2(0.5f, 0.5f);
+            ccRT.anchorMax = new Vector2(0.5f, 0.5f);
+            ccRT.pivot = new Vector2(0.5f, 0.5f);
+            ccRT.sizeDelta = new Vector2(160f, 60f);
+            _centerCanvasGroup = _centerContainer.GetComponent<CanvasGroup>();
+            _centerCanvasGroup.blocksRaycasts = false;
 
             // Center text — companion name
-            _centerName = MakeText(_root.transform, "CenterName", "", font, 14f,
+            _centerName = MakeText(_centerContainer.transform, "CenterName", "", font, 14f,
                 new Color(0.83f, 0.64f, 0.31f, 1f), TextAlignmentOptions.Center);
             var nameRT = _centerName.GetComponent<RectTransform>();
             nameRT.anchorMin = new Vector2(0.5f, 0.5f);
@@ -571,7 +796,7 @@ namespace Companions
             nameRT.anchoredPosition = new Vector2(0f, 14f);
 
             // Center text — hovered action name
-            _centerAction = MakeText(_root.transform, "CenterAction", "", font, 12f,
+            _centerAction = MakeText(_centerContainer.transform, "CenterAction", "", font, 12f,
                 TextNormal, TextAlignmentOptions.Center);
             var actRT = _centerAction.GetComponent<RectTransform>();
             actRT.anchorMin = new Vector2(0.5f, 0.5f);
@@ -581,7 +806,7 @@ namespace Companions
             actRT.anchoredPosition = new Vector2(0f, -4f);
 
             // Center text — state (ON/OFF)
-            _centerState = MakeText(_root.transform, "CenterState", "", font, 11f,
+            _centerState = MakeText(_centerContainer.transform, "CenterState", "", font, 11f,
                 ActiveDot, TextAlignmentOptions.Center);
             var stateRT = _centerState.GetComponent<RectTransform>();
             stateRT.anchorMin = new Vector2(0.5f, 0.5f);
@@ -607,6 +832,9 @@ namespace Companions
             _segIcons.Clear();
             _segLabels.Clear();
             _segDots.Clear();
+            _segCanvasGroups.Clear();
+            _segRTs.Clear();
+            _segFinalPositions.Clear();
 
             float segArc = 360f / _segments.Count;
 
@@ -620,8 +848,12 @@ namespace Companions
                 float x = Mathf.Cos(rad) * RingRadius;
                 float y = Mathf.Sin(rad) * RingRadius;
 
-                // Segment container (invisible — just layout)
-                var segGO = new GameObject($"Seg_{i}", typeof(RectTransform));
+                // Store final position for animation
+                _segFinalPositions.Add(new Vector2(x, y));
+
+                // Segment container with CanvasGroup for alpha animation
+                var segGO = new GameObject($"Seg_{i}",
+                    typeof(RectTransform), typeof(CanvasGroup));
                 segGO.transform.SetParent(_root.transform, false);
                 var segRT = segGO.GetComponent<RectTransform>();
                 segRT.anchorMin = new Vector2(0.5f, 0.5f);
@@ -629,6 +861,8 @@ namespace Companions
                 segRT.pivot = new Vector2(0.5f, 0.5f);
                 segRT.sizeDelta = new Vector2(SegSize, SegSize);
                 segRT.anchoredPosition = new Vector2(x, y);
+                var segCG = segGO.GetComponent<CanvasGroup>();
+                segCG.blocksRaycasts = false;
 
                 // Highlight circle (behind icon, invisible by default)
                 var hlGO = new GameObject("Highlight", typeof(RectTransform), typeof(Image));
@@ -644,17 +878,32 @@ namespace Companions
                 hlImg.color = Color.clear;
                 hlImg.raycastTarget = false;
 
-                // Icon
+                // Icon background (colored circle)
+                var iconBgGO = new GameObject("IconBg", typeof(RectTransform), typeof(Image));
+                iconBgGO.transform.SetParent(segGO.transform, false);
+                var iconBgRT = iconBgGO.GetComponent<RectTransform>();
+                iconBgRT.anchorMin = new Vector2(0.5f, 0.5f);
+                iconBgRT.anchorMax = new Vector2(0.5f, 0.5f);
+                iconBgRT.pivot = new Vector2(0.5f, 0.5f);
+                iconBgRT.sizeDelta = new Vector2(IconSize, IconSize);
+                iconBgRT.anchoredPosition = new Vector2(0f, 6f);
+                var iconBgImg = iconBgGO.GetComponent<Image>();
+                iconBgImg.sprite = GetCircleSprite();
+                var bgTint = seg.IconColor * 0.35f;
+                iconBgImg.color = new Color(bgTint.r, bgTint.g, bgTint.b, 0.5f);
+                iconBgImg.raycastTarget = false;
+
+                // Icon (texture-based)
                 var iconGO = new GameObject("Icon", typeof(RectTransform), typeof(Image));
                 iconGO.transform.SetParent(segGO.transform, false);
                 var iconRT = iconGO.GetComponent<RectTransform>();
                 iconRT.anchorMin = new Vector2(0.5f, 0.5f);
                 iconRT.anchorMax = new Vector2(0.5f, 0.5f);
                 iconRT.pivot = new Vector2(0.5f, 0.5f);
-                iconRT.sizeDelta = new Vector2(IconSize, IconSize);
-                iconRT.anchoredPosition = new Vector2(0f, 8f);
+                iconRT.sizeDelta = new Vector2(IconSize * 0.78f, IconSize * 0.78f);
+                iconRT.anchoredPosition = new Vector2(0f, 6f);
                 var iconImg = iconGO.GetComponent<Image>();
-                iconImg.sprite = GetActionIcon(seg.ActionId, seg.IconColor);
+                iconImg.sprite = GetActionIcon(seg.ActionId);
                 iconImg.color = new Color(0.9f, 0.9f, 0.9f, 0.85f);
                 iconImg.raycastTarget = false;
 
@@ -666,7 +915,7 @@ namespace Companions
                 labelRT.anchorMax = new Vector2(1f, 0f);
                 labelRT.pivot = new Vector2(0.5f, 1f);
                 labelRT.sizeDelta = new Vector2(0f, 14f);
-                labelRT.anchoredPosition = new Vector2(0f, 16f);
+                labelRT.anchoredPosition = new Vector2(0f, 14f);
 
                 // Active dot (for toggles/modes)
                 Image dotImg = null;
@@ -691,6 +940,8 @@ namespace Companions
                 _segIcons.Add(iconImg);
                 _segLabels.Add(label);
                 _segDots.Add(dotImg);
+                _segCanvasGroups.Add(segCG);
+                _segRTs.Add(segRT);
             }
 
             // Update center name
@@ -709,133 +960,83 @@ namespace Companions
         }
 
         // ══════════════════════════════════════════════════════════════════
-        //  Procedural icon generation
-        //  NOTE: In texture space y=0 is bottom, y=size-1 is top.
-        //  +y offset from center = top of icon on screen.
+        //  Icon loading — PNG textures from embedded resources
         // ══════════════════════════════════════════════════════════════════
 
-        private static Sprite GetActionIcon(int actionId, Color color)
+        private static string GetRadialTextureName(int actionId)
+        {
+            switch (actionId)
+            {
+                case ActionFollow:      return "Follow";
+                case ActionGatherWood:  return "GatherWood";
+                case ActionGatherStone: return "GatherStone";
+                case ActionGatherOre:   return "GatherOre";
+                case ActionForage:      return "GatherForage";
+                case ActionStayHome:    return "StayHome";
+                case ActionSetHome:     return "SetHome";
+                case ActionWander:      return "Wander";
+                case ActionAutoPickup:  return "AutoPickup";
+                case ActionCommand:     return "Command";
+                default:                return null;
+            }
+        }
+
+        private static Sprite GetActionIcon(int actionId)
         {
             if (_iconCache.TryGetValue(actionId, out var cached)) return cached;
 
-            int size = 48;
+            string texName = GetRadialTextureName(actionId);
+            Texture2D tex = texName != null ? TextureLoader.LoadRadialTexture(texName) : null;
+
+            if (tex != null)
+            {
+                tex.filterMode = FilterMode.Bilinear;
+                var sprite = Sprite.Create(tex, new Rect(0, 0, tex.width, tex.height),
+                    new Vector2(0.5f, 0.5f), 100f);
+                _iconCache[actionId] = sprite;
+                return sprite;
+            }
+
+            // Fallback: procedural icon for missing textures
+            return GetProceduralIcon(actionId);
+        }
+
+        private static Sprite GetProceduralIcon(int actionId)
+        {
+            int size = 128;
             var tex = new Texture2D(size, size, TextureFormat.RGBA32, false);
             tex.filterMode = FilterMode.Bilinear;
             var pixels = new Color[size * size];
+            for (int i = 0; i < pixels.Length; i++) pixels[i] = Color.clear;
 
-            float center = (size - 1) * 0.5f;
-            float outerR = center;
-            float innerR = center - 2f;
-
-            for (int py = 0; py < size; py++)
-            {
-                for (int px = 0; px < size; px++)
-                {
-                    float dx = px - center;
-                    float dy = py - center;
-                    float dist = Mathf.Sqrt(dx * dx + dy * dy);
-
-                    if (dist <= innerR)
-                    {
-                        float t = dist / innerR;
-                        Color c = Color.Lerp(color, color * 0.6f, t * t);
-                        c.a = 0.9f;
-                        pixels[py * size + px] = c;
-                    }
-                    else if (dist <= outerR)
-                    {
-                        Color c = color * 1.2f;
-                        c.a = Mathf.Clamp01(1f - (dist - innerR) / (outerR - innerR));
-                        pixels[py * size + px] = c;
-                    }
-                    else
-                    {
-                        pixels[py * size + px] = Color.clear;
-                    }
-                }
-            }
-
-            DrawIconSymbol(pixels, size, actionId);
-
-            tex.SetPixels(pixels);
-            tex.Apply();
-            var sprite = Sprite.Create(tex, new Rect(0, 0, size, size), new Vector2(0.5f, 0.5f), 100f);
-            _iconCache[actionId] = sprite;
-            return sprite;
-        }
-
-        private static void DrawIconSymbol(Color[] pixels, int size, int actionId)
-        {
-            Color white = new Color(1f, 1f, 1f, 0.95f);
+            Color w = new Color(1f, 1f, 1f, 0.95f);
             float c = (size - 1) * 0.5f;
 
             switch (actionId)
             {
-                case ActionFollow:
-                    // Sword — blade pointing up, crossguard near handle
-                    DrawLine(pixels, size, c, c - 10, c, c + 12, white, 2f);
-                    DrawLine(pixels, size, c - 6, c + 2, c + 6, c + 2, white, 2f);
-                    break;
-
-                case ActionGatherWood:
-                    // Axe — handle vertical, blade at top-right
-                    DrawLine(pixels, size, c - 2, c - 10, c - 2, c + 10, white, 2f);
-                    DrawLine(pixels, size, c - 2, c + 8, c + 8, c + 4, white, 2.5f);
-                    DrawLine(pixels, size, c - 2, c + 4, c + 8, c + 4, white, 2.5f);
-                    break;
-
-                case ActionGatherStone:
-                    // Pickaxe — handle vertical, head at top
-                    DrawLine(pixels, size, c - 2, c - 10, c - 2, c + 10, white, 2f);
-                    DrawLine(pixels, size, c - 10, c + 8, c + 6, c + 8, white, 2.5f);
-                    DrawLine(pixels, size, c + 6, c + 8, c + 4, c + 4, white, 2f);
-                    break;
-
-                case ActionGatherOre:
-                    // Diamond shape (symmetric)
-                    DrawLine(pixels, size, c, c + 10, c + 8, c, white, 2f);
-                    DrawLine(pixels, size, c + 8, c, c, c - 10, white, 2f);
-                    DrawLine(pixels, size, c, c - 10, c - 8, c, white, 2f);
-                    DrawLine(pixels, size, c - 8, c, c, c + 10, white, 2f);
-                    break;
-
-                case ActionStayHome:
-                    // House — roof at top, floor at bottom
-                    DrawLine(pixels, size, c, c + 10, c - 9, c + 1, white, 2f);
-                    DrawLine(pixels, size, c, c + 10, c + 9, c + 1, white, 2f);
-                    DrawLine(pixels, size, c - 7, c, c - 7, c - 9, white, 2f);
-                    DrawLine(pixels, size, c + 7, c, c + 7, c - 9, white, 2f);
-                    DrawLine(pixels, size, c - 7, c - 9, c + 7, c - 9, white, 2f);
-                    break;
-
-                case ActionSetHome:
-                    // Map pin — circle head at top, point at bottom
-                    DrawCircle(pixels, size, c, c + 6, 5f, white);
-                    DrawLine(pixels, size, c, c + 1, c, c - 10, white, 2f);
-                    break;
-
-                case ActionWander:
-                    // Wavy path (symmetric, no orientation issue)
-                    DrawLine(pixels, size, c - 10, c + 4, c - 4, c - 4, white, 2f);
-                    DrawLine(pixels, size, c - 4, c - 4, c + 4, c + 4, white, 2f);
-                    DrawLine(pixels, size, c + 4, c + 4, c + 10, c - 4, white, 2f);
-                    break;
-
                 case ActionAutoPickup:
-                    // Hand — palm at bottom, fingers reaching up
-                    DrawLine(pixels, size, c - 6, c - 6, c + 6, c - 6, white, 2f);
-                    DrawLine(pixels, size, c, c - 6, c, c + 6, white, 2f);
-                    DrawLine(pixels, size, c - 6, c - 6, c - 6, c + 4, white, 2f);
-                    DrawLine(pixels, size, c + 6, c - 6, c + 6, c + 4, white, 2f);
-                    break;
-
-                case ActionCommand:
-                    // Speech bubble — bubble at top, tail pointing down-left
-                    DrawCircle(pixels, size, c, c + 3, 8f, white);
-                    DrawLine(pixels, size, c - 2, c - 5, c - 6, c - 10, white, 2f);
+                    // Magnet — U-shape with field arcs
+                    DrawLine(pixels, size, c - 14, c + 22, c - 14, c - 4, w, 6f);
+                    DrawLine(pixels, size, c + 14, c + 22, c + 14, c - 4, w, 6f);
+                    DrawArc(pixels, size, c, c - 4, 14f, 180f, 360f, w, 6f);
+                    DrawLine(pixels, size, c - 20, c + 22, c - 8, c + 22, w, 4f);
+                    DrawLine(pixels, size, c + 8, c + 22, c + 20, c + 22, w, 4f);
+                    DrawArc(pixels, size, c, c + 4, 24f, 210f, 240f, w, 2.5f);
+                    DrawArc(pixels, size, c, c + 4, 24f, 300f, 330f, w, 2.5f);
                     break;
             }
+
+            tex.SetPixels(pixels);
+            tex.Apply();
+            var sprite = Sprite.Create(tex, new Rect(0, 0, size, size),
+                new Vector2(0.5f, 0.5f), 100f);
+            _iconCache[actionId] = sprite;
+            return sprite;
         }
+
+        // ══════════════════════════════════════════════════════════════════
+        //  Drawing primitives — used by procedural fallback icons
+        // ══════════════════════════════════════════════════════════════════
 
         private static void DrawLine(Color[] pixels, int size, float x0, float y0,
             float x1, float y1, Color color, float thickness)
@@ -850,40 +1051,68 @@ namespace Companions
                 float cx = Mathf.Lerp(x0, x1, t);
                 float cy = Mathf.Lerp(y0, y1, t);
 
-                int minX = Mathf.Max(0, Mathf.FloorToInt(cx - halfT));
-                int maxX = Mathf.Min(size - 1, Mathf.CeilToInt(cx + halfT));
-                int minY = Mathf.Max(0, Mathf.FloorToInt(cy - halfT));
-                int maxY = Mathf.Min(size - 1, Mathf.CeilToInt(cy + halfT));
+                int minX = Mathf.Max(0, Mathf.FloorToInt(cx - halfT - 1));
+                int maxX = Mathf.Min(size - 1, Mathf.CeilToInt(cx + halfT + 1));
+                int minY = Mathf.Max(0, Mathf.FloorToInt(cy - halfT - 1));
+                int maxY = Mathf.Min(size - 1, Mathf.CeilToInt(cy + halfT + 1));
 
                 for (int py = minY; py <= maxY; py++)
                     for (int px = minX; px <= maxX; px++)
                     {
                         float dx = px - cx;
                         float dy = py - cy;
-                        if (dx * dx + dy * dy <= halfT * halfT)
+                        float d = Mathf.Sqrt(dx * dx + dy * dy);
+                        if (d <= halfT - 0.5f)
+                        {
                             pixels[py * size + px] = color;
+                        }
+                        else if (d <= halfT + 0.5f)
+                        {
+                            float aa = Mathf.Clamp01(halfT + 0.5f - d);
+                            Color existing = pixels[py * size + px];
+                            pixels[py * size + px] = Color.Lerp(existing, color, aa);
+                        }
                     }
             }
         }
 
-        private static void DrawCircle(Color[] pixels, int size, float cx, float cy,
-            float radius, Color color)
+        private static void DrawArc(Color[] pixels, int size, float cx, float cy,
+            float radius, float startDeg, float endDeg, Color color, float thickness)
         {
-            int minX = Mathf.Max(0, Mathf.FloorToInt(cx - radius));
-            int maxX = Mathf.Min(size - 1, Mathf.CeilToInt(cx + radius));
-            int minY = Mathf.Max(0, Mathf.FloorToInt(cy - radius));
-            int maxY = Mathf.Min(size - 1, Mathf.CeilToInt(cy + radius));
+            float halfT = thickness * 0.5f;
+            float range = endDeg - startDeg;
+            int steps = Mathf.Max(16, Mathf.CeilToInt(Mathf.Abs(range) * radius * 0.08f));
 
-            float innerR = radius - 1.5f;
-            for (int py = minY; py <= maxY; py++)
-                for (int px = minX; px <= maxX; px++)
-                {
-                    float dx = px - cx;
-                    float dy = py - cy;
-                    float d = Mathf.Sqrt(dx * dx + dy * dy);
-                    if (d <= radius && d >= innerR)
-                        pixels[py * size + px] = color;
-                }
+            for (int s = 0; s <= steps; s++)
+            {
+                float t = s / (float)steps;
+                float angle = Mathf.Lerp(startDeg, endDeg, t) * Mathf.Deg2Rad;
+                float px = cx + Mathf.Cos(angle) * radius;
+                float py = cy + Mathf.Sin(angle) * radius;
+
+                int minX = Mathf.Max(0, Mathf.FloorToInt(px - halfT - 1));
+                int maxX = Mathf.Min(size - 1, Mathf.CeilToInt(px + halfT + 1));
+                int minY = Mathf.Max(0, Mathf.FloorToInt(py - halfT - 1));
+                int maxY = Mathf.Min(size - 1, Mathf.CeilToInt(py + halfT + 1));
+
+                for (int iy = minY; iy <= maxY; iy++)
+                    for (int ix = minX; ix <= maxX; ix++)
+                    {
+                        float dx = ix - px;
+                        float dy = iy - py;
+                        float d = Mathf.Sqrt(dx * dx + dy * dy);
+                        if (d <= halfT - 0.5f)
+                        {
+                            pixels[iy * size + ix] = color;
+                        }
+                        else if (d <= halfT + 0.5f)
+                        {
+                            float aa = Mathf.Clamp01(halfT + 0.5f - d);
+                            Color existing = pixels[iy * size + ix];
+                            pixels[iy * size + ix] = Color.Lerp(existing, color, aa);
+                        }
+                    }
+            }
         }
 
         // ══════════════════════════════════════════════════════════════════
@@ -894,7 +1123,7 @@ namespace Companions
         private static Sprite GetCircleSprite()
         {
             if (_circleSprite != null) return _circleSprite;
-            int s = 64;
+            int s = 256;
             var tex = new Texture2D(s, s, TextureFormat.RGBA32, false);
             tex.filterMode = FilterMode.Bilinear;
             var px = new Color[s * s];
@@ -906,8 +1135,8 @@ namespace Companions
                     float dist = Mathf.Sqrt(dx * dx + dy * dy);
                     if (dist <= c)
                         px[y * s + x] = Color.white;
-                    else if (dist <= c + 1f)
-                        px[y * s + x] = new Color(1f, 1f, 1f, Mathf.Clamp01(c + 1f - dist));
+                    else if (dist <= c + 1.5f)
+                        px[y * s + x] = new Color(1f, 1f, 1f, Mathf.Clamp01((c + 1.5f - dist) / 1.5f));
                     else
                         px[y * s + x] = Color.clear;
                 }
@@ -953,6 +1182,9 @@ namespace Companions
             _segIcons.Clear();
             _segLabels.Clear();
             _segDots.Clear();
+            _segCanvasGroups.Clear();
+            _segRTs.Clear();
+            _segFinalPositions.Clear();
             _built = false;
         }
 

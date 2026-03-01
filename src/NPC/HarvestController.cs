@@ -23,6 +23,7 @@ namespace Companions
         private CompanionSetup   _setup;
         private DoorHandler      _doorHandler;
         private CompanionStamina _stamina;
+        private CompanionTalk    _talk;
 
         // ── State ───────────────────────────────────────────────────────────
         private HarvestState _state = State_Idle;
@@ -72,6 +73,7 @@ namespace Companions
 
         // Weight limit — stop gathering when near max carry weight
         private const float OverweightThreshold = 298f;
+        private static readonly int s_pickedHash = "picked".GetStableHashCode();
         private float _overweightMsgTimer;
 
         // ── Per-instance scan buffer (thread-safe with multiple companions) ─
@@ -124,6 +126,7 @@ namespace Companions
             _setup       = GetComponent<CompanionSetup>();
             _doorHandler = GetComponent<DoorHandler>();
             _stamina     = GetComponent<CompanionStamina>();
+            _talk        = GetComponent<CompanionTalk>();
 
             // Build a per-companion tag: "[Harvest#1234]" using instance ID
             int id = GetInstanceID();
@@ -150,8 +153,9 @@ namespace Companions
             }
 
             int mode = GetMode();
-            bool gatherMode = mode >= CompanionSetup.ModeGatherWood
-                           && mode <= CompanionSetup.ModeGatherOre;
+            bool gatherMode = (mode >= CompanionSetup.ModeGatherWood
+                            && mode <= CompanionSetup.ModeGatherOre)
+                           || mode == CompanionSetup.ModeForage;
 
             if (!gatherMode && !_isDirectedHarvest)
             {
@@ -184,10 +188,9 @@ namespace Companions
                     }
                     else
                     {
-                        var talk = GetComponent<CompanionTalk>();
-                        if (talk != null && _overweightMsgTimer <= 0f)
+                        if (_talk != null && _overweightMsgTimer <= 0f)
                         {
-                            talk.Say("No chest nearby to unload!");
+                            _talk.Say("No chest nearby to unload!");
                             _overweightMsgTimer = 15f;
                         }
                         LogWarn($"OVERWEIGHT+StayHome — no chest found, stopping gather");
@@ -196,10 +199,9 @@ namespace Companions
                     }
                 }
 
-                var talkFull = GetComponent<CompanionTalk>();
-                if (talkFull != null && _overweightMsgTimer <= 0f)
+                if (_talk != null && _overweightMsgTimer <= 0f)
                 {
-                    talkFull.Say("My back is hurting from all this weight!");
+                    _talk.Say("My back is hurting from all this weight!");
                     _overweightMsgTimer = 15f;
                 }
                 LogWarn($"OVERWEIGHT — weight={GetCurrentWeight():F1} >= {OverweightThreshold}, " +
@@ -442,12 +444,15 @@ namespace Companions
             string modeName = mode == CompanionSetup.ModeGatherWood  ? "Wood"
                             : mode == CompanionSetup.ModeGatherStone ? "Stone"
                             : mode == CompanionSetup.ModeGatherOre   ? "Ore"
+                            : mode == CompanionSetup.ModeForage      ? "Forage"
                             : "Unknown";
             IsInGatherMode = true;
             _scanTimer = 0f; // scan immediately on mode entry
             _heartbeatTimer = 0f; // heartbeat immediately
 
             var followTarget = _ai?.GetFollowTarget();
+            if (mode == CompanionSetup.ModeForage)
+                LogInfo($"Foraging started — scanning for pickables near {transform.position:F1}");
             Log($"ENTER gather mode: {modeName} (mode={mode}) " +
                 $"followTarget=\"{followTarget?.name ?? "null"}\" " +
                 $"pos={transform.position:F1}");
@@ -463,16 +468,21 @@ namespace Companions
             ResetToIdle();
             RestoreLoadout();
 
-            // Restore follow target (unless StayHome → stay at home patrol)
+            // Restore follow target based on Follow toggle and StayHome state
+            bool follow = _setup != null && _setup.GetFollow();
             bool stayHome = _setup != null && _setup.GetStayHome() && _setup.HasHomePosition();
-            if (_ai != null && !stayHome && Player.m_localPlayer != null)
+            if (_ai != null && follow && Player.m_localPlayer != null)
             {
                 _ai.SetFollowTarget(Player.m_localPlayer.gameObject);
-                Log("Restored follow target to player");
+                Log("Restored follow target to player (Follow=ON)");
             }
             else if (stayHome)
             {
-                Log("StayHome active — NOT restoring follow to player");
+                Log("StayHome active, Follow OFF — NOT restoring follow to player");
+            }
+            else
+            {
+                Log("Follow OFF, no StayHome — idle");
             }
         }
 
@@ -499,13 +509,14 @@ namespace Companions
             }
 
             // Restore follow target so companion follows player between targets
-            // (unless StayHome is active — then stay at home patrol)
+            // based on Follow toggle and StayHome state
+            bool follow = _setup != null && _setup.GetFollow();
             bool stayHome = _setup != null && _setup.GetStayHome() && _setup.HasHomePosition();
-            if (_ai != null && !stayHome && Player.m_localPlayer != null)
+            if (_ai != null && follow && Player.m_localPlayer != null)
                 _ai.SetFollowTarget(Player.m_localPlayer.gameObject);
 
             if (prevState != State_Idle)
-                Log($"ResetToIdle (was {prevState}) — stayHome={stayHome}");
+                Log($"ResetToIdle (was {prevState}) — follow={follow} stayHome={stayHome}");
         }
 
         // ══════════════════════════════════════════════════════════════════════
@@ -549,27 +560,43 @@ namespace Companions
                 return;
             }
 
-            // Find appropriate tool
-            var tool = FindBestTool(mode);
-            if (tool == null)
+            // Forage mode doesn't need a tool
+            if (mode == CompanionSetup.ModeForage)
             {
-                LogWarn($"No tool in inventory for mode {mode} — cannot harvest! " +
-                    $"(need {(mode == CompanionSetup.ModeGatherWood ? "axe (chop dmg)" : "pickaxe (pickaxe dmg)")})");
-                LogInventoryContents();
-                return;
+                float forageDist = Vector3.Distance(transform.position, target.transform.position);
+                LogInfo($"Forage target: \"{target.name}\" dist={forageDist:F1}m");
+                Log($"Forage target acquired: \"{target.name}\" dist={forageDist:F1}m " +
+                    $"pos={target.transform.position:F1}");
+
+                _target = target;
+                _targetType = "Pickable";
+                _swingCount = 0;
+                _totalAttempts = 0;
             }
+            else
+            {
+                // Find appropriate tool
+                var tool = FindBestTool(mode);
+                if (tool == null)
+                {
+                    LogWarn($"No tool in inventory for mode {mode} — cannot harvest! " +
+                        $"(need {(mode == CompanionSetup.ModeGatherWood ? "axe (chop dmg)" : "pickaxe (pickaxe dmg)")})");
+                    LogInventoryContents();
+                    return;
+                }
 
-            float dist = Vector3.Distance(transform.position, target.transform.position);
-            Log($"Target acquired: \"{target.name}\" dist={dist:F1}m " +
-                $"pos={target.transform.position:F1} " +
-                $"tool=\"{tool.m_shared.m_name}\" " +
-                $"chop={tool.GetDamage().m_chop:F0} pick={tool.GetDamage().m_pickaxe:F0}");
+                float dist = Vector3.Distance(transform.position, target.transform.position);
+                Log($"Target acquired: \"{target.name}\" dist={dist:F1}m " +
+                    $"pos={target.transform.position:F1} " +
+                    $"tool=\"{tool.m_shared.m_name}\" " +
+                    $"chop={tool.GetDamage().m_chop:F0} pick={tool.GetDamage().m_pickaxe:F0}");
 
-            _target = target;
-            _targetType = ClassifyTargetType(target, mode);
-            _swingCount = 0;
-            _totalAttempts = 0;
-            EquipTool(tool);
+                _target = target;
+                _targetType = ClassifyTargetType(target, mode);
+                _swingCount = 0;
+                _totalAttempts = 0;
+                EquipTool(tool);
+            }
 
             // Clear follow target — HarvestController owns movement exclusively
             // during Moving/Attacking/CollectingDrops via MoveToPoint/MoveTowards.
@@ -637,7 +664,8 @@ namespace Companions
                 return;
             }
 
-            float range = GetAttackRange();
+            bool isForage = _targetType == "Pickable";
+            float range = isForage ? 1.5f : GetAttackRange();
             Vector3 targetPos = _target.transform.position;
             float distToTarget = Vector3.Distance(transform.position, targetPos);
 
@@ -651,7 +679,12 @@ namespace Companions
             // get genuinely close to the target.
             float moveGoal;
             bool runToTarget;
-            if (_reapproach)
+            if (isForage)
+            {
+                moveGoal = 1.2f;           // tight arrival for picking
+                runToTarget = false;        // walk for natural "picking" look
+            }
+            else if (_reapproach)
             {
                 moveGoal = range * 0.15f;  // get right on top of target
                 runToTarget = false;        // walk for tighter stop distance
@@ -719,7 +752,9 @@ namespace Companions
             float horizDist = new Vector3(toTarget.x, 0f, toTarget.z).magnitude;
             bool isLow = IsLowTarget();
             float arrivalDist;
-            if (_reapproach)
+            if (isForage)
+                arrivalDist = 1.5f;
+            else if (_reapproach)
                 arrivalDist = range * 0.35f;  // tighter than re-approach trigger (0.6*range)
             else if (isLow)
                 arrivalDist = range;
@@ -751,7 +786,11 @@ namespace Companions
             if (IsCompanionUIOpen()) return;
 
             if (_state == State_Moving || (_state == State_CollectingDrops && _currentDrop != null))
-                _character.SetRun(true);
+            {
+                // Forage: walk for natural picking look
+                bool forageWalk = _targetType == "Pickable" && _state == State_Moving;
+                _character.SetRun(!forageWalk);
+            }
 
             // During attack, shuffle closer if beyond actual hit range.
             // Follow() stops at ~3m but weapon range is ~2.2m — the gap means
@@ -775,6 +814,42 @@ namespace Companions
 
         private void UpdateAttacking()
         {
+            // Forage mode: interact with Pickable instead of attacking
+            int currentMode = GetMode();
+            if (currentMode == CompanionSetup.ModeForage)
+            {
+                var pickable = _target?.GetComponentInParent<Pickable>();
+                if (pickable != null)
+                {
+                    // Re-validate: another companion or the player may have picked it while we walked over
+                    var pnv = pickable.GetComponent<ZNetView>();
+                    bool alreadyPicked = pnv != null && pnv.GetZDO() != null
+                        && pnv.GetZDO().GetBool(s_pickedHash, false);
+                    if (alreadyPicked)
+                    {
+                        LogInfo($"Forage target already picked — skipping \"{pickable.name}\"");
+                    }
+                    else
+                    {
+                        FaceTarget();
+                        pickable.Interact(_humanoid, false, false);
+                        LogInfo($"Foraged: \"{pickable.name}\" at {pickable.transform.position:F1}");
+                    }
+                }
+                else
+                {
+                    LogWarn($"Forage target has no Pickable — skipping \"{_target?.name ?? "null"}\"");
+                }
+                _lastDestroyPos = _target?.transform.position ?? transform.position;
+                _currentDrop = null;
+                _dropTimer = 0f;
+                _dropScanDelayTimer = DropScanDelay;
+                _dropsPickedUp = 0;
+                _state = State_CollectingDrops;
+                if (_ai != null) _ai.StopMoving();
+                return;
+            }
+
             if (!IsTargetValid(_target))
             {
                 Log($"Target DESTROYED after {_swingCount} hits, {_totalAttempts} attempts " +
@@ -1140,12 +1215,13 @@ namespace Companions
             _state = State_Idle;
             _scanTimer = 0f; // scan immediately for next harvest target
 
-            // Restore follow target to player (unless StayHome)
+            // Restore follow target based on Follow toggle
+            bool follow = _setup != null && _setup.GetFollow();
             bool stayHome = _setup != null && _setup.GetStayHome() && _setup.HasHomePosition();
-            if (_ai != null && !stayHome && Player.m_localPlayer != null)
+            if (_ai != null && follow && Player.m_localPlayer != null)
                 _ai.SetFollowTarget(Player.m_localPlayer.gameObject);
 
-            Log($"FinishDropCollection — collected {_dropsPickedUp} items, stayHome={stayHome}");
+            Log($"FinishDropCollection — collected {_dropsPickedUp} items, follow={follow} stayHome={stayHome}");
         }
 
         // ══════════════════════════════════════════════════════════════════════
@@ -1154,6 +1230,10 @@ namespace Companions
 
         private GameObject ScanForTarget(int mode)
         {
+            // Forage mode: scan for Pickable objects
+            if (mode == CompanionSetup.ModeForage)
+                return ScanForPickable();
+
             int count = Physics.OverlapSphereNonAlloc(
                 transform.position, ScanRadius, _scanBuffer);
 
@@ -1259,6 +1339,77 @@ namespace Companions
             if (best != null)
                 Log($"Best target: \"{best.name}\" dist={bestDist:F1}m " +
                     $"(out of {candidateCount} total candidates)");
+
+            return best;
+        }
+
+        private GameObject ScanForPickable()
+        {
+            int count = Physics.OverlapSphereNonAlloc(
+                transform.position, ScanRadius, _scanBuffer);
+
+            if (count > _scanBuffer.Length) count = _scanBuffer.Length;
+
+            Log($"Forage scan: {count} colliders in {ScanRadius}m radius");
+
+            _seenIds.Clear();
+            GameObject best = null;
+            float bestDist = float.MaxValue;
+            int candidateCount = 0;
+
+            for (int i = 0; i < count; i++)
+            {
+                var col = _scanBuffer[i];
+                if (col == null) continue;
+
+                var pickable = col.GetComponentInParent<Pickable>();
+                if (pickable == null) continue;
+
+                var go = pickable.gameObject;
+                if (!_seenIds.Add(go.GetInstanceID())) continue;
+
+                // Skip already picked
+                var nview = go.GetComponent<ZNetView>();
+                if (nview != null && nview.GetZDO() != null &&
+                    nview.GetZDO().GetBool(s_pickedHash, false))
+                    continue;
+
+                // Skip blacklisted (unreachable) targets
+                if (_blacklist.ContainsKey(go.GetInstanceID()))
+                    continue;
+
+                // StayHome leash: skip targets beyond 50m from home position
+                if (_setup != null && _setup.GetStayHome() && _setup.HasHomePosition())
+                {
+                    float distFromHome = Vector3.Distance(
+                        _setup.GetHomePosition(), go.transform.position);
+                    if (distFromHome > 50f) continue;
+                }
+
+                candidateCount++;
+                float dist = Vector3.Distance(transform.position, go.transform.position);
+
+                if (candidateCount <= 5)
+                    Log($"  Pickable #{candidateCount}: \"{go.name}\" dist={dist:F1}m " +
+                        $"pos={go.transform.position:F1}");
+
+                if (dist < bestDist)
+                {
+                    bestDist = dist;
+                    best = go;
+                }
+            }
+
+            if (candidateCount > 5)
+                Log($"  ...and {candidateCount - 5} more pickables");
+
+            Log($"  Forage breakdown: {candidateCount} pickable targets");
+
+            if (best != null)
+                Log($"Best pickable: \"{best.name}\" dist={bestDist:F1}m " +
+                    $"(out of {candidateCount} total)");
+            else if (candidateCount == 0)
+                LogInfo($"Forage scan: no pickables found within {ScanRadius}m");
 
             return best;
         }
@@ -1633,6 +1784,9 @@ namespace Companions
 
         private void Log(string msg) =>
             CompanionsPlugin.Log.LogDebug($"{_tag} {msg}");
+
+        private void LogInfo(string msg) =>
+            CompanionsPlugin.Log.LogInfo($"{_tag} {msg}");
 
         private void LogWarn(string msg) =>
             CompanionsPlugin.Log.LogWarning($"{_tag} {msg}");

@@ -34,6 +34,10 @@ namespace Companions
             "Found some!", "Back to work.", "Almost got it.", "This looks promising.",
             "Plenty of resources here.", "I'll keep at it."
         };
+        private static readonly string[] ForageLines = {
+            "Ooh, berries!", "This one looks ripe.", "Nature provides.",
+            "I'll gather what I can.", "There's plenty growing here."
+        };
         private static readonly string[] CombatLines = {
             "Take this!", "Watch out!", "For Odin!", "Stand your ground!",
             "Behind you!", "I've got your back!", "They won't get past me!"
@@ -75,6 +79,10 @@ namespace Companions
             if (_nview == null || !_nview.IsOwner()) return;
             if (_character == null || _character.IsDead()) return;
             if (Chat.instance == null) return;
+
+            // Suppress speech while radial menu or interact panel is open for this companion
+            if (_setup != null && CompanionRadialMenu.IsOpenFor(_setup)) return;
+            if (_setup != null && CompanionInteractPanel.IsOpenFor(_setup)) return;
 
             // Check for action mode change (immediate speech)
             var zdo = _nview.GetZDO();
@@ -141,6 +149,11 @@ namespace Companions
             if (mode >= CompanionSetup.ModeGatherWood && mode <= CompanionSetup.ModeGatherOre)
             {
                 SayRandom(GatherLines);
+                return;
+            }
+            if (mode == CompanionSetup.ModeForage)
+            {
+                SayRandom(ForageLines);
                 return;
             }
 

@@ -314,9 +314,9 @@ namespace Companions
                             $"[Food] AutoConsume — refresh slot {refreshSlot} " +
                             $"(\"{_foods[refreshSlot].ItemName}\" {_foods[refreshSlot].RemainingTime:F0}s left) " +
                             $"with \"{item.m_shared?.m_name}\"");
+                        if (CanConsumeFoodItem(item, isRefresh: true) && ConsumeIntoSlot(inv, item, refreshSlot))
+                            consumedAny = true;
                     }
-                    if (CanConsumeFoodItem(item, isRefresh: true) && ConsumeIntoSlot(inv, item, refreshSlot))
-                        consumedAny = true;
                 }
             }
 

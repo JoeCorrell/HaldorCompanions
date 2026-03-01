@@ -14,6 +14,8 @@
     <!-- Embedded texture resources -->
     <EmbeddedResource Include="Resources\Textures\UI\*.png"
       LogicalName="Companions.Resources.Textures.UI.%(Filename)%(Extension)" />
+    <EmbeddedResource Include="Resources\Textures\UI\RadialMenu\*.png"
+      LogicalName="Companions.Resources.Textures.UI.RadialMenu.%(Filename)%(Extension)" />
   </ItemGroup>
   <ItemGroup>
     <!-- BepInEx / Harmony -->
