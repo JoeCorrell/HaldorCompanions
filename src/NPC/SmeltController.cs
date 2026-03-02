@@ -729,12 +729,19 @@ namespace Companions
 
                 if (chestInv.CanAddItem(item, item.m_stack))
                 {
-                    Log($"  Storing \"{item.m_shared?.m_name ?? "?"}\" x{item.m_stack}");
+                    int stackToStore = item.m_stack;
+                    Log($"  Storing \"{item.m_shared?.m_name ?? "?"}\" x{stackToStore}");
                     var clone = item.Clone();
-                    clone.m_stack = item.m_stack;
-                    chestInv.AddItem(clone);
-                    companionInv.RemoveItem(item);
-                    stored++;
+                    clone.m_stack = stackToStore;
+                    if (chestInv.AddItem(clone))
+                    {
+                        companionInv.RemoveItem(item);
+                        stored++;
+                    }
+                    else
+                    {
+                        Log($"  AddItem failed for \"{item.m_shared?.m_name ?? "?"}\" — skipping to prevent item loss");
+                    }
                 }
             }
 

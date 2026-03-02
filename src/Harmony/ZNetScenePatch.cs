@@ -86,10 +86,12 @@ namespace Companions
             _inventoryField.SetValue(__instance, humanoidInv);
 
             // Re-register Container.OnContainerChanged on the shared inventory
-            // so that Container.Save() fires when items change (ZDO persistence)
+            // so that Container.Save() fires when items change (ZDO persistence).
+            // Remove first to guard against duplicate subscriptions.
             if (_onContainerChanged != null)
             {
                 var callback = (Action)Delegate.CreateDelegate(typeof(Action), __instance, _onContainerChanged);
+                humanoidInv.m_onChanged = (Action)Delegate.Remove(humanoidInv.m_onChanged, callback);
                 humanoidInv.m_onChanged = (Action)Delegate.Combine(humanoidInv.m_onChanged, callback);
             }
         }

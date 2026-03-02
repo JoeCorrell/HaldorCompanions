@@ -66,6 +66,9 @@ namespace Companions
         [HarmonyPatch(typeof(Character), "RPC_Damage")]
         private static class ArmorDurability_Patch
         {
+            // Reuse list across calls to avoid per-hit allocation
+            private static readonly List<ItemDrop.ItemData> _armorPieces = new List<ItemDrop.ItemData>(4);
+
             static void Prefix(Character __instance, HitData hit)
             {
                 // Only apply to companions, not players or monsters
@@ -95,14 +98,14 @@ namespace Companions
                 var humanoid = __instance as Humanoid;
                 if (humanoid == null) return;
 
-                // Collect equipped armor pieces
-                var pieces = new List<ItemDrop.ItemData>(4);
-                AddIfValid(pieces, _chestItem?.GetValue(humanoid) as ItemDrop.ItemData);
-                AddIfValid(pieces, _legItem?.GetValue(humanoid) as ItemDrop.ItemData);
-                AddIfValid(pieces, _helmetItem?.GetValue(humanoid) as ItemDrop.ItemData);
-                AddIfValid(pieces, _shoulderItem?.GetValue(humanoid) as ItemDrop.ItemData);
+                // Collect equipped armor pieces (reuse static list)
+                _armorPieces.Clear();
+                AddIfValid(_armorPieces, _chestItem?.GetValue(humanoid) as ItemDrop.ItemData);
+                AddIfValid(_armorPieces, _legItem?.GetValue(humanoid) as ItemDrop.ItemData);
+                AddIfValid(_armorPieces, _helmetItem?.GetValue(humanoid) as ItemDrop.ItemData);
+                AddIfValid(_armorPieces, _shoulderItem?.GetValue(humanoid) as ItemDrop.ItemData);
 
-                if (pieces.Count == 0)
+                if (_armorPieces.Count == 0)
                 {
                     CompanionsPlugin.Log.LogDebug(
                         $"[Durability] No armor with durability equipped — skipping drain " +
@@ -114,7 +117,7 @@ namespace Companions
                 if (totalDmg <= 0f) return;
 
                 // Drain a random armor piece (vanilla behavior)
-                var piece = pieces[Random.Range(0, pieces.Count)];
+                var piece = _armorPieces[Random.Range(0, _armorPieces.Count)];
                 float before = piece.m_durability;
                 piece.m_durability = Mathf.Max(0f, piece.m_durability - totalDmg);
 
@@ -125,7 +128,7 @@ namespace Companions
                     $"[Durability] Armor drain — \"{piece.m_shared.m_name}\" " +
                     $"durability {before:F1} → {piece.m_durability:F1} / {maxDur:F0} " +
                     $"({pct:F0}%) dmgTaken={totalDmg:F1} " +
-                    $"armorPieces={pieces.Count} companion=\"{__instance.m_name}\"");
+                    $"armorPieces={_armorPieces.Count} companion=\"{__instance.m_name}\"");
 
                 // Auto-unequip if broken
                 if (piece.m_durability <= 0f)

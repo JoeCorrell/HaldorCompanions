@@ -106,6 +106,21 @@ namespace Companions
         private float _retreatLogTimer;   // log retreat status
         private float _blockLogTimer;     // log block events (throttled)
 
+        // ── Projectile cache (shared across all companions) ────────────────
+        private static Projectile[] _projectileCache;
+        private static float _projectileCacheTimer;
+        private const float ProjectileCacheInterval = 0.25f;
+
+        private static Projectile[] GetProjectileCache()
+        {
+            if (_projectileCache == null || _projectileCacheTimer <= 0f)
+            {
+                _projectileCache = Object.FindObjectsByType<Projectile>(FindObjectsSortMode.None);
+                _projectileCacheTimer = ProjectileCacheInterval;
+            }
+            return _projectileCache;
+        }
+
         private void Awake()
         {
             _ai       = GetComponent<CompanionAI>();
@@ -141,6 +156,7 @@ namespace Companions
             _bowFireCooldown = Mathf.Max(0f, _bowFireCooldown - dt);
             _abandonCooldown = Mathf.Max(0f, _abandonCooldown - dt);
             _dodgeCooldown = Mathf.Max(0f, _dodgeCooldown - dt);
+            _projectileCacheTimer -= dt;
 
             // Active dodge — supersedes all other combat logic
             if (_isDodging)
@@ -923,7 +939,7 @@ namespace Companions
 
             _lastProjectileThreat = false;
 
-            var projectiles = Object.FindObjectsByType<Projectile>(FindObjectsSortMode.None);
+            var projectiles = GetProjectileCache();
             Vector3 myPos = transform.position + Vector3.up; // chest height
 
             for (int i = 0; i < projectiles.Length; i++)

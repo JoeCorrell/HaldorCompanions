@@ -1176,7 +1176,7 @@ namespace Companions
             var clone = item.Clone();
             clone.m_stack = 1;
             if (!dest.CanAddItem(clone, 1)) return false;
-            dest.AddItem(clone);
+            if (!dest.AddItem(clone)) return false;
             source.RemoveItem(item, 1);
             return true;
         }

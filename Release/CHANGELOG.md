@@ -1,5 +1,30 @@
 # Changelog
 
+## 1.0.7
+
+### Bug Fixes
+- Fixed companion duplication on death — added three-layer defense: `_dead` guard flag in `OnCompanionDeath` prevents re-entry, queue-level deduplication rejects identical owner+name pairs, and scene-level check aborts respawn if a living companion with the same identity already exists
+- Fixed companion teleporting through portals when set to Stay Home — `CompanionAI.TeleportToFollowTarget()` (50m distance warp) now checks `GetStayHome()` before warping, so stay-home companions remain at their home position even when Follow is ON
+- Fixed gamepad radial menu also opening inventory when holding X — moved the gamepad check in `Container.Interact` prefix before all mode-specific logic so gamepad always routes through `HandleGamepadHold()` regardless of RadialMenuKey config
+- Fixed gamepad radial menu joystick control inverted — `GetJoyLeftStickY()`/`GetJoyRightStickY()` already negate raw Y; negating again so Atan2 receives positive=up for correct radial angles
+- Fixed gamepad B button not closing radial menu — changed from `"JoyBack"` (Select/View button) to `"JoyButtonB"` (B/Circle) matching vanilla's cancel convention
+- Fixed hover text showing keyboard binding "E" instead of gamepad button glyph — `GetHoverText()` now explicitly resolves `ZInput.GetBoundKeyString("JoyUse")` when gamepad is active
+- Fixed homestead chest sorting losing items — `AddItem()` return value is now checked before removing from source inventory
+- Fixed smelter output storage losing items — `AddItem()` return value is now checked; failed adds are logged and skipped instead of removing the item
+- Fixed `Container.OnContainerChanged` duplicate subscription — `ZNetScenePatch` now removes existing callback before re-subscribing to prevent double-fire on inventory changes
+
+### Gamepad / Controller
+- Added independent gamepad hold detection — monitors `ZInput.GetButton("JoyUse")` directly while hovering a companion, bypassing the `Container.Interact` prefix chain and vanilla's 0.2s debounce entirely
+- Split radial menu stick control — left stick controls outer ring (action modes), right stick controls inner ring (combat stances)
+- Added gamepad inventory tab switching (RB/LB) — companion grid's `UIGroupHandler` is injected into `InventoryGui.m_uiGroups[0]` when the panel opens, enabling vanilla's `SetActiveGroup()` to cycle between companion and player grids
+- Added D-pad edge navigation — pressing Up at the top of the companion grid switches focus to the player grid with correct column mapping
+
+### Performance
+- Armor durability patch reuses a static list instead of allocating per-hit
+- Projectile threat scan uses a shared cache refreshed every 0.25s instead of `FindObjectsByType` per frame per companion
+- Door cache uses absolute expiry time instead of per-frame countdown
+- Sprite and texture caches (`CompanionPanel`, `CompanionRadialMenu`) now properly `Destroy()` native assets on teardown to prevent GPU memory leaks
+
 ## 1.0.6
 
 ### Bug Fixes

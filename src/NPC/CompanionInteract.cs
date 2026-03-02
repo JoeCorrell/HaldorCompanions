@@ -30,13 +30,16 @@ namespace Companions
         private static float     _pendingTapTime;
         private static bool      _bypassPrefix;
 
-        // ── Gamepad hold detection ──
-        // ZInput.GetButton("JoyUse") is unreliable for continuous polling —
-        // it can return false on frames where the button IS held due to
-        // internal state timing. Instead, we track GetButtonUp as a
-        // positive release signal and assume held until it fires.
+        // ── Gamepad hold detection (prefix-based, legacy) ──
         private static bool _pendingIsGamepad;
         private static bool _gamepadReleaseDetected;
+
+        // ── Independent gamepad hold detection ──
+        // Bypasses the Container.Interact prefix chain entirely.
+        // Monitors ZInput.GetButton("JoyUse") directly while hovering a companion.
+        private static bool           _gpHoldActive;
+        private static float          _gpHoldStart;
+        private static CompanionSetup _gpHoldTarget;
 
         private const float HoldThreshold = 0.2f;
 
@@ -59,17 +62,23 @@ namespace Companions
 
         private void Update()
         {
+            // ── Independent gamepad hold detection (runs for all modes) ──
+            // Only the instance whose companion is being hovered will act.
+            if (ZInput.IsGamepadActive())
+                HandleGamepadHold();
+
             // ── Separate-key radial: press configured key while hovering companion ──
             if (!IsRadialKeyUse)
             {
                 HandleSeparateKeyRadial();
                 // Still process any lingering pending taps from the prefix
-                ProcessPendingTap();
+                if (!_gpHoldActive) ProcessPendingTap();
                 return;
             }
 
             // ── Same-key mode (E): tap/hold detection ──
-            ProcessPendingTap();
+            // Suppress prefix-based ProcessPendingTap while independent gamepad hold is active
+            if (!_gpHoldActive) ProcessPendingTap();
         }
 
         /// <summary>
@@ -107,6 +116,108 @@ namespace Companions
             CompanionRadialMenu.EnsureInstance();
             if (CompanionRadialMenu.Instance != null && !CompanionRadialMenu.Instance.IsVisible)
                 CompanionRadialMenu.Instance.Show(setup);
+        }
+
+        /// <summary>
+        /// Independent gamepad hold detection. Monitors ZInput.GetButton("JoyUse")
+        /// directly while the player hovers THIS companion instance.
+        /// Bypasses the Container.Interact prefix chain entirely — avoids timing
+        /// issues with vanilla's 0.2s debounce and m_hovering validity.
+        /// </summary>
+        private void HandleGamepadHold()
+        {
+            var player = Player.m_localPlayer;
+            if (player == null) { ResetGamepadHold(); return; }
+
+            // Only the instance whose companion is being hovered should act
+            var hovering = _playerHoveringField?.GetValue(player) as GameObject;
+            var setup = hovering != null ? hovering.GetComponentInParent<CompanionSetup>() : null;
+            var mySetup = GetComponent<CompanionSetup>();
+
+            // Not hovering this companion — reset if we were tracking
+            if (setup == null || setup != mySetup)
+            {
+                if (_gpHoldActive && _gpHoldTarget == mySetup)
+                    ResetGamepadHold();
+                return;
+            }
+
+            // Radial already visible — nothing to do
+            if (CompanionRadialMenu.Instance != null && CompanionRadialMenu.Instance.IsVisible)
+            {
+                ResetGamepadHold();
+                return;
+            }
+
+            if (ZInput.GetButton("JoyUse"))
+            {
+                if (!_gpHoldActive)
+                {
+                    // First frame of hold
+                    _gpHoldActive = true;
+                    _gpHoldStart = Time.time;
+                    _gpHoldTarget = setup;
+                    CompanionsPlugin.Log.LogDebug(
+                        $"[Interact] Gamepad independent hold START on \"{setup.name}\"");
+                }
+                else if (_gpHoldTarget == setup && Time.time - _gpHoldStart >= HoldThreshold)
+                {
+                    // Hold threshold reached — open radial
+                    CompanionsPlugin.Log.LogInfo(
+                        $"[Interact] Gamepad independent hold → RADIAL " +
+                        $"(held {Time.time - _gpHoldStart:F3}s)");
+
+                    // Clear any prefix-based pending state to avoid double-handling
+                    ClearPendingTap();
+                    ResetGamepadHold();
+
+                    CompanionRadialMenu.EnsureInstance();
+                    if (CompanionRadialMenu.Instance != null &&
+                        !CompanionRadialMenu.Instance.IsVisible)
+                        CompanionRadialMenu.Instance.Show(setup);
+                }
+            }
+            else if (_gpHoldActive && _gpHoldTarget == setup)
+            {
+                float held = Time.time - _gpHoldStart;
+                ClearPendingTap();
+                ResetGamepadHold();
+
+                if (held >= HoldThreshold)
+                {
+                    // Released at or after threshold — treat as hold → open radial
+                    // (handles edge case where GetButton returns false on the
+                    //  same frame the threshold is crossed)
+                    CompanionsPlugin.Log.LogInfo(
+                        $"[Interact] Gamepad hold → RADIAL on release " +
+                        $"(held {held:F3}s, threshold={HoldThreshold}s)");
+
+                    CompanionRadialMenu.EnsureInstance();
+                    if (CompanionRadialMenu.Instance != null &&
+                        !CompanionRadialMenu.Instance.IsVisible)
+                        CompanionRadialMenu.Instance.Show(setup);
+                }
+                else
+                {
+                    // Released before threshold — genuine tap → open inventory
+                    CompanionsPlugin.Log.LogInfo(
+                        $"[Interact] Gamepad hold → TAP " +
+                        $"(released after {held:F3}s), opening inventory");
+
+                    var container = setup.GetComponent<Container>();
+                    if (container != null)
+                    {
+                        _bypassPrefix = true;
+                        container.Interact(player, false, false);
+                    }
+                }
+            }
+        }
+
+        private static void ResetGamepadHold()
+        {
+            _gpHoldActive = false;
+            _gpHoldTarget = null;
         }
 
         /// <summary>
@@ -214,19 +325,31 @@ namespace Companions
             string name = GetCompanionName();
             string inv = ModLocalization.Loc("hc_hover_inventory");
             string cmd = ModLocalization.Loc("hc_hover_commands");
+
+            // Resolve the interact button name explicitly — $KEY_Use localization
+            // can fail to show the gamepad glyph in some timing scenarios.
+            string useBtn;
+            if (ZInput.IsGamepadActive())
+                useBtn = ZInput.instance.GetBoundKeyString("JoyUse");
+            else
+                useBtn = ZInput.instance.GetBoundKeyString("Use");
+
             if (IsRadialKeyUse)
             {
-                return Localization.instance.Localize(
-                    $"{name}\n" +
-                    $"[<color=yellow><b>$KEY_Use</b></color>] {inv}\n" +
-                    $"[<color=yellow>Hold <b>$KEY_Use</b></color>] {cmd}");
+                return $"{name}\n" +
+                    $"[<color=yellow><b>{useBtn}</b></color>] {inv}\n" +
+                    $"[<color=yellow>Hold <b>{useBtn}</b></color>] {cmd}";
             }
 
-            string keyName = CompanionsPlugin.RadialMenuKey.Value.ToString();
-            return Localization.instance.Localize(
-                $"{name}\n" +
-                $"[<color=yellow><b>$KEY_Use</b></color>] {inv}\n" +
-                $"[<color=yellow><b>{keyName}</b></color>] {cmd}");
+            string radialBtn;
+            if (ZInput.IsGamepadActive())
+                radialBtn = useBtn; // On gamepad, radial uses same button (hold)
+            else
+                radialBtn = CompanionsPlugin.RadialMenuKey.Value.ToString();
+
+            return $"{name}\n" +
+                $"[<color=yellow><b>{useBtn}</b></color>] {inv}\n" +
+                $"[<color=yellow><b>{radialBtn}</b></color>] {cmd}";
         }
 
         internal string GetHoverName()
@@ -285,6 +408,15 @@ namespace Companions
                     return false;
                 }
 
+                // ── Gamepad: independent hold detection handles everything ──
+                // Must be checked BEFORE separate-key mode — gamepad always uses
+                // HandleGamepadHold() for tap/hold split, regardless of radial key config.
+                if (ZInput.IsGamepadActive())
+                {
+                    __result = false;
+                    return false;
+                }
+
                 // ── Separate-key mode: no tap/hold deferral, let vanilla open inventory ──
                 if (!IsRadialKeyUse)
                 {
@@ -300,7 +432,7 @@ namespace Companions
                     return true;
                 }
 
-                // ── Same-key mode (E): tap/hold detection ──
+                // ── Same-key mode (E) — keyboard only below this point ──
                 if (hold)
                 {
                     // Hold call arrived (after Valheim's 0.2s debounce)
@@ -328,12 +460,11 @@ namespace Companions
                     _pendingTapPlayer       = player;
                     _pendingTapTime         = Time.time;
                     _loggedPendingStart     = false;
-                    _pendingIsGamepad       = ZInput.IsGamepadActive();
+                    _pendingIsGamepad       = false; // keyboard only at this point
                     _gamepadReleaseDetected = false;
 
                     CompanionsPlugin.Log.LogInfo(
                         $"[Interact] Prefix — tap deferred, " +
-                        $"gamepad={_pendingIsGamepad} " +
                         $"InputKey={Input.GetKey(CompanionsPlugin.RadialMenuKey.Value)} " +
                         $"time={Time.time:F3}");
                 }

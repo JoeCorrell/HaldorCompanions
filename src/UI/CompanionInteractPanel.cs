@@ -43,6 +43,19 @@ namespace Companions
             typeof(InventoryGui), "ShowSplitDialog",
             new[] { typeof(ItemDrop.ItemData), typeof(Inventory) });
 
+        // ── Gamepad UIGroupHandler integration ─────────────────────────────
+        private static readonly FieldInfo _uiGroupsField =
+            AccessTools.Field(typeof(InventoryGui), "m_uiGroups");
+        private static readonly FieldInfo _containerGridField =
+            AccessTools.Field(typeof(InventoryGui), "m_containerGrid");
+        private static readonly FieldInfo _activeGroupField =
+            AccessTools.Field(typeof(InventoryGui), "m_activeGroup");
+        private static readonly MethodInfo _setActiveGroupMethod =
+            AccessTools.Method(typeof(InventoryGui), "SetActiveGroup",
+                new[] { typeof(int), typeof(bool) });
+        private static readonly FieldInfo _gridSelectedField =
+            AccessTools.Field(typeof(InventoryGrid), "m_selected");
+
         // ── Constants ────────────────────────────────────────────────────────
         private const int FoodSlotCount = 3;
         private const string PrefKeyOffsetX = "HC_PanelOffsetX";
@@ -72,6 +85,12 @@ namespace Companions
         private bool _visible;
         private bool _builtForDverger;
         private bool _gridCreated;  // true after first UpdateInventory (grid elements exist)
+
+        // ── Gamepad UIGroupHandler state ────────────────────────────────────
+        private UIGroupHandler _uiGroup;             // our companion grid's UIGroupHandler
+        private UIGroupHandler _savedVanillaGroup;   // original m_uiGroups[0]
+        private InventoryGrid  _savedContainerGrid;  // original m_containerGrid
+        private bool           _gamepadInjected;     // true while our group is in m_uiGroups
 
         // ── Drag-to-reposition (F7) ────────────────────────────────────────
         private bool _dragMode;
@@ -180,12 +199,18 @@ namespace Companions
             _root.SetActive(true);
             _root.transform.SetAsLastSibling();
             _visible = true;
+
+            // Inject our UIGroupHandler into vanilla's group system for gamepad support
+            InjectGamepadGroups();
         }
 
         public void Hide()
         {
             if (!_visible) return;
             _visible = false;
+
+            // Restore vanilla gamepad groups before hiding
+            RestoreGamepadGroups();
 
             // Exit drag mode cleanly, saving position
             if (_dragMode)
@@ -353,9 +378,13 @@ namespace Companions
             // Null out the scrollbar (it references a sibling in the original container)
             _grid.m_scrollbar = null;
 
-            // Disable cloned UIGroupHandler to avoid gamepad navigation conflicts
-            var uiGroup = _root.GetComponentInChildren<UIGroupHandler>(true);
-            if (uiGroup != null) uiGroup.enabled = false;
+            // Keep cloned UIGroupHandler — it's needed for gamepad input gating.
+            // We inject it into InventoryGui.m_uiGroups[0] when Show() is called
+            // so that RB/LB tab switching and D-pad navigation work correctly.
+            _uiGroup = _root.GetComponentInChildren<UIGroupHandler>(true);
+
+            // Wire D-pad edge navigation: pressing Up at top of companion grid → player grid
+            _grid.OnMoveToUpperInventoryGrid = OnMoveToUpperGrid;
 
             // Find cloned container name text (child of m_container)
             TMP_Text clonedNameText = FindClonedComponent<TMP_Text>(gui.m_containerName, gui.m_container);
@@ -874,6 +903,93 @@ namespace Companions
         }
 
         // ══════════════════════════════════════════════════════════════════════
+        //  Gamepad UIGroupHandler injection
+        // ══════════════════════════════════════════════════════════════════════
+
+        /// <summary>
+        /// Inject our companion grid's UIGroupHandler into InventoryGui.m_uiGroups[0]
+        /// and swap m_containerGrid so that vanilla's tab switching (RB/LB) and
+        /// D-pad edge navigation work correctly with our companion grid.
+        /// </summary>
+        private void InjectGamepadGroups()
+        {
+            var gui = InventoryGui.instance;
+            if (gui == null || _uiGroup == null) return;
+
+            var groups = _uiGroupsField?.GetValue(gui) as UIGroupHandler[];
+            if (groups == null || groups.Length == 0) return;
+
+            // Save originals
+            _savedVanillaGroup = groups[0];
+            _savedContainerGrid = _containerGridField?.GetValue(gui) as InventoryGrid;
+
+            // Inject our companion UIGroupHandler and grid
+            groups[0] = _uiGroup;
+            _containerGridField?.SetValue(gui, _grid);
+
+            // Activate our companion group (index 0) by default
+            _setActiveGroupMethod?.Invoke(gui, new object[] { 0, false });
+
+            _gamepadInjected = true;
+            CompanionsPlugin.Log.LogDebug(
+                $"[UI] Gamepad groups injected — companion UIGroup into m_uiGroups[0]");
+        }
+
+        /// <summary>
+        /// Restore the original vanilla UIGroupHandler and container grid.
+        /// </summary>
+        private void RestoreGamepadGroups()
+        {
+            if (!_gamepadInjected) return;
+            _gamepadInjected = false;
+
+            var gui = InventoryGui.instance;
+            if (gui == null) return;
+
+            var groups = _uiGroupsField?.GetValue(gui) as UIGroupHandler[];
+            if (groups != null && groups.Length > 0 && _savedVanillaGroup != null)
+                groups[0] = _savedVanillaGroup;
+
+            if (_savedContainerGrid != null)
+                _containerGridField?.SetValue(gui, _savedContainerGrid);
+
+            // Reactivate the player group (index 1)
+            _setActiveGroupMethod?.Invoke(gui, new object[] { 1, false });
+
+            _savedVanillaGroup = null;
+            _savedContainerGrid = null;
+            CompanionsPlugin.Log.LogDebug("[UI] Gamepad groups restored to vanilla");
+        }
+
+        /// <summary>
+        /// D-pad Up at top of companion grid → switch focus to player grid.
+        /// Mirrors vanilla InventoryGui.MoveToUpperInventoryGrid behavior.
+        /// </summary>
+        private void OnMoveToUpperGrid(Vector2i previousGridPosition)
+        {
+            var gui = InventoryGui.instance;
+            if (gui == null) return;
+
+            // Map position from companion grid width to player grid width
+            int playerWidth = _gridWidthField != null && gui.m_playerGrid != null
+                ? (int)_gridWidthField.GetValue(gui.m_playerGrid) : 8;
+            int companionWidth = _gridWidthField != null && _grid != null
+                ? (int)_gridWidthField.GetValue(_grid) : 4;
+            int offset = (int)Math.Ceiling((playerWidth - companionWidth) / 2f);
+
+            // Read current player grid selection via reflection
+            var sel = _gridSelectedField != null && gui.m_playerGrid != null
+                ? (Vector2i)_gridSelectedField.GetValue(gui.m_playerGrid)
+                : new Vector2i(0, 0);
+            int x = Mathf.Max(0, previousGridPosition.x + offset);
+            sel.x = Mathf.Max(x, Mathf.Min(playerWidth - 1, previousGridPosition.x));
+            gui.m_playerGrid.SetSelection(sel);
+
+            // Switch active group to player (index 1)
+            _setActiveGroupMethod?.Invoke(gui, new object[] { 1, true });
+        }
+
+        // ══════════════════════════════════════════════════════════════════════
         //  Grid update — called every frame while visible
         // ══════════════════════════════════════════════════════════════════════
 
@@ -1027,8 +1143,10 @@ namespace Companions
 
         private void Teardown()
         {
+            RestoreGamepadGroups();
             if (_root != null) { Destroy(_root); _root = null; }
             _grid               = null;
+            _uiGroup            = null;
             _nameInput          = null;
             _foodSlotIcons      = null;
             _foodSlotCounts     = null;

@@ -132,6 +132,16 @@ namespace Companions
             return _genderBtnSprite;
         }
 
+        private static void DestroySprite(ref Sprite sprite)
+        {
+            if (sprite != null)
+            {
+                if (sprite.texture != null) UnityEngine.Object.Destroy(sprite.texture);
+                UnityEngine.Object.Destroy(sprite);
+                sprite = null;
+            }
+        }
+
         // ═════════════════════════════════════════════════════════════════════
         //  Build
         // ═════════════════════════════════════════════════════════════════════
@@ -583,10 +593,10 @@ namespace Companions
             if (Root   != null) { UnityEngine.Object.Destroy(Root);                  Root = null; }
             _listsLoaded = false;
 
-            // Clear static sprite caches so they are recreated on next Build
-            _catBtnSprite    = null;
-            _sliderBgSprite  = null;
-            _genderBtnSprite = null;
+            // Destroy native sprites/textures to prevent GPU memory leaks
+            DestroySprite(ref _catBtnSprite);
+            DestroySprite(ref _sliderBgSprite);
+            DestroySprite(ref _genderBtnSprite);
         }
 
         // ═════════════════════════════════════════════════════════════════════

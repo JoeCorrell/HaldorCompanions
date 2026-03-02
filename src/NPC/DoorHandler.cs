@@ -77,15 +77,15 @@ namespace Companions
 
         // ── Door cache (avoids FindObjectsByType every scan) ────────────
         private static Door[] _doorCache;
-        private static float  _doorCacheTimer;
+        private static float  _doorCacheExpiry;
         private const float   DoorCacheInterval = 5f;
 
         private static Door[] GetDoorCache()
         {
-            if (_doorCache == null || _doorCacheTimer <= 0f)
+            if (_doorCache == null || Time.time >= _doorCacheExpiry)
             {
                 _doorCache = Object.FindObjectsByType<Door>(FindObjectsSortMode.None);
-                _doorCacheTimer = DoorCacheInterval;
+                _doorCacheExpiry = Time.time + DoorCacheInterval;
             }
             return _doorCache;
         }
@@ -116,7 +116,6 @@ namespace Companions
             if (mode == CompanionSetup.ModeStay) return;
 
             float dt = Time.deltaTime;
-            _doorCacheTimer -= dt;
 
             // Heartbeat logging
             _heartbeatTimer -= dt;

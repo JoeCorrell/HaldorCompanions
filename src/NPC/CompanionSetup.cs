@@ -77,6 +77,7 @@ namespace Companions
         private bool           _initialized;
         private bool           _ownerMismatchLogged;
         private bool           _uiFrozen;
+        private bool           _dead;
 
         // Minimap pin — live-updating, owner-only
         private Minimap.PinData _minimapPin;
@@ -577,6 +578,9 @@ namespace Companions
 
         private void OnCompanionDeath()
         {
+            if (_dead) return;
+            _dead = true;
+
             if (_nview == null || !_nview.IsOwner()) return;
             var zdo = _nview.GetZDO();
             if (zdo == null) return;

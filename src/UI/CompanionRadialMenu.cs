@@ -186,10 +186,29 @@ namespace Companions
             if (Instance == this) Instance = null;
             Teardown();
 
-            // Clear static caches to prevent stale textures surviving scene reload
+            // Destroy native sprites/textures to prevent GPU memory leaks across scene reloads
+            foreach (var kvp in _iconCache)
+            {
+                if (kvp.Value != null)
+                {
+                    if (kvp.Value.texture != null) Destroy(kvp.Value.texture);
+                    Destroy(kvp.Value);
+                }
+            }
             _iconCache.Clear();
-            _circleSprite = null;
-            _donutSprite = null;
+
+            if (_circleSprite != null)
+            {
+                if (_circleSprite.texture != null) Destroy(_circleSprite.texture);
+                Destroy(_circleSprite);
+                _circleSprite = null;
+            }
+            if (_donutSprite != null)
+            {
+                if (_donutSprite.texture != null) Destroy(_donutSprite.texture);
+                Destroy(_donutSprite);
+                _donutSprite = null;
+            }
         }
 
         // ══════════════════════════════════════════════════════════════════
@@ -297,9 +316,9 @@ namespace Companions
             if (_companion == null || !_companion)
             { Hide(); return; }
 
-            // Close on Esc or B (keyboard), or gamepad B/Back
+            // Close on Esc or B (keyboard), or gamepad B button
             if (ZInput.GetKeyDown(KeyCode.Escape) || ZInput.GetKeyDown(KeyCode.B)
-                || ZInput.GetButtonDown("JoyBack"))
+                || ZInput.GetButtonDown("JoyButtonB"))
             {
                 Hide();
                 return;
@@ -331,55 +350,66 @@ namespace Companions
         {
             if (_segments.Count == 0) return;
 
-            Vector2 input;
-            float deadZone;
             bool isGamepad = ZInput.IsGamepadActive();
 
             if (isGamepad)
             {
-                // Support both sticks — use whichever has greater magnitude.
-                // Vanilla's RadialStick binding can map to either stick,
-                // and both are free during radial (movement + camera blocked).
-                Vector2 left  = new Vector2(ZInput.GetJoyLeftStickX(),  ZInput.GetJoyLeftStickY());
-                Vector2 right = new Vector2(ZInput.GetJoyRightStickX(), ZInput.GetJoyRightStickY());
-                input = left.sqrMagnitude >= right.sqrMagnitude ? left : right;
-                deadZone = DeadZoneStick;
+                // Left stick → outer ring, Right stick → inner ring.
+                // Negate Y: GetJoyStickY() inverts raw axis (positive = down),
+                // but Atan2 needs positive = up for correct radial angles.
+                Vector2 left  = new Vector2(ZInput.GetJoyLeftStickX(),  -ZInput.GetJoyLeftStickY());
+                Vector2 right = new Vector2(ZInput.GetJoyRightStickX(), -ZInput.GetJoyRightStickY());
+
+                // Outer ring — left stick
+                if (left.magnitude >= DeadZoneStick)
+                {
+                    float angle = Mathf.Atan2(left.y, left.x) * Mathf.Rad2Deg;
+                    if (angle < 0f) angle += 360f;
+                    _hoveredIndex = ComputeSegmentIndex(angle, _segments.Count);
+                    _hoveredInner = -1;
+                }
+                // Inner ring — right stick (only when inner segments exist)
+                else if (_innerSegments.Count > 0 && right.magnitude >= DeadZoneStick)
+                {
+                    float angle = Mathf.Atan2(right.y, right.x) * Mathf.Rad2Deg;
+                    if (angle < 0f) angle += 360f;
+                    _hoveredInner = ComputeSegmentIndex(angle, _innerSegments.Count);
+                    _hoveredIndex = -1;
+                }
+                else
+                {
+                    _hoveredIndex = -1;
+                    _hoveredInner = -1;
+                }
             }
             else
             {
+                // Mouse — distance from center determines outer vs inner ring
                 Vector2 center = new Vector2(Screen.width * 0.5f, Screen.height * 0.5f);
-                input = (Vector2)Input.mousePosition - center;
-                deadZone = DeadZonePx;
-            }
+                Vector2 input = (Vector2)Input.mousePosition - center;
 
-            if (input.magnitude < deadZone)
-            {
-                _hoveredIndex = -1;
-                _hoveredInner = -1;
-                return;
-            }
+                if (input.magnitude < DeadZonePx)
+                {
+                    _hoveredIndex = -1;
+                    _hoveredInner = -1;
+                    return;
+                }
 
-            float angle = Mathf.Atan2(input.y, input.x) * Mathf.Rad2Deg;
-            if (angle < 0f) angle += 360f;
+                float angle = Mathf.Atan2(input.y, input.x) * Mathf.Rad2Deg;
+                if (angle < 0f) angle += 360f;
 
-            // Determine which ring the cursor is in based on distance
-            float dist = input.magnitude;
-            // For gamepad, scale stick magnitude to pixel-space boundary
-            float innerBoundary = isGamepad
-                ? (InnerRingRadius + InnerSegSize * 0.5f) / RingRadius
-                : InnerRingRadius + InnerSegSize * 0.5f;
+                float innerBoundary = InnerRingRadius + InnerSegSize * 0.5f;
 
-            if (_innerSegments.Count > 0 && dist < innerBoundary)
-            {
-                // Inner ring
-                _hoveredInner = ComputeSegmentIndex(angle, _innerSegments.Count);
-                _hoveredIndex = -1;
-            }
-            else
-            {
-                // Outer ring
-                _hoveredIndex = ComputeSegmentIndex(angle, _segments.Count);
-                _hoveredInner = -1;
+                if (_innerSegments.Count > 0 && input.magnitude < innerBoundary)
+                {
+                    _hoveredInner = ComputeSegmentIndex(angle, _innerSegments.Count);
+                    _hoveredIndex = -1;
+                }
+                else
+                {
+                    _hoveredIndex = ComputeSegmentIndex(angle, _segments.Count);
+                    _hoveredInner = -1;
+                }
             }
         }
 

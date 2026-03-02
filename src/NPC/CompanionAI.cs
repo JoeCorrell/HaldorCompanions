@@ -1004,8 +1004,10 @@ namespace Companions
             // nudge off so pathfinding can resume (NavMesh doesn't cover furniture).
             UpdateFurnitureUnstuck(dt);
 
-            // Follow-mode teleport — warp companion near player if too far away
-            if (m_follow != null)
+            // Follow-mode teleport — warp companion near player if too far away.
+            // Skip if companion is set to stay home — they should remain at their
+            // home position even when Follow is ON (portal / long-distance scenarios).
+            if (m_follow != null && !(_setup != null && _setup.GetStayHome()))
             {
                 float distToFollow = Vector3.Distance(transform.position, m_follow.transform.position);
                 if (distToFollow > FollowTeleportDist)

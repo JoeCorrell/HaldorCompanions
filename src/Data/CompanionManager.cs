@@ -101,6 +101,19 @@ namespace Companions
 
         public static void QueueRespawn(RespawnData data)
         {
+            // Prevent duplicate respawn entries for the same companion
+            for (int i = 0; i < _respawnQueue.Count; i++)
+            {
+                var existing = _respawnQueue[i];
+                if (existing.OwnerId == data.OwnerId && existing.Name == data.Name)
+                {
+                    CompanionsPlugin.Log.LogWarning(
+                        $"[CompanionManager] Duplicate respawn blocked for \"{data.Name}\" " +
+                        $"(owner={data.OwnerId}) — already queued");
+                    return;
+                }
+            }
+
             _respawnQueue.Add(data);
             CompanionsPlugin.Log.LogInfo(
                 $"[CompanionManager] Queued respawn for \"{data.Name}\" in {data.Timer}s");
@@ -136,6 +149,27 @@ namespace Companions
                 _respawnQueue.Add(data);
                 CompanionsPlugin.Log.LogDebug("[CompanionManager] Player not loaded — re-queued respawn");
                 return;
+            }
+
+            // Guard: abort if a living companion with the same owner+name already exists
+            // (prevents duplication from race conditions, ZDO ownership transfer, etc.)
+            foreach (var existing in Object.FindObjectsByType<CompanionSetup>(FindObjectsSortMode.None))
+            {
+                var existingZdo = existing.GetComponent<ZNetView>()?.GetZDO();
+                if (existingZdo == null) continue;
+                string existingOwner = existingZdo.GetString(CompanionSetup.OwnerHash, "");
+                string existingName  = existingZdo.GetString(CompanionSetup.NameHash, "");
+                if (existingOwner == data.OwnerId && existingName == data.Name)
+                {
+                    var existingChar = existing.GetComponent<Character>();
+                    if (existingChar != null && existingChar.GetHealth() > 0f)
+                    {
+                        CompanionsPlugin.Log.LogWarning(
+                            $"[CompanionManager] Duplicate respawn aborted — \"{data.Name}\" " +
+                            $"already exists in scene with health {existingChar.GetHealth():F0}");
+                        return;
+                    }
+                }
             }
 
             // Respawn at home position if set, otherwise world spawn
