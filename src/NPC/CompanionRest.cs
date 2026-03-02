@@ -10,6 +10,10 @@ namespace Companions
     /// </summary>
     public class CompanionRest : MonoBehaviour
     {
+        // ── Static instance tracking (used by SleepPatches) ──
+        private static readonly List<CompanionRest> _instances = new List<CompanionRest>();
+        internal static IReadOnlyList<CompanionRest> Instances => _instances;
+
         private ZNetView         _nview;
         private Character        _character;
         private CompanionAI      _ai;
@@ -33,6 +37,8 @@ namespace Companions
         private const float HealInterval  = 0.5f;
         private const float PlayerRange   = 5f;
         private const float FireRange     = 5f;
+        private const float DirectedMaxDist    = 50f;  // stop directed rest if player is this far
+        private const float DirectedSitTimeout = 300f;  // 5 min timeout for directed sit
         private const int FireScanBufferSize = 48;
 
         private readonly Collider[] _fireScanBuffer = new Collider[FireScanBufferSize];
@@ -50,6 +56,17 @@ namespace Companions
             _zanim     = GetComponent<ZSyncAnimation>();
             _setup     = GetComponent<CompanionSetup>();
             _body      = GetComponent<Rigidbody>();
+        }
+
+        private void OnEnable()
+        {
+            if (!_instances.Contains(this))
+                _instances.Add(this);
+        }
+
+        private void OnDisable()
+        {
+            _instances.Remove(this);
         }
 
         private void Update()
@@ -84,6 +101,7 @@ namespace Companions
 
         private void OnDestroy()
         {
+            _instances.Remove(this);
             if (_stamina != null) _stamina.IsResting = false;
 
             // Clear inBed ZDO if sleeping when destroyed
@@ -132,9 +150,13 @@ namespace Companions
         private bool _isDirected;   // true when sitting/sleeping was triggered by hotkey
         private bool _isSleeping;   // true when lying down at a bed
         private Bed  _bedTarget;
+        private float _directedRestTimer; // countdown for directed sit/sleep timeout
 
         /// <summary>True when the companion is sitting or sleeping (organic or directed).</summary>
         public bool IsResting => _isSitting || _isSleeping;
+
+        /// <summary>True when the companion is sleeping in a bed.</summary>
+        public bool IsSleeping => _isSleeping;
 
         /// <summary>True when navigating to a bed or fire before resting.</summary>
         public bool IsNavigating => _navigating;
@@ -166,6 +188,7 @@ namespace Companions
 
             _isDirected = true;
             _fireTarget = fire;
+            _directedRestTimer = DirectedSitTimeout;
 
             float dist = Vector3.Distance(transform.position, fire.transform.position);
             if (dist < 3f)
@@ -330,8 +353,21 @@ namespace Companions
             // ZDO inBed flag
             if (_nview?.GetZDO() != null) _nview.GetZDO().Set(ZDOVars.s_inBed, true);
 
-            // Enable resting regen
+            // Enable resting regen (Rested buff applies on wakeup, same as vanilla)
             if (_stamina != null) _stamina.IsResting = true;
+
+            // Set bed as companion's spawn point (like vanilla player bed claim).
+            // Save a bedside position (not on-bed) so respawns don't clip through roof.
+            if (_setup != null)
+            {
+                Vector3 bedside = _bedTarget.transform.position + _bedTarget.transform.right * 1.5f;
+                if (ZoneSystem.instance != null &&
+                    ZoneSystem.instance.FindFloor(bedside, out float floorY))
+                    bedside.y = floorY;
+                _setup.SetHomePosition(bedside);
+                CompanionsPlugin.Log.LogInfo(
+                    $"[Rest] Bed spawn point set at {bedside:F2} (bedside offset)");
+            }
 
             CompanionsPlugin.Log.LogDebug(
                 $"[Rest] FinalizeSleep — positioned at {attachPoint.position:F2}");
@@ -342,14 +378,41 @@ namespace Companions
             CompanionsPlugin.Log.LogDebug(
                 $"[Rest] StopAll — sitting={_isSitting}, sleeping={_isSleeping}, " +
                 $"directed={_isDirected}, navigating={_navigating}, pos={transform.position:F2}");
+
+            bool wasNavigating = _navigating;
             _navigating = false;
             if (_isSitting) StopSitting();
             if (_isSleeping) StopSleeping();
             _isDirected = false;
+
+            // If we were navigating (not yet sitting/sleeping), clean up nav state
+            // and restore follow. StopSitting/StopSleeping handle their own restore.
+            if (wasNavigating && !_isSitting && !_isSleeping)
+            {
+                _fireTarget = null;
+                _bedTarget = null;
+                if (_ai != null)
+                {
+                    int mode = _nview?.GetZDO()?.GetInt(
+                        CompanionSetup.ActionModeHash, CompanionSetup.ModeFollow)
+                        ?? CompanionSetup.ModeFollow;
+                    if (mode == CompanionSetup.ModeStay)
+                    {
+                        _ai.SetFollowTarget(null);
+                        _ai.SetPatrolPoint();
+                    }
+                    else if (Player.m_localPlayer != null)
+                    {
+                        _ai.SetFollowTarget(Player.m_localPlayer.gameObject);
+                    }
+                }
+            }
         }
 
         private void StopSleeping()
         {
+            // Save bed reference before clearing — needed for positioning
+            Bed bed = _bedTarget;
             _isSleeping = false;
             _bedTarget  = null;
 
@@ -360,18 +423,32 @@ namespace Companions
             if (_zanim != null && HasPlayerAnims) _zanim.SetBool("attach_bed", false);
             if (_nview?.GetZDO() != null) _nview.GetZDO().Set(ZDOVars.s_inBed, false);
 
+            // Position beside the bed (not on it) to prevent clipping through roof.
+            // Offset along the bed's right axis so the companion stands at the bedside.
+            if (bed != null)
+            {
+                Vector3 bedside = bed.transform.position + bed.transform.right * 1.5f;
+                // Use floor height if available, otherwise bed Y
+                if (ZoneSystem.instance != null &&
+                    ZoneSystem.instance.FindFloor(bedside, out float floorY))
+                    bedside.y = floorY;
+                transform.position = bedside;
+            }
+
             // Re-enable physics so the companion can walk
             if (_body != null)
             {
                 _body.isKinematic = false;
                 _body.useGravity = true;
                 _body.velocity = Vector3.zero;
+                if (bed != null) _body.position = transform.position;
             }
 
-            // Nudge upward to prevent clipping into bed geometry
-            transform.position += new Vector3(0f, 0.5f, 0f);
-
             if (_stamina != null) _stamina.IsResting = false;
+
+            // Apply Rested buff on wakeup (same as vanilla Player.SetSleeping(false))
+            var restedBuff = GetComponent<CompanionRestedBuff>();
+            if (restedBuff != null) restedBuff.ApplyRestedBuff();
 
             if (_ai == null) return;
             int mode = _nview?.GetZDO()?.GetInt(
@@ -420,6 +497,10 @@ namespace Companions
 
             // Enable resting regen bonus
             if (_stamina != null) _stamina.IsResting = true;
+
+            // Start resting warmup — Rested buff applies after ~20s (like vanilla)
+            var restedBuff = GetComponent<CompanionRestedBuff>();
+            if (restedBuff != null) restedBuff.StartResting();
         }
 
         private void UpdateSitting()
@@ -432,10 +513,36 @@ namespace Companions
             {
                 var fp = _fireTarget.GetComponent<Fireplace>();
                 if (fp != null && !fp.IsBurning()) shouldStop = true;
+                // EffectArea heat sources have no fuel — just check object exists (already handled above)
             }
 
             // Enemy appeared — always check
             if (HasEnemyNearby()) shouldStop = true;
+
+            // Directed sits: timeout and max-distance safety (prevents permanent stuck state)
+            if (_isDirected && !shouldStop)
+            {
+                _directedRestTimer -= Time.deltaTime;
+                if (_directedRestTimer <= 0f)
+                {
+                    CompanionsPlugin.Log.LogDebug("[Rest] Directed sit timed out — stopping");
+                    shouldStop = true;
+                }
+                else
+                {
+                    var player = Player.m_localPlayer;
+                    if (player != null)
+                    {
+                        float dist = Vector3.Distance(transform.position, player.transform.position);
+                        if (dist > DirectedMaxDist)
+                        {
+                            CompanionsPlugin.Log.LogDebug(
+                                $"[Rest] Directed sit — player too far ({dist:F1}m > {DirectedMaxDist}m), stopping");
+                            shouldStop = true;
+                        }
+                    }
+                }
+            }
 
             // Organic sits (not directed) also check player state
             if (!_isDirected && !shouldStop)
@@ -547,8 +654,10 @@ namespace Companions
                 _zanim.SetBool("emote_sit", false);
             }
 
-            // Disable resting bonus
+            // Disable resting bonus and cancel warmup if incomplete
             if (_stamina != null) _stamina.IsResting = false;
+            var restedBuff = GetComponent<CompanionRestedBuff>();
+            if (restedBuff != null) restedBuff.StopResting();
 
             if (_ai == null) return;
 
@@ -582,7 +691,7 @@ namespace Companions
 
             _seenFireIds.Clear();
 
-            Fireplace nearest = null;
+            GameObject nearest = null;
             float nearestSq = float.MaxValue;
 
             for (int i = 0; i < colliderCount; i++)
@@ -590,18 +699,35 @@ namespace Companions
                 var col = colliders[i];
                 if (col == null) continue;
 
+                // Check for Fireplace (campfire, hearth, bonfire, torches, etc.)
                 var fp = col.GetComponentInParent<Fireplace>();
-                if (fp == null || !fp.IsBurning()) continue;
-                if (!_seenFireIds.Add(fp.GetInstanceID())) continue;
+                if (fp != null && fp.IsBurning())
+                {
+                    if (!_seenFireIds.Add(fp.GetInstanceID())) continue;
+                    float distSq = (fp.transform.position - center).sqrMagnitude;
+                    if (distSq < rangeSq && distSq < nearestSq)
+                    {
+                        nearest = fp.gameObject;
+                        nearestSq = distSq;
+                    }
+                    continue;
+                }
 
-                float distSq = (fp.transform.position - center).sqrMagnitude;
-                if (distSq > rangeSq || distSq >= nearestSq) continue;
-
-                nearest = fp;
-                nearestSq = distSq;
+                // Check for EffectArea with Heat type (forge, smelter, modded fires, etc.)
+                var ea = col.GetComponentInParent<EffectArea>();
+                if (ea != null && (ea.m_type & EffectArea.Type.Heat) != 0)
+                {
+                    if (!_seenFireIds.Add(ea.GetInstanceID())) continue;
+                    float distSq = (ea.transform.position - center).sqrMagnitude;
+                    if (distSq < rangeSq && distSq < nearestSq)
+                    {
+                        nearest = ea.gameObject;
+                        nearestSq = distSq;
+                    }
+                }
             }
 
-            return nearest != null ? nearest.gameObject : null;
+            return nearest;
         }
 
         private bool HasEnemyNearby()

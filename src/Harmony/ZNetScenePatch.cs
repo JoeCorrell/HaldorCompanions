@@ -11,6 +11,9 @@ namespace Companions
         static void Postfix(ZNetScene __instance)
         {
             CompanionPrefabs.Init(__instance);
+
+            // Reset cached vanilla data so it's re-read from the new world's ObjectDB
+            CompanionRestedBuff.ResetCache();
         }
     }
 

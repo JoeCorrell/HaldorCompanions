@@ -190,7 +190,7 @@ namespace Companions
                     {
                         if (_talk != null && _overweightMsgTimer <= 0f)
                         {
-                            _talk.Say("No chest nearby to unload!", "Overweight");
+                            _talk.Say(ModLocalization.Loc("hc_speech_no_chest"), "Overweight");
                             _overweightMsgTimer = 15f;
                         }
                         LogWarn($"OVERWEIGHT+StayHome — no chest found, stopping gather");
@@ -201,7 +201,7 @@ namespace Companions
 
                 if (_talk != null && _overweightMsgTimer <= 0f)
                 {
-                    _talk.Say("My back is hurting from all this weight!", "Overweight");
+                    _talk.Say(ModLocalization.Loc("hc_speech_overweight"), "Overweight");
                     _overweightMsgTimer = 15f;
                 }
                 LogWarn($"OVERWEIGHT — weight={GetCurrentWeight():F1} >= {OverweightThreshold}, " +
@@ -343,14 +343,26 @@ namespace Companions
         //  Public API
         // ══════════════════════════════════════════════════════════════════════
 
-        /// <summary>Called by UI when action mode changes.</summary>
+        /// <summary>Called by UI or CancelAll when action mode changes.</summary>
         public void NotifyActionModeChanged()
         {
             int mode = GetMode();
-            Log($"NotifyActionModeChanged — new mode={mode} " +
+            bool isGather = (mode >= CompanionSetup.ModeGatherWood
+                          && mode <= CompanionSetup.ModeGatherOre)
+                         || mode == CompanionSetup.ModeForage;
+
+            Log($"NotifyActionModeChanged — new mode={mode} isGather={isGather} " +
                 $"(wasGather={IsInGatherMode}, state={_state})");
+
             CancelDirectedTarget();
-            ResetToIdle();
+
+            // Immediately exit gather mode when switching away — don't defer
+            // to the next Update() frame. This ensures hold-to-cancel (CancelAll)
+            // restores the combat loadout and stops pathfinding right away.
+            if (!isGather && IsInGatherMode)
+                ExitGatherMode();
+            else
+                ResetToIdle();
         }
 
         /// <summary>
@@ -367,6 +379,25 @@ namespace Companions
             if (harvestMode < 0)
             {
                 Log($"SetDirectedTarget REJECTED — can't determine tool for \"{target.name}\"");
+                return;
+            }
+
+            // Check if the companion's best tool can actually damage this target
+            int requiredTier = GetMinToolTier(target);
+            int bestTier = GetBestToolTier(harvestMode);
+            if (requiredTier > bestTier)
+            {
+                Log($"SetDirectedTarget REJECTED — \"{target.name}\" requires tier {requiredTier}, " +
+                    $"best tool is tier {bestTier}");
+
+                string companionName = "Companion";
+                if (_nview?.GetZDO() != null)
+                {
+                    string custom = _nview.GetZDO().GetString(CompanionSetup.NameHash, "");
+                    if (!string.IsNullOrEmpty(custom)) companionName = custom;
+                }
+                Player.m_localPlayer?.Message(MessageHud.MessageType.Center,
+                    ModLocalization.LocFmt("hc_msg_tools_weak", companionName));
                 return;
             }
 
@@ -1243,6 +1274,10 @@ namespace Companions
             Log($"Physics scan: {count} colliders in {ScanRadius}m radius" +
                 (bufferFull ? " ** BUFFER FULL — may miss targets! **" : ""));
 
+            // Pre-compute the best tool tier for this mode so we can skip
+            // targets that require a higher tier tool (e.g. birch with stone axe)
+            int toolTier = GetBestToolTier(mode);
+
             _seenIds.Clear();
             GameObject best = null;
             float bestDist = float.MaxValue;
@@ -1252,6 +1287,7 @@ namespace Companions
             _bestTreeDist = float.MaxValue;
             int candidateCount = 0;
             int treeBaseCount = 0, treeLogCount = 0, stumpCount = 0, rockCount = 0;
+            int skippedTierCount = 0;
 
             for (int i = 0; i < count; i++)
             {
@@ -1262,6 +1298,16 @@ namespace Companions
                 GameObject candidate = GetHarvestCandidateWithType(col, mode, out type);
                 if (candidate == null) continue;
                 if (!_seenIds.Add(candidate.GetInstanceID())) continue;
+
+                // Skip targets that require a higher tool tier than we have
+                int requiredTier = GetMinToolTier(candidate);
+                if (requiredTier > toolTier)
+                {
+                    skippedTierCount++;
+                    if (skippedTierCount <= 3)
+                        Log($"  Skipping \"{candidate.name}\" — requires tier {requiredTier}, best tool is tier {toolTier}");
+                    continue;
+                }
 
                 // Skip blacklisted (unreachable) targets
                 if (_blacklist.ContainsKey(candidate.GetInstanceID()))
@@ -1329,6 +1375,9 @@ namespace Companions
 
             if (candidateCount > 5)
                 Log($"  ...and {candidateCount - 5} more candidates");
+
+            if (skippedTierCount > 0)
+                Log($"  Skipped {skippedTierCount} targets requiring higher tool tier (best tier={toolTier})");
 
             // Type breakdown
             string modeName = mode == CompanionSetup.ModeGatherWood ? "Wood"
@@ -1507,6 +1556,63 @@ namespace Companions
                 if (drop.m_item.name != "Stone") return false;
             }
             return true;
+        }
+
+        /// <summary>
+        /// Returns the minimum tool tier required to damage a harvest target.
+        /// Every destructible type (TreeBase, TreeLog, MineRock, MineRock5,
+        /// Destructible) has an m_minToolTier field. Returns 0 if unknown.
+        /// </summary>
+        private static int GetMinToolTier(GameObject target)
+        {
+            if (target == null) return 0;
+
+            var tree = target.GetComponent<TreeBase>();
+            if (tree != null) return tree.m_minToolTier;
+
+            var log = target.GetComponent<TreeLog>();
+            if (log != null) return log.m_minToolTier;
+
+            var rock5 = target.GetComponent<MineRock5>();
+            if (rock5 != null) return rock5.m_minToolTier;
+
+            var rock = target.GetComponent<MineRock>();
+            if (rock != null) return rock.m_minToolTier;
+
+            var dest = target.GetComponent<Destructible>();
+            if (dest != null) return dest.m_minToolTier;
+
+            return 0;
+        }
+
+        /// <summary>
+        /// Returns the highest tool tier among all tools in the companion's
+        /// inventory that match the given harvest mode (chop for wood,
+        /// pickaxe for stone/ore).
+        /// Returns -1 if no matching tools exist.
+        /// </summary>
+        private int GetBestToolTier(int mode)
+        {
+            var inv = _humanoid?.GetInventory();
+            if (inv == null) return -1;
+
+            int bestTier = -1;
+            foreach (var item in inv.GetAllItems())
+            {
+                if (item?.m_shared == null) continue;
+                if (item.m_shared.m_useDurability && item.m_durability <= 0f) continue;
+                var dmg = item.GetDamage();
+
+                bool match = false;
+                if (mode == CompanionSetup.ModeGatherWood)
+                    match = dmg.m_chop > 0f;
+                else
+                    match = dmg.m_pickaxe > 0f;
+
+                if (match && item.m_shared.m_toolTier > bestTier)
+                    bestTier = item.m_shared.m_toolTier;
+            }
+            return bestTier;
         }
 
         // ══════════════════════════════════════════════════════════════════════

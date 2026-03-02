@@ -52,8 +52,8 @@ namespace Companions
                     $"[InvGUI] Show — COMPANION container opened for \"{container.name}\", " +
                     $"hiding vanilla panels");
 
-                // Hide vanilla container and crafting panels — our custom UI replaces them
-                HideVanillaPanels();
+                // Hide vanilla container panel — our custom UI replaces it
+                HideVanillaContainerPanel();
 
                 CompanionInteractPanel.EnsureInstance();
                 CompanionInteractPanel.Instance?.Show(setup);
@@ -66,8 +66,21 @@ namespace Companions
         [HarmonyPatch(typeof(InventoryGui), nameof(InventoryGui.Hide))]
         private static class Hide_Patch
         {
-            static void Postfix()
+            static bool Prefix()
             {
+                var panel = CompanionInteractPanel.Instance;
+                if (panel != null && panel.IsNameInputFocused)
+                {
+                    CompanionsPlugin.Log.LogDebug(
+                        "[InvGUI] Hide blocked — companion name input is focused");
+                    return false;
+                }
+                return true;
+            }
+
+            static void Postfix(bool __runOriginal)
+            {
+                if (!__runOriginal) return;
                 if (_companionContainerOpen)
                     CompanionsPlugin.Log.LogInfo("[InvGUI] Hide — closing companion container session");
                 _companionContainerOpen = false;
@@ -109,35 +122,28 @@ namespace Companions
                 // Keep the container session alive (vanilla does this in UpdateContainer)
                 container.SetInUse(true);
 
-                // Ensure vanilla panels stay hidden (belt-and-suspenders)
+                // Ensure vanilla container panel stays hidden (belt-and-suspenders)
                 bool containerWasActive = gui.m_container != null &&
                                           gui.m_container.gameObject.activeSelf;
-                bool craftingWasActive = gui.m_crafting != null &&
-                                         gui.m_crafting.gameObject.activeSelf;
-                HideVanillaPanels();
+                HideVanillaContainerPanel();
 
-                // Throttled warning if vanilla somehow re-enabled panels
-                if ((containerWasActive || craftingWasActive) &&
-                    Time.time - _lastLogTime > 2f)
+                // Throttled warning if vanilla somehow re-enabled the container panel
+                if (containerWasActive && Time.time - _lastLogTime > 2f)
                 {
                     _lastLogTime = Time.time;
                     CompanionsPlugin.Log.LogWarning(
-                        $"[InvGUI] UpdateContainer — vanilla panels were active " +
-                        $"(container={containerWasActive}, crafting={craftingWasActive}), " +
-                        $"re-hidden");
+                        "[InvGUI] UpdateContainer — vanilla container panel was active, re-hidden");
                 }
 
                 return false; // Skip vanilla UpdateContainer entirely
             }
         }
 
-        private static void HideVanillaPanels()
+        private static void HideVanillaContainerPanel()
         {
             if (InventoryGui.instance == null) return;
             if (InventoryGui.instance.m_container != null)
                 InventoryGui.instance.m_container.gameObject.SetActive(false);
-            if (InventoryGui.instance.m_crafting != null)
-                InventoryGui.instance.m_crafting.gameObject.SetActive(false);
         }
     }
 }

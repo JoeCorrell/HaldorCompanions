@@ -318,13 +318,13 @@ namespace Companions
                 {
                     _wasMonitoring = true;
                     Log("All smelters stocked — monitoring");
-                    if (_talk != null) _talk.Say("Everything's running. I'll keep watch.", "Smelt");
+                    if (_talk != null) _talk.Say(ModLocalization.Loc("hc_speech_smelt_monitoring"), "Smelt");
                 }
             }
             else
             {
                 Log("All smelters idle and fully stocked — done");
-                if (_talk != null) _talk.Say("All done smelting.", "Smelt");
+                if (_talk != null) _talk.Say(ModLocalization.Loc("hc_speech_smelt_done"), "Smelt");
                 Finish();
             }
         }
@@ -771,8 +771,19 @@ namespace Companions
         {
             var zdo = _nview?.GetZDO();
             if (zdo == null) return false;
+
+            // In homestead mode, smelting is managed by the rotation timer — only
+            // run during the Smelt slot, even if ActionMode is set to Smelt.
+            if (_setup != null && _setup.GetStayHome()
+                && _setup.HasHomePosition() && !_setup.GetFollow())
+            {
+                var homestead = GetComponent<HomesteadController>();
+                return homestead != null && homestead.IsSmeltTurn;
+            }
+
+            // Outside homestead mode, check if action mode is explicitly Smelt
             return zdo.GetInt(CompanionSetup.ActionModeHash, CompanionSetup.ModeFollow)
-                   == CompanionSetup.ModeSmelt;
+                == CompanionSetup.ModeSmelt;
         }
 
         private void ScanNearbySmelters()
@@ -905,7 +916,7 @@ namespace Companions
 
             Log($"Plan: take {toTake}x fuel \"{fuelName}\" from chest " +
                 $"(dist={bestDist:F1}m) → \"{smelter.m_name}\" (fuel={fuel:F0}/{smelter.m_maxFuel})");
-            if (_talk != null) _talk.Say("Fetching fuel.", "Smelt");
+            if (_talk != null) _talk.Say(ModLocalization.Loc("hc_speech_smelt_fuel"), "Smelt");
             return true;
         }
 
@@ -995,7 +1006,7 @@ namespace Companions
 
             Log($"Plan: take {toTake}x ore \"{bestPrefab}\" from chest " +
                 $"(dist={bestDist:F1}m) → \"{smelter.m_name}\" (queued={queued}/{smelter.m_maxOre})");
-            if (_talk != null) _talk.Say("Fetching materials.", "Smelt");
+            if (_talk != null) _talk.Say(ModLocalization.Loc("hc_speech_smelt_materials"), "Smelt");
             return true;
         }
 

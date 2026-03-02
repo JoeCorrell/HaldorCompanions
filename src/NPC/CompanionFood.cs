@@ -209,6 +209,11 @@ namespace Companions
                     if (_foods[i].IsActive) regen += _foods[i].FoodRegen;
                 if (regen > 0f && _character != null)
                 {
+                    // Rested buff: +50% health regen from food (vanilla SE_Rested bonus)
+                    var restedBuff = GetComponent<CompanionRestedBuff>();
+                    if (restedBuff != null && restedBuff.IsRested)
+                        regen *= CompanionRestedBuff.HealthRegenMultiplier;
+
                     float hpBefore = _character.GetHealth();
                     _character.Heal(regen);
                     float hpAfter = _character.GetHealth();

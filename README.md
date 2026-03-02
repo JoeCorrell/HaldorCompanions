@@ -4,12 +4,12 @@
 
 <h1 align="center">Offline Companions</h1>
 
-<h3 align="center">Hire NPC companions from Haldor's shop - persistent allies with their own AI, inventory, voice lines, combat, gathering, and smelting systems.</h3>
+<h3 align="center">Hire NPC companions from Haldor's shop - persistent allies with their own AI, inventory, voice lines, combat, gathering, smelting, and base maintenance systems.</h3>
 
 <br/>
 
 <p align="center">
-<a href="https://github.com/JoeCorrell/OfflineCompanions/releases"><img src="https://img.shields.io/badge/Version-0.0.8--beta-c9a44a?style=for-the-badge&labelColor=0d1117" alt="Version"></a>
+<a href="https://github.com/JoeCorrell/OfflineCompanions/releases"><img src="https://img.shields.io/badge/Version-1.0.3-c9a44a?style=for-the-badge&labelColor=0d1117" alt="Version"></a>
 <a href="#-requirements"><img src="https://img.shields.io/badge/BepInEx-5.4.2200+-e06c20?style=for-the-badge&labelColor=0d1117" alt="BepInEx"></a>
 <a href="#-requirements"><img src="https://img.shields.io/badge/Valheim-0.219+-4ade80?style=for-the-badge&labelColor=0d1117" alt="Valheim"></a>
 <a href="#"><img src="https://img.shields.io/badge/License-MIT-7c3aed?style=for-the-badge&labelColor=0d1117" alt="License"></a>
@@ -20,44 +20,24 @@
 </p>
 
 <p align="center">
-<a href="https://ko-fi.com/profmags">
-<img src="https://storage.ko-fi.com/cdn/kofi3.png?v=3" alt="Support me on Ko-fi" width="280"/>
-</a>
+<a href="https://www.patreon.com/c/ProfMags"><img src="https://img.shields.io/badge/Patreon-Support_Me-FF424D?style=for-the-badge&logo=patreon&logoColor=white&labelColor=0d1117" alt="Patreon"></a>
 </p>
-
-<p align="center">
-<img src="https://img.shields.io/badge/%E2%9A%A0%EF%B8%8F_EARLY_ACCESS_BETA-cc3333?style=for-the-badge&labelColor=0d1117" alt="Warning">
-</p>
-
-<table><tr><td width="900" align="center">
-<br/>
-
-This is an early development build intended for testing. Expect bugs, rough edges, and incomplete features. Saves should be safe, but **back up your world before installing**. Feedback and bug reports are greatly appreciated. You're helping shape the mod by testing it now!
-
-<br/>
-</td></tr></table>
-
-<br/>
 
 <p align="center">
 <img src="https://img.shields.io/badge/%F0%9F%93%B8_SCREENSHOTS-4a4a4a?style=for-the-badge&labelColor=4a4a4a" alt="Screenshots">
 </p>
 
-<table><tr><td width="900" align="center">
-<br/>
-
+<p align="center">
 <img src="https://raw.githubusercontent.com/JoeCorrell/HaldorCompanions/main/Screenshots/Radial.png" alt="Radial Command Wheel" width="800"/>
+</p>
 
-<br/><br/>
-
+<p align="center">
 <img src="https://raw.githubusercontent.com/JoeCorrell/HaldorCompanions/main/Screenshots/UI.png" alt="Companion Inventory Panel" width="800"/>
+</p>
 
-<br/><br/>
-
+<p align="center">
 <img src="https://raw.githubusercontent.com/JoeCorrell/HaldorCompanions/main/Screenshots/Trader.png" alt="Trader Purchase Screen" width="800"/>
-
-<br/>
-</td></tr></table>
+</p>
 
 <br/>
 
@@ -70,9 +50,11 @@ This is an early development build intended for testing. Expect bugs, rough edge
 
 Offline Companions adds persistent NPC allies to Valheim. A companion automatically spawns with you when you enter a new world for the first time. Additional companions can be purchased from Haldor's shop for **2,000 coins** if the optional [Trader Overhaul](https://github.com/JoeCorrell/TraderOverhaul) mod is installed, or spawned via console commands.
 
-Companions come with their own inventory, equipment, stamina, food system, voice lines, and custom AI. They aren't pets or tames, they're **teammates**. Customize their appearance, gear them up with weapons and armor, feed them food for bonus stats, and command them through a radial wheel or point-and-click hotkey system. They'll fight beside you, gather resources, forage for food, manage your smelting operation, haul your cart, repair their own gear, sit by the fire with you, and sleep in beds when you tell them to.
+Companions come with their own inventory, equipment, stamina, food system, voice lines, and custom AI. They aren't pets or tames, they're **teammates**. Customize their appearance, gear them up with weapons and armor, feed them food for bonus stats, and command them through a radial wheel or point-and-click hotkey system. They'll fight beside you, gather resources, forage for food, manage your smelting operation, maintain your base, haul your cart, repair their own gear, sit by the fire with you, sleep in beds, and teleport through portals alongside you.
 
-When a companion dies, they leave behind a tombstone. They'll respawn after a short time and automatically walk to their tombstone to recover their items.
+Leave a companion at home and they'll autonomously repair damaged walls, refuel campfires and torches, sort your chests, and keep your smelters running. They level up skills, receive the Rested buff, and respawn at the last bed they slept in.
+
+When a companion dies, they leave behind a tombstone. They'll respawn after a short time at their bed (or the world spawn) and automatically walk to their tombstone to recover their items.
 
 Everything persists across sessions, zone transitions, server restarts, and player deaths.
 
@@ -210,6 +192,7 @@ Companions use a **defensive-first combat system**. They actively scan for incom
 - Arrows are aimed at the target's center mass with **velocity leading** (aims ahead of moving targets) and **gravity compensation** (aims higher for arrow drop)
 
 ### Combat Behavior
+- **Backstab immunity** - companions cannot receive backstab bonus damage from enemies attacking from behind
 - **Retreats** when health drops below 30% or stamina below 15%
 - **Re-engages** after recovering above 50% health and 30% stamina
 - Retreat distance is 12m from the target
@@ -262,7 +245,7 @@ Set a companion to **Gather Wood**, **Gather Stone**, **Gather Ore**, or **Forag
 - **Forage** - walks to and picks berry bushes, mushrooms, flowers, dandelions, branches, and stones. No tool required.
 
 ### Smart Tool Use
-The companion automatically equips the best matching tool from their inventory. Axe for wood, pickaxe for stone and ore. The tool stays equipped until gathering stops.
+The companion automatically equips the best matching tool from their inventory. Axe for wood, pickaxe for stone and ore. The tool stays equipped until gathering stops. Companions **won't chop trees** if their axe doesn't meet the tree's minimum tool tier — preventing wasted durability on resources they can't damage.
 
 ### Drop Collection
 After destroying a resource, the companion scans within 8m for item drops and picks them all up before moving to the next target.
@@ -329,7 +312,7 @@ Point your crosshair at objects in the world and press the **command hotkey** to
 | **Tree / Rock / Ore** | Enter gather mode for that resource, directed to that specific node |
 | **Crafting Station** | Walk to station and repair all compatible gear |
 | **Cart** | Closest companion attaches to cart and hauls it (press again to detach) |
-| **Ship** | Board the ship and stay on deck |
+| **Ship** | Find the ladder, path to it, and board the ship. Companions sit on deck during the voyage |
 | **Bed** | Walk to bed and sleep (press again to wake) |
 | **Fireplace** | Walk to fire and sit down |
 | **Chest** | Walk to chest and deposit non-essential items (keeps equipped gear, food, weapons, armor) |
@@ -347,7 +330,7 @@ Point your crosshair at objects in the world and press the **command hotkey** to
 <br/>
 
 <p align="center">
-<img src="https://img.shields.io/badge/%F0%9F%8F%A0_STAY_HOME_%26_AUTO--DEPOSIT-4a7cc9?style=for-the-badge&labelColor=0d1117" alt="Stay Home">
+<img src="https://img.shields.io/badge/%F0%9F%8F%A0_STAY_HOME_%26_HOMESTEAD-4a7cc9?style=for-the-badge&labelColor=0d1117" alt="Stay Home & Homestead">
 </p>
 
 <table><tr><td width="900">
@@ -355,13 +338,26 @@ Point your crosshair at objects in the world and press the **command hotkey** to
 
 Toggle **Stay Home** in the radial to anchor a companion near their home position. Use **Set Home** to mark where they should stay. They'll patrol within range instead of following you.
 
+### Homestead Mode (Autonomous Base Maintenance)
+When **Stay Home** is ON and **Follow** is OFF, companions automatically maintain your base. Tasks rotate every 15 seconds in a round-robin cycle:
+
+| Task | What It Does |
+|:---|:---|
+| **Repair** | Scans for damaged player-built structures within 40m, walks to each one, plays hammer animation, fully repairs them |
+| **Refuel** | Detects campfires, hearths, torches, sconces, and any fireplace below 30% fuel. Fetches the correct fuel type from nearby chests and adds fuel one unit at a time |
+| **Sort** | Finds items split across multiple chests and consolidates smaller stacks into larger ones |
+| **Smelt** | Cycles smelting duties (refill kilns/furnaces, collect output, deposit bars) |
+
+All chest interactions are slow and animated: the chest opens with a creak sound, items transfer one-by-one at 0.6s intervals, then the chest closes with sound. Companions speak contextual lines while performing each task.
+
+### Gathering + Auto-Deposit
 Combine **Stay Home + Gather mode** and they'll harvest resources near home autonomously. When their inventory fills up (298 weight), direct them to a chest and they'll walk over and deposit everything except equipped gear, food, and weapons, then go right back to gathering.
 
 Toggle **Wander** to control patrol range:
 - **Wander ON** - roams up to 50m around home
 - **Wander OFF** - stays exactly at the home point
 
-> Perfect for base-side wood farms and mining outposts. Set them up and leave.
+> Perfect for base-side wood farms, mining outposts, and fully automated bases. Set them up and leave.
 
 <br/>
 </td></tr></table>
@@ -460,7 +456,70 @@ Point at a fireplace and press the command hotkey to explicitly tell them to sit
 Point at a bed and press the command hotkey to tell companions to sleep. They'll walk to the bed, lie down, and stay asleep until you wake them (same command again) or enemies appear.
 
 ### Resting Benefits
-While sitting or sleeping, companions heal **2 HP/sec** and their stamina regeneration is **doubled**.
+While sitting or sleeping, companions heal **2 HP/sec** and their stamina regeneration is **doubled**. Companions also receive the **Rested** buff when resting by a fire or in a Comfortable area (shelter + fire).
+
+### Bed Spawn Point
+When a companion sleeps in a bed, that bed becomes their **spawn point**. If the companion dies, they'll respawn at the last bed they slept in instead of at the world spawn. Stay Home state is automatically restored on respawn.
+
+<br/>
+</td></tr></table>
+
+<br/>
+
+<p align="center">
+<img src="https://img.shields.io/badge/%F0%9F%8C%80_PORTAL_TELEPORTATION-7c3aed?style=for-the-badge&labelColor=0d1117" alt="Portal Teleportation">
+</p>
+
+<table><tr><td width="900">
+<br/>
+
+Companions teleport with you through **portals** and **dungeon entrances** automatically. No commands needed — active followers warp to your destination when you arrive.
+
+- Companions in **Stay Home** mode are excluded — they remain at their post
+- Works even if the companion's zone unloaded during the teleport
+- Cancels any active rest state (sitting/sleeping) before warping to prevent animation glitches
+
+<br/>
+</td></tr></table>
+
+<br/>
+
+<p align="center">
+<img src="https://img.shields.io/badge/%F0%9F%97%BA%EF%B8%8F_MINIMAP_MARKERS-4a9c5e?style=for-the-badge&labelColor=0d1117" alt="Minimap Markers">
+</p>
+
+<table><tr><td width="900">
+<br/>
+
+Companions are marked on the **minimap** with a visible icon so you always know where they are. Markers are only visible to the companion's owner — other players won't see your companions on their map.
+
+<br/>
+</td></tr></table>
+
+<br/>
+
+<p align="center">
+<img src="https://img.shields.io/badge/%F0%9F%93%88_SKILLS_%26_LEVELING-5b3a8a?style=for-the-badge&labelColor=0d1117" alt="Skills & Leveling">
+</p>
+
+<table><tr><td width="900">
+<br/>
+
+Companions **level up skills** just like the player. As they fight, gather, and work, their skills improve over time with progressive buff gains that increase their effectiveness.
+
+<br/>
+</td></tr></table>
+
+<br/>
+
+<p align="center">
+<img src="https://img.shields.io/badge/%F0%9F%8C%8A_SWIMMING_%26_DROWNING-2896a5?style=for-the-badge&labelColor=0d1117" alt="Swimming & Drowning">
+</p>
+
+<table><tr><td width="900">
+<br/>
+
+Companions can swim but will **slowly drown** if their stamina is fully depleted in water. Feed them stamina food before ocean voyages. Companions also intelligently board ships — point at a boat and they'll find the ladder, path to it, and climb aboard.
 
 <br/>
 </td></tr></table>
@@ -480,7 +539,7 @@ Companions have context-aware speech that triggers every 20-40 seconds, with a 5
 Male voice audio clips are included with the mod and play automatically. Place additional or custom MP3 files in `Audio/MaleCompanion/{Category}/` and `Audio/FemaleCompanion/{Category}/` alongside the plugin DLL. Categories: `Action`, `Combat`, `Follow`, `Forage`, `Gather`, `Hungry`, `Idle`, `Overweight`, `Repair`, `Smelt`. If a female voice pack is missing clips for a category, male clips are used as fallback.
 
 ### Speech Lines
-Text lines are loaded from `speech.json` (auto-generated on first run). Edit this file to customize what companions say. Lines are shared across all companions regardless of gender.
+Text lines are loaded from `speech.json` (auto-generated on first run). Edit this file to customize what companions say. Lines are shared across all companions regardless of gender. Language-specific speech files can be placed in `Translations/speech/{Language}.json` — the mod checks for the current language first, then falls back to `speech.json`.
 
 | Context | Example Lines |
 |:---|:---|
@@ -577,6 +636,32 @@ Saved state includes: appearance, name, inventory, equipment, action mode, home 
 <br/>
 
 <p align="center">
+<img src="https://img.shields.io/badge/%F0%9F%8C%90_LOCALIZATION-2b4a3a?style=for-the-badge&labelColor=0d1117" alt="Localization">
+</p>
+
+<table><tr><td width="900">
+<br/>
+
+All UI labels, radial menu text, hover text, HUD messages, speech lines, and directed command speech are fully translatable. The mod integrates with Valheim's built-in Localization system.
+
+### How It Works
+Translation keys are injected into Valheim's `Localization.m_translations` dictionary when the game loads. This means all `$key` patterns work automatically, including vanilla key bindings like `$KEY_Use`.
+
+### Translation Files
+- **`Translations/English.json`** is auto-generated on first run with all translation keys
+- To add a new language, copy `English.json` to `Translations/{Language}.json` (e.g., `French.json`) and translate the values
+- The mod loads the file matching the current Valheim language setting, falling back to English if not found
+- Speech lines support per-language files via `Translations/speech/{Language}.json`
+
+### For Translators
+Translation files use a simple JSON format with `key`/`value` pairs. All mod keys use the `hc_` prefix. Contribute translations by adding a new language file to the `Translations/` folder.
+
+<br/>
+</td></tr></table>
+
+<br/>
+
+<p align="center">
 <img src="https://img.shields.io/badge/%F0%9F%93%A6_INSTALLATION-4a3a2b?style=for-the-badge&labelColor=4a3a2b" alt="Installation">
 </p>
 
@@ -591,8 +676,6 @@ Saved state includes: appearance, name, inventory, equipment, action mode, home 
 
 <br/>
 </td></tr></table>
-
-<br/>
 
 <br/>
 

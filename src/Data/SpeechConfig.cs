@@ -30,39 +30,65 @@ namespace Companions
             }
         }
 
+        /// <summary>Reload speech lines for the current language. Called on language change.</summary>
+        public static void Reload()
+        {
+            _instance = null;
+            Load();
+        }
+
         public static void Load()
         {
             string dir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
-            string path = Path.Combine(dir, "speech.json");
 
-            if (File.Exists(path))
+            // 1. Try language-specific speech file: Translations/speech/{Language}.json
+            string language = "English";
+            try
             {
-                try
-                {
-                    string json = File.ReadAllText(path);
-                    _instance = JsonUtility.FromJson<SpeechConfig>(json);
-                    CompanionsPlugin.Log.LogInfo($"[Speech] Loaded {path}");
-                    return;
-                }
-                catch (Exception ex)
-                {
-                    CompanionsPlugin.Log.LogWarning(
-                        $"[Speech] Failed to parse {path}: {ex.Message} — using defaults");
-                }
+                if (Localization.instance != null)
+                    language = Localization.instance.GetSelectedLanguage();
             }
+            catch { }
 
+            string langPath = Path.Combine(dir, "Translations", "speech", language + ".json");
+            if (TryLoadFrom(langPath)) return;
+
+            // 2. Try root speech.json (backward compatible)
+            string rootPath = Path.Combine(dir, "speech.json");
+            if (TryLoadFrom(rootPath)) return;
+
+            // 3. Hardcoded English defaults
             _instance = Defaults();
 
             try
             {
                 string json = JsonUtility.ToJson(_instance, true);
-                File.WriteAllText(path, json);
-                CompanionsPlugin.Log.LogInfo($"[Speech] Created default {path}");
+                File.WriteAllText(rootPath, json);
+                CompanionsPlugin.Log.LogInfo($"[Speech] Created default {rootPath}");
             }
             catch (Exception ex)
             {
                 CompanionsPlugin.Log.LogWarning(
-                    $"[Speech] Failed to write defaults to {path}: {ex.Message}");
+                    $"[Speech] Failed to write defaults to {rootPath}: {ex.Message}");
+            }
+        }
+
+        private static bool TryLoadFrom(string path)
+        {
+            if (!File.Exists(path)) return false;
+
+            try
+            {
+                string json = File.ReadAllText(path);
+                _instance = JsonUtility.FromJson<SpeechConfig>(json);
+                CompanionsPlugin.Log.LogInfo($"[Speech] Loaded {path}");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                CompanionsPlugin.Log.LogWarning(
+                    $"[Speech] Failed to parse {path}: {ex.Message}");
+                return false;
             }
         }
 

@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Linq;
 using HarmonyLib;
 using UnityEngine;
 
@@ -29,53 +30,132 @@ namespace Companions
         private static bool  _holdFired;         // already fired cancel-all
         private const  float HoldThreshold = 0.4f; // seconds to trigger come-to-me
 
-        private static readonly string[] ComeHereLines = {
-            "Coming!", "On my way back!", "Right behind you."
-        };
+        // ── Speech pools (lazy-loaded, localized) ─────────────────────────
+        private static string[] _comeHereLines;
+        private static string[] ComeHereLines => _comeHereLines ?? (_comeHereLines = new[] {
+            ModLocalization.Loc("hc_cmd_comehere_1"),
+            ModLocalization.Loc("hc_cmd_comehere_2"),
+            ModLocalization.Loc("hc_cmd_comehere_3")
+        });
 
-        // ── Speech pools ──────────────────────────────────────────────────────
-        private static readonly string[] AttackLines = {
-            "On it!", "Going in!", "I'll take them down!", "For Odin!"
-        };
-        private static readonly string[] CartPullLines = {
-            "I'll haul this.", "Got the cart!", "Let me pull."
-        };
-        private static readonly string[] CartReleasedLines = {
-            "Letting go.", "Cart's free.", "Released!"
-        };
-        private static readonly string[] DoorLines = {
-            "Getting the door.", "I'll get it.", "Door's open!"
-        };
-        private static readonly string[] SitLines = {
-            "Nice and warm.", "Good spot to rest.", "I'll sit here."
-        };
-        private static readonly string[] SleepLines = {
-            "Time for some rest.", "I could use some sleep.", "Wake me if you need me."
-        };
-        private static readonly string[] WakeLines = {
-            "I'm up!", "Already?", "Right, let's go."
-        };
-        private static readonly string[] DepositLines = {
-            "Dropping off my haul.", "Storing the goods.", "Lightening my load."
-        };
-        private static readonly string[] DepositEmptyLines = {
-            "I've got nothing to drop off.", "Already empty."
-        };
-        private static readonly string[] HarvestLines = {
-            "I'll get that.", "On it!", "Looks like good stuff."
-        };
-        private static readonly string[] CancelLines = {
-            "Standing by.", "Awaiting orders.", "Ready when you are."
-        };
-        private static readonly string[] MoveLines = {
-            "Heading over.", "On my way.", "Moving out."
-        };
-        private static readonly string[] RepairLines = {
-            "I'll fix my gear up.", "Time for repairs.", "This needs some work."
-        };
-        private static readonly string[] BoardLines = {
-            "Coming aboard!", "All aboard!", "I'll hop on."
-        };
+        private static string[] _attackLines;
+        private static string[] AttackLines => _attackLines ?? (_attackLines = new[] {
+            ModLocalization.Loc("hc_cmd_attack_1"),
+            ModLocalization.Loc("hc_cmd_attack_2"),
+            ModLocalization.Loc("hc_cmd_attack_3"),
+            ModLocalization.Loc("hc_cmd_attack_4")
+        });
+
+        private static string[] _cartPullLines;
+        private static string[] CartPullLines => _cartPullLines ?? (_cartPullLines = new[] {
+            ModLocalization.Loc("hc_cmd_cart_pull_1"),
+            ModLocalization.Loc("hc_cmd_cart_pull_2"),
+            ModLocalization.Loc("hc_cmd_cart_pull_3")
+        });
+
+        private static string[] _cartReleasedLines;
+        private static string[] CartReleasedLines => _cartReleasedLines ?? (_cartReleasedLines = new[] {
+            ModLocalization.Loc("hc_cmd_cart_release_1"),
+            ModLocalization.Loc("hc_cmd_cart_release_2"),
+            ModLocalization.Loc("hc_cmd_cart_release_3")
+        });
+
+        private static string[] _doorLines;
+        private static string[] DoorLines => _doorLines ?? (_doorLines = new[] {
+            ModLocalization.Loc("hc_cmd_door_1"),
+            ModLocalization.Loc("hc_cmd_door_2"),
+            ModLocalization.Loc("hc_cmd_door_3")
+        });
+
+        private static string[] _sitLines;
+        private static string[] SitLines => _sitLines ?? (_sitLines = new[] {
+            ModLocalization.Loc("hc_cmd_sit_1"),
+            ModLocalization.Loc("hc_cmd_sit_2"),
+            ModLocalization.Loc("hc_cmd_sit_3")
+        });
+
+        private static string[] _sleepLines;
+        private static string[] SleepLines => _sleepLines ?? (_sleepLines = new[] {
+            ModLocalization.Loc("hc_cmd_sleep_1"),
+            ModLocalization.Loc("hc_cmd_sleep_2"),
+            ModLocalization.Loc("hc_cmd_sleep_3")
+        });
+
+        private static string[] _wakeLines;
+        private static string[] WakeLines => _wakeLines ?? (_wakeLines = new[] {
+            ModLocalization.Loc("hc_cmd_wake_1"),
+            ModLocalization.Loc("hc_cmd_wake_2"),
+            ModLocalization.Loc("hc_cmd_wake_3")
+        });
+
+        private static string[] _depositLines;
+        private static string[] DepositLines => _depositLines ?? (_depositLines = new[] {
+            ModLocalization.Loc("hc_cmd_deposit_1"),
+            ModLocalization.Loc("hc_cmd_deposit_2"),
+            ModLocalization.Loc("hc_cmd_deposit_3")
+        });
+
+        private static string[] _depositEmptyLines;
+        private static string[] DepositEmptyLines => _depositEmptyLines ?? (_depositEmptyLines = new[] {
+            ModLocalization.Loc("hc_cmd_deposit_empty_1"),
+            ModLocalization.Loc("hc_cmd_deposit_empty_2")
+        });
+
+        private static string[] _harvestLines;
+        private static string[] HarvestLines => _harvestLines ?? (_harvestLines = new[] {
+            ModLocalization.Loc("hc_cmd_harvest_1"),
+            ModLocalization.Loc("hc_cmd_harvest_2"),
+            ModLocalization.Loc("hc_cmd_harvest_3")
+        });
+
+        private static string[] _cancelLines;
+        private static string[] CancelLines => _cancelLines ?? (_cancelLines = new[] {
+            ModLocalization.Loc("hc_cmd_cancel_1"),
+            ModLocalization.Loc("hc_cmd_cancel_2"),
+            ModLocalization.Loc("hc_cmd_cancel_3")
+        });
+
+        private static string[] _moveLines;
+        private static string[] MoveLines => _moveLines ?? (_moveLines = new[] {
+            ModLocalization.Loc("hc_cmd_move_1"),
+            ModLocalization.Loc("hc_cmd_move_2"),
+            ModLocalization.Loc("hc_cmd_move_3")
+        });
+
+        private static string[] _repairLines;
+        private static string[] RepairLines => _repairLines ?? (_repairLines = new[] {
+            ModLocalization.Loc("hc_cmd_repair_1"),
+            ModLocalization.Loc("hc_cmd_repair_2"),
+            ModLocalization.Loc("hc_cmd_repair_3")
+        });
+
+        private static string[] _boardLines;
+        private static string[] BoardLines => _boardLines ?? (_boardLines = new[] {
+            ModLocalization.Loc("hc_cmd_board_1"),
+            ModLocalization.Loc("hc_cmd_board_2"),
+            ModLocalization.Loc("hc_cmd_board_3")
+        });
+
+        /// <summary>Clear all cached speech arrays so they re-resolve on next access (call on language change).</summary>
+        internal static void ResetCachedLines()
+        {
+            _comeHereLines    = null;
+            _attackLines      = null;
+            _cartPullLines    = null;
+            _cartReleasedLines = null;
+            _doorLines        = null;
+            _sitLines         = null;
+            _sleepLines       = null;
+            _wakeLines        = null;
+            _depositLines     = null;
+            _depositEmptyLines = null;
+            _harvestLines     = null;
+            _cancelLines      = null;
+            _moveLines        = null;
+            _repairLines      = null;
+            _boardLines       = null;
+            _repairNothingLines = null;
+        }
 
         private static void Postfix(Player __instance)
         {
@@ -586,9 +666,12 @@ namespace Companions
             }
         }
 
-        private static readonly string[] RepairNothingLines = {
-            "Nothing to fix here.", "My gear's fine.", "No repairs needed."
-        };
+        private static string[] _repairNothingLines;
+        private static string[] RepairNothingLines => _repairNothingLines ?? (_repairNothingLines = new[] {
+            ModLocalization.Loc("hc_cmd_repair_nothing_1"),
+            ModLocalization.Loc("hc_cmd_repair_nothing_2"),
+            ModLocalization.Loc("hc_cmd_repair_nothing_3")
+        });
 
         private static void DirectRepair(CompanionSetup[] setups, string localId, CraftingStation station)
         {
@@ -633,41 +716,87 @@ namespace Companions
         {
             CompanionsPlugin.Log.LogDebug(
                 $"[Direct] DirectBoard called — ship=\"{ship.name}\" " +
-                $"pos={ship.transform.position:F2} up={ship.transform.up:F2}");
+                $"pos={ship.transform.position:F2}");
+
+            // Find all ship stools (Chairs with m_inShip = true)
+            var allChairs = ship.GetComponentsInChildren<Chair>();
+            var availableChairs = new List<Chair>();
+            var allChars = Character.GetAllCharacters();
+
+            foreach (var chair in allChairs)
+            {
+                if (!chair.m_inShip) continue;
+                if (chair.m_attachPoint == null) continue;
+
+                // Check if occupied — any Character within 0.5m of attach point
+                Vector3 seatPos = chair.m_attachPoint.position;
+                bool occupied = allChars.Any(c =>
+                    Vector3.Distance(c.transform.position, seatPos) < 0.5f);
+
+                if (!occupied)
+                    availableChairs.Add(chair);
+            }
+
+            CompanionsPlugin.Log.LogDebug(
+                $"[Direct] Ship has {allChairs.Length} chairs, {availableChairs.Count} available");
 
             CompanionTalk firstTalk = null;
             int boarded = 0;
+            var claimedChairs = new HashSet<Chair>();
 
             foreach (var setup in setups)
             {
                 if (!IsOwned(setup, localId)) continue;
                 if (!setup.GetIsCommandable()) continue;
 
-                CancelExistingActions(setup);
-
                 var ai = setup.GetComponent<CompanionAI>();
                 if (ai == null) continue;
+                if (ai.IsOnShip) continue; // already seated
 
-                Vector3 oldPos = setup.transform.position;
+                CancelExistingActions(setup);
 
-                // Teleport onto ship deck
-                Vector3 deckPos = ship.transform.position + ship.transform.up * 1.5f;
-                setup.transform.position = deckPos;
-                var body = setup.GetComponent<Rigidbody>();
-                if (body != null)
+                // Find nearest unclaimed chair
+                Chair bestChair = null;
+                float bestDist = float.MaxValue;
+                foreach (var chair in availableChairs)
                 {
-                    body.position = deckPos;
-                    body.velocity = Vector3.zero;
+                    if (claimedChairs.Contains(chair)) continue;
+                    float dist = Vector3.Distance(
+                        setup.transform.position, chair.m_attachPoint.position);
+                    if (dist < bestDist)
+                    {
+                        bestDist = dist;
+                        bestChair = chair;
+                    }
                 }
 
-                // Follow the ship so they stay onboard
-                ai.SetFollowTarget(ship.gameObject);
-                ai.FreezeTimer = 1f;
-
                 var character = setup.GetComponent<Character>();
-                CompanionsPlugin.Log.LogDebug(
-                    $"[Direct] Board: \"{character?.m_name ?? "?"}\" " +
-                    $"teleported {oldPos:F1} → {deckPos:F1}");
+                string name = character?.m_name ?? "?";
+
+                if (bestChair != null)
+                {
+                    claimedChairs.Add(bestChair);
+                    ai.SetPendingShipBoard(ship, bestChair);
+                    CompanionsPlugin.Log.LogDebug(
+                        $"[Direct] Board: \"{name}\" walking to chair " +
+                        $"at {bestChair.m_attachPoint.position:F1}");
+                }
+                else
+                {
+                    // Fallback: teleport to deck if no chairs available
+                    Vector3 deckPos = ship.transform.position + ship.transform.up * 1.5f;
+                    setup.transform.position = deckPos;
+                    var body = setup.GetComponent<Rigidbody>();
+                    if (body != null)
+                    {
+                        body.position = deckPos;
+                        body.velocity = Vector3.zero;
+                    }
+                    ai.SetFollowTarget(ship.gameObject);
+                    ai.FreezeTimer = 1f;
+                    CompanionsPlugin.Log.LogDebug(
+                        $"[Direct] Board: \"{name}\" no chair available, standing on deck");
+                }
 
                 if (firstTalk == null) firstTalk = setup.GetComponent<CompanionTalk>();
                 boarded++;
@@ -810,6 +939,11 @@ namespace Companions
                     ai.CancelPendingCart();
                     ai.CancelMoveTarget();
                     ai.CancelPendingDeposit();
+                    ai.CancelPendingShipBoard();
+                    ai.ClearTargets();
+                    ai.StopMoving();
+
+                    if (ai.IsOnShip) ai.DetachFromShip();
 
                     // Restore follow target to player if Follow toggle is ON.
                     // Handles ship disembark, move-to leftovers, or any other state
@@ -844,6 +978,10 @@ namespace Companions
                 var smelt = setup.GetComponent<SmeltController>();
                 if (smelt != null)
                     smelt.NotifyActionModeChanged();
+
+                var homestead = setup.GetComponent<HomesteadController>();
+                if (homestead != null && homestead.IsActive)
+                    homestead.CancelDirected();
             }
 
             SayRandom(firstTalk, CancelLines, "Action");
@@ -904,6 +1042,12 @@ namespace Companions
                     CompanionsPlugin.Log.LogDebug($"[Direct] CancelExisting \"{name}\": cancelling deposit nav");
                 ai.CancelPendingDeposit();
 
+                if (ai.IsBoardingShip)
+                    CompanionsPlugin.Log.LogDebug($"[Direct] CancelExisting \"{name}\": cancelling ship boarding");
+                ai.CancelPendingShipBoard();
+
+                if (ai.IsOnShip) ai.DetachFromShip();
+
                 ai.DirectedTargetLockTimer = 0f;
             }
 
@@ -925,6 +1069,14 @@ namespace Companions
                 CompanionsPlugin.Log.LogDebug(
                     $"[Direct] CancelExisting \"{name}\": cancelling active smelt");
                 smelt.CancelDirected();
+            }
+
+            var homestead = setup.GetComponent<HomesteadController>();
+            if (homestead != null && homestead.IsActive)
+            {
+                CompanionsPlugin.Log.LogDebug(
+                    $"[Direct] CancelExisting \"{name}\": cancelling active homestead");
+                homestead.CancelDirected();
             }
         }
 

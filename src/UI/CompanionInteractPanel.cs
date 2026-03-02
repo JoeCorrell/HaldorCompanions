@@ -1,19 +1,18 @@
 using System;
-using System.Globalization;
+using System.Collections.Generic;
 using System.Reflection;
 using HarmonyLib;
 using TMPro;
 using UnityEngine;
-using UnityEngine.EventSystems;
 using UnityEngine.UI;
 
 namespace Companions
 {
     /// <summary>
-    /// Companion inventory overlay — appears alongside InventoryGui when
-    /// a companion's Container is opened (tap E).  Single panel showing
-    /// name input, 5×6 inventory grid, and 3 food slots.
-    /// Action controls have moved to CompanionRadialMenu (hold E).
+    /// Companion inventory panel — clones the vanilla container UI from InventoryGui
+    /// for authentic Valheim inventory visuals.  Positioned below the player inventory
+    /// like a normal container.  Shows name input, weight display, inventory grid,
+    /// and food slots.
     /// </summary>
     public class CompanionInteractPanel : MonoBehaviour
     {
@@ -28,41 +27,24 @@ namespace Companions
             => Instance != null && Instance._visible
             && Instance._companion != null && Instance._companion == setup;
 
-        // ── Layout constants ─────────────────────────────────────────────────
-        private const float PanelH        = 400f;
-        private const float DvergerPanelH = 290f;
-        private const float UiScale       = 1.25f;
-        private const float OuterPad      = 4f;
-
-        // ── Grid constants ───────────────────────────────────────────────────
-        private const int GridCols          = 5;
-        private const int GridSlots         = 30;
-        private const int FoodSlotCount     = 3;
-        private const int MainGridSlots     = 30;
-        private const float InventorySlotGap = 3f;
-
-        // ── Style constants ──────────────────────────────────────────────────
-        private static readonly Color PanelBg          = new Color(0.18f, 0.14f, 0.09f, 0.92f);
-        private static readonly Color ColBg            = new Color(0f, 0f, 0f, 0.75f);
-        private static readonly Color GoldColor        = new Color(0.83f, 0.64f, 0.31f, 1f);
-        private static readonly Color LabelText        = new Color(1f, 0.9f, 0.5f, 1f);
-        private static readonly Color EquipBlue        = new Color(0.29f, 0.55f, 0.94f, 1f);
-        private static readonly Color BarBg            = new Color(0.15f, 0.15f, 0.15f, 0.85f);
-        private static readonly Color SlotTint         = new Color(0f, 0f, 0f, 0.5625f);
-        private static readonly Color SlotHoverTint   = new Color(0.25f, 0.22f, 0.15f, 0.85f);
-        private static readonly Color EquippedSlotTint = new Color(0.10f, 0.20f, 0.38f, 0.80f);
-        private static readonly Color EquippedHoverTint = new Color(0.16f, 0.30f, 0.52f, 0.90f);
-
-        // ── Custom sprite caches ─────────────────────────────────────────────
-        private static Sprite _panelBgSprite;
-        private static Sprite _sliderBgSprite;
-
         // ── InventoryGui drag system reflection ──────────────────────────────
         private static readonly FieldInfo _dragItemField      = AccessTools.Field(typeof(InventoryGui), "m_dragItem");
         private static readonly FieldInfo _dragInventoryField  = AccessTools.Field(typeof(InventoryGui), "m_dragInventory");
         private static readonly FieldInfo _dragAmountField     = AccessTools.Field(typeof(InventoryGui), "m_dragAmount");
         private static readonly MethodInfo _setupDragItem      = AccessTools.Method(typeof(InventoryGui), "SetupDragItem",
             new[] { typeof(ItemDrop.ItemData), typeof(Inventory), typeof(int) });
+
+        // ── InventoryGrid force-rebuild reflection ───────────────────────────
+        private static readonly FieldInfo _gridWidthField =
+            AccessTools.Field(typeof(InventoryGrid), "m_width");
+
+        // ── Split dialog reflection ────────────────────────────────────────
+        private static readonly MethodInfo _showSplitDialog = AccessTools.Method(
+            typeof(InventoryGui), "ShowSplitDialog",
+            new[] { typeof(ItemDrop.ItemData), typeof(Inventory) });
+
+        // ── Constants ────────────────────────────────────────────────────────
+        private const int FoodSlotCount = 3;
 
         // ── Companion references ─────────────────────────────────────────────
         private CompanionSetup   _companion;
@@ -74,23 +56,20 @@ namespace Companions
 
         // ── UI elements ──────────────────────────────────────────────────────
         private GameObject      _root;
+        private InventoryGrid   _grid;
         private TMP_InputField  _nameInput;
+        private GameObject      _foodSlotsContainer;
+        private Image[]           _foodSlotIcons;
+        private TextMeshProUGUI[] _foodSlotCounts;
+
+        // Weight & armor display (on the cloned container panel)
+        private TMP_Text _weightText;
+        private TMP_Text _armorText;
 
         private bool _built;
         private bool _visible;
         private bool _builtForDverger;
-
-        // ── Inventory grid ───────────────────────────────────────────────────
-        private Image[]           _slotBgs;
-        private Image[]           _slotIcons;
-        private TextMeshProUGUI[] _slotCounts;
-        private Image[]           _slotBorders;
-        private GameObject[]      _slotDurabilityBars;
-        private Image[]           _slotDurabilityFills;
-        private Image[]           _foodSlotIcons;
-        private TextMeshProUGUI[] _foodSlotCounts;
-        private float             _invRefreshTimer;
-        private int               _hoveredSlot = -1;
+        private bool _gridCreated;  // true after first UpdateInventory (grid elements exist)
 
         // ══════════════════════════════════════════════════════════════════════
         //  Lifecycle
@@ -101,8 +80,6 @@ namespace Companions
         private void OnDestroy()
         {
             if (Instance == this) Instance = null;
-            _panelBgSprite = null;
-            _sliderBgSprite = null;
             Teardown();
         }
 
@@ -125,7 +102,7 @@ namespace Companions
                 if (dist > 5f) { Hide(); return; }
             }
 
-            RefreshInventoryGrid();
+            UpdateGrid();
         }
 
         // ══════════════════════════════════════════════════════════════════════
@@ -150,7 +127,7 @@ namespace Companions
 
             bool isDverger = !companion.CanWearArmor();
 
-            // Rebuild if destroyed (scene change), never built, or companion type changed
+            // Rebuild if destroyed, never built, or companion type changed
             if (_root == null) _built = false;
             if (_built && isDverger != _builtForDverger)
             {
@@ -172,7 +149,9 @@ namespace Companions
                 _nameInput.onValueChanged.AddListener(OnNameChanged);
             }
 
-            _invRefreshTimer = 0f;
+            // Show/hide food slots based on companion type
+            if (_foodSlotsContainer != null)
+                _foodSlotsContainer.SetActive(!_builtForDverger);
 
             _root.SetActive(true);
             _root.transform.SetAsLastSibling();
@@ -187,10 +166,6 @@ namespace Companions
                 _nameInput.onValueChanged.RemoveAllListeners();
             if (_root != null) _root.SetActive(false);
 
-            // Re-show vanilla crafting panel if InventoryGui is still open
-            if (InventoryGui.instance != null && InventoryGui.instance.m_crafting != null)
-                InventoryGui.instance.m_crafting.gameObject.SetActive(true);
-
             _companion          = null;
             _companionChar      = null;
             _companionFood      = null;
@@ -200,164 +175,173 @@ namespace Companions
         }
 
         // ══════════════════════════════════════════════════════════════════════
-        //  Sprite loaders
-        // ══════════════════════════════════════════════════════════════════════
-
-        private static Sprite GetPanelBgSprite()
-        {
-            if (_panelBgSprite != null) return _panelBgSprite;
-            var tex = TextureLoader.LoadUITexture("PanelBackground");
-            if (tex == null) return null;
-            _panelBgSprite = Sprite.Create(tex,
-                new Rect(0f, 0f, tex.width, tex.height),
-                new Vector2(0.5f, 0.5f), 100f);
-            _panelBgSprite.name = "CIP_PanelBackground";
-            return _panelBgSprite;
-        }
-
-        private static Sprite GetSliderBgSprite()
-        {
-            if (_sliderBgSprite != null) return _sliderBgSprite;
-            var tex = TextureLoader.LoadUITexture("SliderBackground");
-            if (tex == null) return null;
-            _sliderBgSprite = Sprite.Create(tex,
-                new Rect(0f, 0f, tex.width, tex.height),
-                new Vector2(0.5f, 0.5f), 100f);
-            _sliderBgSprite.name = "CIP_SliderBackground";
-            return _sliderBgSprite;
-        }
-
-        // ══════════════════════════════════════════════════════════════════════
-        //  Build UI — single panel: name + grid + food
+        //  Build UI — clone vanilla container panel
         // ══════════════════════════════════════════════════════════════════════
 
         private void BuildUI()
         {
-            TMP_FontAsset font = GetFont();
-
-            // Compute slot size from height, then derive panel width from grid
-            float slotSize = ComputeInventorySlotSize();
-            float gridW = GridCols * slotSize + (GridCols - 1) * InventorySlotGap;
-            float panelW = gridW + OuterPad * 2f;
-            float panelH = _builtForDverger ? DvergerPanelH : PanelH;
-
-            // Root panel — parented under InventoryGui's canvas for shared raycasting
-            _root = new GameObject("HC_InteractRoot", typeof(RectTransform));
-            Transform canvasParent = transform;
-            if (InventoryGui.instance != null)
+            var gui = InventoryGui.instance;
+            if (gui == null || gui.m_container == null)
             {
-                var canvas = InventoryGui.instance.GetComponentInParent<Canvas>();
-                if (canvas != null) canvasParent = canvas.transform;
+                CompanionsPlugin.Log.LogError("[UI] BuildUI — InventoryGui or m_container is null!");
+                return;
             }
-            _root.transform.SetParent(canvasParent, false);
-            _root.transform.SetAsLastSibling();
 
-            var rootRT = _root.GetComponent<RectTransform>();
-            rootRT.anchorMin        = new Vector2(0.5f, 0.5f);
-            rootRT.anchorMax        = new Vector2(0.5f, 0.5f);
-            rootRT.pivot            = new Vector2(0.5f, 0.5f);
-            rootRT.sizeDelta        = new Vector2(panelW, panelH);
-            rootRT.anchoredPosition = Vector2.zero;
-            rootRT.localScale       = Vector3.one * UiScale;
-
-            var rootImg = _root.AddComponent<Image>();
-            ApplyPanelBg(rootImg, PanelBg);
-            rootImg.raycastTarget = true;
-
-            // Content area with minimal padding
-            var content = new GameObject("Content", typeof(RectTransform), typeof(Image));
-            content.transform.SetParent(_root.transform, false);
-            var contentRT = content.GetComponent<RectTransform>();
-            contentRT.anchorMin = Vector2.zero;
-            contentRT.anchorMax = Vector2.one;
-            contentRT.offsetMin = new Vector2(OuterPad, OuterPad);
-            contentRT.offsetMax = new Vector2(-OuterPad, -OuterPad);
-            var contentImg = content.GetComponent<Image>();
-            contentImg.sprite = null;
-            contentImg.color = ColBg;
-            contentImg.raycastTarget = false;
-
-            float topY = 0f;
-
-            // Name input — centered, same width as inventory grid
-            topY = BuildNameInput(contentRT, font, topY, gridW);
-            topY -= 4f;
-
-            // Inventory grid + food
-            BuildInventoryGrid(contentRT, font, ref topY, slotSize);
-            if (!_builtForDverger)
-                BuildFoodSlots(contentRT, font, slotSize);
-
-            ApplyFallbackFont(_root.transform, font);
+            // Deep-clone the vanilla container panel (preserves all serialized refs)
+            _root = Instantiate(gui.m_container.gameObject, gui.m_container.parent);
+            _root.name = "HC_CompanionInventory";
             _root.SetActive(false);
+
+            // Lower the panel so it sits below the player inventory properly
+            var cloneRT = _root.GetComponent<RectTransform>();
+            if (cloneRT != null)
+            {
+                var pos = cloneRT.anchoredPosition;
+                pos.y -= 110f;
+                cloneRT.anchoredPosition = pos;
+            }
+
+            // Find the cloned InventoryGrid
+            _grid = _root.GetComponentInChildren<InventoryGrid>();
+            if (_grid == null)
+            {
+                CompanionsPlugin.Log.LogError("[UI] BuildUI — No InventoryGrid found in clone!");
+                Destroy(_root);
+                return;
+            }
+
+            // Force grid to rebuild all elements on next UpdateInventory
+            // (m_width=0 triggers the rebuild path in InventoryGrid.UpdateGui)
+            _gridWidthField?.SetValue(_grid, 0);
+
+            // Wire our callbacks (Action delegates are NOT serialized — they're null after clone)
+            _grid.m_onSelected  = OnCompanionSelected;
+            _grid.m_onRightClick = OnCompanionRightClick;
+
+            // Null out the scrollbar (it references a sibling in the original container)
+            _grid.m_scrollbar = null;
+
+            // Disable cloned UIGroupHandler to avoid gamepad navigation conflicts
+            var uiGroup = _root.GetComponentInChildren<UIGroupHandler>(true);
+            if (uiGroup != null) uiGroup.enabled = false;
+
+            // Find cloned container name text (child of m_container)
+            TMP_Text clonedNameText = FindClonedComponent<TMP_Text>(gui.m_containerName, gui.m_container);
+
+            CompanionsPlugin.Log.LogDebug(
+                $"[UI] Clone — grid={_grid != null}, name={clonedNameText != null}");
+
+            // Hide vanilla buttons (TakeAll / StackAll / Drop)
+            HideClonedComponent(gui.m_takeAllButton, gui.m_container);
+            HideClonedComponent(gui.m_stackAllButton, gui.m_container);
+            HideClonedComponent(gui.m_dropButton, gui.m_container);
+
+            // Hide the cloned scrollbar (not needed for companion inventory)
+            var clonedScrollbar = _root.GetComponentInChildren<Scrollbar>(true);
+            if (clonedScrollbar != null) clonedScrollbar.gameObject.SetActive(false);
+
+            // Replace container name text with an editable name input field
+            if (clonedNameText != null)
+                BuildNameInput(clonedNameText);
+
+            // Find the cloned weight text and set up armor display
+            BuildWeightAndArmor(gui);
+
+            // Build food slots at the bottom (expand panel height to fit)
+            BuildFoodSlots();
+
+            // Fix any broken TMP fonts in the cloned hierarchy
+            TMP_FontAsset font = GetFont();
+            if (font != null) ApplyFallbackFont(_root.transform, font);
+
             _built = true;
-        }
-
-        private static void ApplyPanelBg(Image img, Color fallback)
-        {
-            var sprite = GetPanelBgSprite();
-            if (sprite != null)
-            {
-                img.sprite = sprite;
-                img.type   = Image.Type.Simple;
-                img.preserveAspect = false;
-                img.color  = Color.white;
-            }
-            else
-            {
-                img.color = fallback;
-            }
-        }
-
-        private float ComputeInventorySlotSize()
-        {
-            int gridRows = Mathf.CeilToInt(MainGridSlots / (float)GridCols);
-            float curH = _builtForDverger ? DvergerPanelH : PanelH;
-
-            // Available height: panel minus top/bottom pad, name input, gap
-            float totalH = curH - OuterPad * 2f - 26f - 4f;
-
-            if (_builtForDverger)
-            {
-                float slotH = (totalH - (gridRows - 1) * InventorySlotGap) / gridRows;
-                return Mathf.Floor(slotH);
-            }
-            else
-            {
-                const float foodOverhead = 22f;
-                float slotH = (totalH - foodOverhead - (gridRows - 1) * InventorySlotGap) / (gridRows + 1);
-                return Mathf.Floor(slotH);
-            }
+            _gridCreated = false;  // first UpdateInventory will create elements with null player
+            CompanionsPlugin.Log.LogInfo("[UI] BuildUI — Cloned container panel successfully");
         }
 
         // ══════════════════════════════════════════════════════════════════════
-        //  Name input
+        //  Clone navigation helpers
         // ══════════════════════════════════════════════════════════════════════
 
-        private float BuildNameInput(RectTransform parent, TMP_FontAsset font, float y, float width)
+        /// <summary>
+        /// Find a component's equivalent in the cloned hierarchy using its
+        /// relative transform path from the original root.
+        /// </summary>
+        private T FindClonedComponent<T>(Component original, RectTransform originalRoot) where T : Component
         {
-            float h = 26f;
+            if (original == null || originalRoot == null) return null;
+            string path = GetRelativePath(original.transform, originalRoot.transform);
+            if (string.IsNullOrEmpty(path)) return _root.GetComponent<T>();
+            var found = _root.transform.Find(path);
+            return found != null ? found.GetComponent<T>() : null;
+        }
+
+        /// <summary>
+        /// Hide a component's cloned equivalent by deactivating its GameObject.
+        /// </summary>
+        private void HideClonedComponent(Component original, RectTransform originalRoot)
+        {
+            if (original == null || originalRoot == null) return;
+            string path = GetRelativePath(original.transform, originalRoot.transform);
+            var found = string.IsNullOrEmpty(path)
+                ? _root.transform
+                : _root.transform.Find(path);
+            if (found != null) found.gameObject.SetActive(false);
+        }
+
+        /// <summary>
+        /// Compute the transform path from a child to a root, suitable for Transform.Find.
+        /// </summary>
+        private static string GetRelativePath(Transform child, Transform root)
+        {
+            if (child == root || child == null) return "";
+            var parts = new List<string>();
+            Transform current = child;
+            while (current != null && current != root)
+            {
+                parts.Add(current.name);
+                current = current.parent;
+            }
+            if (current != root) return "";
+            parts.Reverse();
+            return string.Join("/", parts);
+        }
+
+        // ══════════════════════════════════════════════════════════════════════
+        //  Name input — replaces the cloned container name text
+        // ══════════════════════════════════════════════════════════════════════
+
+        private void BuildNameInput(TMP_Text originalNameText)
+        {
+            originalNameText.gameObject.SetActive(false);
+
+            var origRT = originalNameText.GetComponent<RectTransform>();
+            var parent = origRT.parent;
+            TMP_FontAsset font = originalNameText.font;
+            if (IsBrokenTmpFont(font)) font = GetFont();
 
             var inputGO = new GameObject("NameInput", typeof(RectTransform), typeof(Image));
             inputGO.transform.SetParent(parent, false);
             var inputRT = inputGO.GetComponent<RectTransform>();
-            inputRT.anchorMin = new Vector2(0.5f, 1f);
-            inputRT.anchorMax = new Vector2(0.5f, 1f);
-            inputRT.pivot = new Vector2(0.5f, 1f);
-            inputRT.sizeDelta = new Vector2(width, h);
-            inputRT.anchoredPosition = new Vector2(0f, y);
+            // Stretch across the top of the panel, centered
+            inputRT.anchorMin        = new Vector2(0f, 1f);
+            inputRT.anchorMax        = new Vector2(1f, 1f);
+            inputRT.pivot            = new Vector2(0.5f, 1f);
+            inputRT.sizeDelta        = new Vector2(-20f, 36f);
+            inputRT.anchoredPosition = new Vector2(0f, -3f);
 
-            var bgSprite = GetSliderBgSprite();
-            var bgImg = inputGO.GetComponent<Image>();
-            if (bgSprite != null)
+            var inputImg = inputGO.GetComponent<Image>();
+            var bgTex = TextureLoader.LoadUITexture("SliderBackground");
+            if (bgTex != null)
             {
-                bgImg.sprite = bgSprite;
-                bgImg.type = Image.Type.Simple;
-                bgImg.color = Color.white;
+                inputImg.sprite = Sprite.Create(bgTex,
+                    new Rect(0f, 0f, bgTex.width, bgTex.height),
+                    new Vector2(0.5f, 0.5f), 100f);
+                inputImg.color = Color.white;
             }
             else
             {
-                bgImg.color = BarBg;
+                inputImg.color = new Color(0.15f, 0.15f, 0.15f, 0.85f);
             }
 
             var textAreaGO = new GameObject("TextArea", typeof(RectTransform));
@@ -365,231 +349,121 @@ namespace Companions
             var textAreaRT = textAreaGO.GetComponent<RectTransform>();
             textAreaRT.anchorMin = Vector2.zero;
             textAreaRT.anchorMax = Vector2.one;
-            textAreaRT.offsetMin = new Vector2(8f, 2f);
-            textAreaRT.offsetMax = new Vector2(-8f, -2f);
+            textAreaRT.offsetMin = new Vector2(10f, 2f);
+            textAreaRT.offsetMax = new Vector2(-10f, -2f);
             textAreaGO.AddComponent<RectMask2D>();
 
             var childTextGO = new GameObject("Text", typeof(RectTransform));
             childTextGO.transform.SetParent(textAreaGO.transform, false);
             var childTmp = childTextGO.AddComponent<TextMeshProUGUI>();
             if (font != null) childTmp.font = font;
-            childTmp.fontSize = 16f;
-            childTmp.color = Color.white;
-            childTmp.alignment = TextAlignmentOptions.MidlineLeft;
+            childTmp.fontSize     = 18f;
+            childTmp.color        = Color.white;
+            childTmp.alignment    = TextAlignmentOptions.MidlineLeft;
+            childTmp.enableAutoSizing = true;
+            childTmp.fontSizeMin  = 12f;
+            childTmp.fontSizeMax  = 18f;
             childTmp.raycastTarget = false;
             StretchFill(childTextGO.GetComponent<RectTransform>());
 
             _nameInput = inputGO.AddComponent<TMP_InputField>();
-            _nameInput.textComponent = childTmp;
-            _nameInput.textViewport = textAreaRT;
-            _nameInput.characterLimit = 24;
-            _nameInput.contentType = TMP_InputField.ContentType.Standard;
+            _nameInput.textComponent    = childTmp;
+            _nameInput.textViewport     = textAreaRT;
+            _nameInput.characterLimit   = 24;
+            _nameInput.contentType      = TMP_InputField.ContentType.Standard;
             _nameInput.onFocusSelectAll = false;
 
             var phGO = new GameObject("Placeholder", typeof(RectTransform));
             phGO.transform.SetParent(textAreaGO.transform, false);
             var phTmp = phGO.AddComponent<TextMeshProUGUI>();
             if (font != null) phTmp.font = font;
-            phTmp.fontSize = 16f;
-            phTmp.color = new Color(0.6f, 0.6f, 0.6f, 0.6f);
-            phTmp.alignment = TextAlignmentOptions.MidlineLeft;
-            phTmp.text = "Enter name...";
-            phTmp.fontStyle = FontStyles.Italic;
+            phTmp.fontSize     = 18f;
+            phTmp.color        = new Color(0.6f, 0.6f, 0.6f, 0.6f);
+            phTmp.alignment    = TextAlignmentOptions.MidlineLeft;
+            phTmp.text         = ModLocalization.Loc("hc_ui_placeholder_name");
+            phTmp.fontStyle    = FontStyles.Italic;
+            phTmp.enableAutoSizing = true;
+            phTmp.fontSizeMin  = 12f;
+            phTmp.fontSizeMax  = 18f;
             phTmp.raycastTarget = false;
             StretchFill(phGO.GetComponent<RectTransform>());
-            _nameInput.placeholder = phTmp;
 
-            return y - h;
+            _nameInput.placeholder = phTmp;
         }
 
         // ══════════════════════════════════════════════════════════════════════
-        //  Inventory grid
+        //  Food slots — appended at the bottom of the panel
         // ══════════════════════════════════════════════════════════════════════
 
-        private void BuildInventoryGrid(RectTransform parent, TMP_FontAsset font, ref float y, float slotSize)
+        private void BuildFoodSlots()
         {
-            _slotBgs = new Image[MainGridSlots];
-            _slotIcons = new Image[MainGridSlots];
-            _slotCounts = new TextMeshProUGUI[MainGridSlots];
-            _slotBorders = new Image[MainGridSlots];
-            _slotDurabilityBars = new GameObject[MainGridSlots];
-            _slotDurabilityFills = new Image[MainGridSlots];
+            _foodSlotIcons  = new Image[FoodSlotCount];
+            _foodSlotCounts = new TextMeshProUGUI[FoodSlotCount];
 
-            int gridRows = Mathf.CeilToInt(MainGridSlots / (float)GridCols);
-            float gridW = GridCols * slotSize + (GridCols - 1) * InventorySlotGap;
-            float gridH = gridRows * slotSize + (gridRows - 1) * InventorySlotGap;
+            TMP_FontAsset font = GetFont();
+            float slotSize = _grid != null ? _grid.m_elementSpace : 70f;
+            float foodGap  = 3f;
+            float foodRowW = FoodSlotCount * slotSize + (FoodSlotCount - 1) * foodGap;
+            float sectionH = slotSize + 16f;
 
-            var gridContainer = new GameObject("Grid", typeof(RectTransform));
-            gridContainer.transform.SetParent(parent, false);
-            var gridRT = gridContainer.GetComponent<RectTransform>();
-            gridRT.anchorMin = new Vector2(0.5f, 1f);
-            gridRT.anchorMax = new Vector2(0.5f, 1f);
-            gridRT.pivot = new Vector2(0.5f, 1f);
-            gridRT.sizeDelta = new Vector2(gridW, gridH);
-            gridRT.anchoredPosition = new Vector2(0f, y);
-
-            for (int i = 0; i < MainGridSlots; i++)
+            // Expand panel to make room
+            var rootRT = _root.GetComponent<RectTransform>();
+            if (rootRT != null)
             {
-                int visualCol = i % GridCols;
-                int visualRow = i / GridCols;
-                float x = visualCol * (slotSize + InventorySlotGap);
-                float sy = -(visualRow * (slotSize + InventorySlotGap));
-
-                var slotGO = new GameObject($"Slot{i}", typeof(RectTransform), typeof(Image));
-                slotGO.transform.SetParent(gridContainer.transform, false);
-                var slotRT = slotGO.GetComponent<RectTransform>();
-                slotRT.anchorMin = new Vector2(0f, 1f);
-                slotRT.anchorMax = new Vector2(0f, 1f);
-                slotRT.pivot = new Vector2(0f, 1f);
-                slotRT.sizeDelta = new Vector2(slotSize, slotSize);
-                slotRT.anchoredPosition = new Vector2(x, sy);
-
-                var bgImg = slotGO.GetComponent<Image>();
-                bgImg.sprite = null;
-                bgImg.color = SlotTint;
-                _slotBgs[i] = bgImg;
-
-                var btn = slotGO.AddComponent<Button>();
-                btn.transition = Selectable.Transition.None;
-                btn.navigation = new Navigation { mode = Navigation.Mode.Automatic };
-                int slotIndex = i;
-                btn.onClick.AddListener(() => OnSlotLeftClick(slotIndex));
-
-                var trigger = slotGO.AddComponent<EventTrigger>();
-                var rightEntry = new EventTrigger.Entry { eventID = EventTriggerType.PointerClick };
-                rightEntry.callback.AddListener((data) =>
-                {
-                    var pData = (PointerEventData)data;
-                    if (pData.button == PointerEventData.InputButton.Right)
-                        OnSlotRightClick(slotIndex);
-                });
-                trigger.triggers.Add(rightEntry);
-
-                var hoverEnter = new EventTrigger.Entry { eventID = EventTriggerType.PointerEnter };
-                hoverEnter.callback.AddListener((_) => _hoveredSlot = slotIndex);
-                trigger.triggers.Add(hoverEnter);
-                var hoverExit = new EventTrigger.Entry { eventID = EventTriggerType.PointerExit };
-                hoverExit.callback.AddListener((_) => { if (_hoveredSlot == slotIndex) _hoveredSlot = -1; });
-                trigger.triggers.Add(hoverExit);
-
-                var selectEntry = new EventTrigger.Entry { eventID = EventTriggerType.Select };
-                selectEntry.callback.AddListener((_) => _hoveredSlot = slotIndex);
-                trigger.triggers.Add(selectEntry);
-                var deselectEntry = new EventTrigger.Entry { eventID = EventTriggerType.Deselect };
-                deselectEntry.callback.AddListener((_) => { if (_hoveredSlot == slotIndex) _hoveredSlot = -1; });
-                trigger.triggers.Add(deselectEntry);
-
-                var borderGO = new GameObject("Border", typeof(RectTransform), typeof(Image));
-                borderGO.transform.SetParent(slotGO.transform, false);
-                var borderRT = borderGO.GetComponent<RectTransform>();
-                borderRT.anchorMin = Vector2.zero;
-                borderRT.anchorMax = Vector2.one;
-                borderRT.offsetMin = new Vector2(1f, 1f);
-                borderRT.offsetMax = new Vector2(-1f, -1f);
-                _slotBorders[i] = borderGO.GetComponent<Image>();
-                _slotBorders[i].color = EquipBlue;
-                _slotBorders[i].raycastTarget = false;
-                _slotBorders[i].enabled = false;
-
-                var iconGO = new GameObject("Icon", typeof(RectTransform), typeof(Image));
-                iconGO.transform.SetParent(slotGO.transform, false);
-                var iconRT = iconGO.GetComponent<RectTransform>();
-                iconRT.anchorMin = Vector2.zero;
-                iconRT.anchorMax = Vector2.one;
-                iconRT.offsetMin = new Vector2(3f, 3f);
-                iconRT.offsetMax = new Vector2(-3f, -3f);
-                _slotIcons[i] = iconGO.GetComponent<Image>();
-                _slotIcons[i].preserveAspect = true;
-                _slotIcons[i].raycastTarget = false;
-                _slotIcons[i].enabled = false;
-
-                var countGO = new GameObject("Count", typeof(RectTransform));
-                countGO.transform.SetParent(slotGO.transform, false);
-                var countTmp = countGO.AddComponent<TextMeshProUGUI>();
-                if (font != null) countTmp.font = font;
-                countTmp.fontSize = 9f;
-                countTmp.color = Color.white;
-                countTmp.alignment = TextAlignmentOptions.BottomRight;
-                countTmp.textWrappingMode = TextWrappingModes.NoWrap;
-                countTmp.overflowMode = TextOverflowModes.Overflow;
-                countTmp.raycastTarget = false;
-                var countRT = countGO.GetComponent<RectTransform>();
-                countRT.anchorMin = Vector2.zero;
-                countRT.anchorMax = Vector2.one;
-                countRT.offsetMin = new Vector2(2f, 1f);
-                countRT.offsetMax = new Vector2(-2f, -1f);
-                _slotCounts[i] = countTmp;
-                _slotCounts[i].enabled = false;
-
-                // Durability bar
-                var durBarGO = new GameObject("DurabilityBg", typeof(RectTransform), typeof(Image));
-                durBarGO.transform.SetParent(slotGO.transform, false);
-                var durBgRT = durBarGO.GetComponent<RectTransform>();
-                durBgRT.anchorMin = new Vector2(0f, 0f);
-                durBgRT.anchorMax = new Vector2(1f, 0f);
-                durBgRT.pivot = new Vector2(0.5f, 0f);
-                durBgRT.sizeDelta = new Vector2(0f, 3f);
-                durBgRT.anchoredPosition = new Vector2(0f, 1f);
-                durBarGO.GetComponent<Image>().color = new Color(0f, 0f, 0f, 0.5f);
-                durBarGO.GetComponent<Image>().raycastTarget = false;
-                durBarGO.SetActive(false);
-
-                var durFillGO = new GameObject("DurabilityFill", typeof(RectTransform), typeof(Image));
-                durFillGO.transform.SetParent(durBarGO.transform, false);
-                var durFillRT = durFillGO.GetComponent<RectTransform>();
-                durFillRT.anchorMin = Vector2.zero;
-                durFillRT.anchorMax = Vector2.one;
-                durFillRT.offsetMin = Vector2.zero;
-                durFillRT.offsetMax = Vector2.zero;
-                durFillGO.GetComponent<Image>().raycastTarget = false;
-
-                _slotDurabilityBars[i] = durBarGO;
-                _slotDurabilityFills[i] = durFillGO.GetComponent<Image>();
+                var sd = rootRT.sizeDelta;
+                sd.y += sectionH + 4f;
+                rootRT.sizeDelta = sd;
             }
 
-            y -= gridH;
-        }
+            _foodSlotsContainer = new GameObject("FoodSlots", typeof(RectTransform));
+            _foodSlotsContainer.transform.SetParent(_root.transform, false);
+            var containerRT = _foodSlotsContainer.GetComponent<RectTransform>();
+            containerRT.anchorMin = new Vector2(0f, 0f);
+            containerRT.anchorMax = new Vector2(1f, 0f);
+            containerRT.pivot     = new Vector2(0.5f, 0f);
+            containerRT.sizeDelta = new Vector2(0f, sectionH);
+            containerRT.anchoredPosition = new Vector2(0f, 4f);
 
-        private void BuildFoodSlots(RectTransform parent, TMP_FontAsset font, float slotSize)
-        {
-            float bottomY = 4f;
-            _foodSlotIcons = new Image[FoodSlotCount];
-            _foodSlotCounts = new TextMeshProUGUI[FoodSlotCount];
-            float foodSlotSz = slotSize;
-            float foodGap = 3f;
-            float foodRowW = FoodSlotCount * foodSlotSz + (FoodSlotCount - 1) * foodGap;
+            // "Food" label
+            var labelGO = new GameObject("FoodLabel", typeof(RectTransform));
+            labelGO.transform.SetParent(_foodSlotsContainer.transform, false);
+            var labelTmp = labelGO.AddComponent<TextMeshProUGUI>();
+            if (font != null) labelTmp.font = font;
+            labelTmp.text         = ModLocalization.Loc("hc_ui_label_food");
+            labelTmp.fontSize     = 11f;
+            labelTmp.color        = new Color(1f, 0.9f, 0.5f, 1f);
+            labelTmp.alignment    = TextAlignmentOptions.Center;
+            labelTmp.fontStyle    = FontStyles.Bold;
+            labelTmp.raycastTarget = false;
+            var labelRT = labelGO.GetComponent<RectTransform>();
+            labelRT.anchorMin = new Vector2(0.5f, 1f);
+            labelRT.anchorMax = new Vector2(0.5f, 1f);
+            labelRT.pivot     = new Vector2(0.5f, 1f);
+            labelRT.sizeDelta = new Vector2(foodRowW, 14f);
+            labelRT.anchoredPosition = Vector2.zero;
 
-            var foodLabel = MakeText(parent.transform, "FoodLabel", "Food",
-                font, 11f, LabelText, TextAlignmentOptions.Center);
-            var foodLabelRT = foodLabel.GetComponent<RectTransform>();
-            foodLabelRT.anchorMin = new Vector2(0f, 0f);
-            foodLabelRT.anchorMax = new Vector2(1f, 0f);
-            foodLabelRT.pivot = new Vector2(0.5f, 0f);
-            foodLabelRT.sizeDelta = new Vector2(0f, 14f);
-            foodLabelRT.anchoredPosition = new Vector2(0f, bottomY + foodSlotSz + 1f);
-            foodLabel.fontStyle = FontStyles.Bold;
-
-            var foodRow = new GameObject("FoodSlots", typeof(RectTransform));
-            foodRow.transform.SetParent(parent, false);
+            // Slot row
+            var foodRow = new GameObject("FoodRow", typeof(RectTransform));
+            foodRow.transform.SetParent(_foodSlotsContainer.transform, false);
             var foodRowRT = foodRow.GetComponent<RectTransform>();
             foodRowRT.anchorMin = new Vector2(0.5f, 0f);
             foodRowRT.anchorMax = new Vector2(0.5f, 0f);
-            foodRowRT.pivot = new Vector2(0.5f, 0f);
-            foodRowRT.sizeDelta = new Vector2(foodRowW, foodSlotSz);
-            foodRowRT.anchoredPosition = new Vector2(0f, bottomY);
+            foodRowRT.pivot     = new Vector2(0.5f, 0f);
+            foodRowRT.sizeDelta = new Vector2(foodRowW, slotSize);
+            foodRowRT.anchoredPosition = Vector2.zero;
 
             for (int i = 0; i < FoodSlotCount; i++)
             {
-                float x = i * (foodSlotSz + foodGap);
+                float x = i * (slotSize + foodGap);
                 var slotGO = new GameObject($"FoodSlot{i}", typeof(RectTransform), typeof(Image));
                 slotGO.transform.SetParent(foodRow.transform, false);
                 var slotRT = slotGO.GetComponent<RectTransform>();
                 slotRT.anchorMin = new Vector2(0f, 0f);
                 slotRT.anchorMax = new Vector2(0f, 0f);
-                slotRT.pivot = new Vector2(0f, 0f);
-                slotRT.sizeDelta = new Vector2(foodSlotSz, foodSlotSz);
+                slotRT.pivot     = new Vector2(0f, 0f);
+                slotRT.sizeDelta = new Vector2(slotSize, slotSize);
                 slotRT.anchoredPosition = new Vector2(x, 0f);
-                slotGO.GetComponent<Image>().color = SlotTint;
+                slotGO.GetComponent<Image>().color = new Color(0f, 0f, 0f, 0.5625f);
                 slotGO.GetComponent<Image>().raycastTarget = false;
 
                 var iconGO = new GameObject("Icon", typeof(RectTransform), typeof(Image));
@@ -601,19 +475,19 @@ namespace Companions
                 iconRT.offsetMax = new Vector2(-4f, -4f);
                 _foodSlotIcons[i] = iconGO.GetComponent<Image>();
                 _foodSlotIcons[i].preserveAspect = true;
-                _foodSlotIcons[i].raycastTarget = false;
-                _foodSlotIcons[i].enabled = false;
+                _foodSlotIcons[i].raycastTarget  = false;
+                _foodSlotIcons[i].enabled        = false;
 
                 var countGO = new GameObject("Count", typeof(RectTransform));
                 countGO.transform.SetParent(slotGO.transform, false);
                 var countTmp = countGO.AddComponent<TextMeshProUGUI>();
                 if (font != null) countTmp.font = font;
-                countTmp.fontSize = 9f;
-                countTmp.color = Color.white;
-                countTmp.alignment = TextAlignmentOptions.BottomRight;
+                countTmp.fontSize         = 9f;
+                countTmp.color            = Color.white;
+                countTmp.alignment        = TextAlignmentOptions.BottomRight;
                 countTmp.textWrappingMode = TextWrappingModes.NoWrap;
-                countTmp.overflowMode = TextOverflowModes.Overflow;
-                countTmp.raycastTarget = false;
+                countTmp.overflowMode     = TextOverflowModes.Overflow;
+                countTmp.raycastTarget    = false;
                 var countRT = countGO.GetComponent<RectTransform>();
                 countRT.anchorMin = Vector2.zero;
                 countRT.anchorMax = Vector2.one;
@@ -625,43 +499,125 @@ namespace Companions
         }
 
         // ══════════════════════════════════════════════════════════════════════
-        //  Inventory grid — click handlers
+        //  Weight & armor display
         // ══════════════════════════════════════════════════════════════════════
 
-        private void OnSlotLeftClick(int slotIndex)
+        private void BuildWeightAndArmor(InventoryGui gui)
         {
-            CompanionsPlugin.Log.LogDebug($"[UI] OnSlotLeftClick — slotIndex={slotIndex}");
-            if (!TryGetMainGridCoord(slotIndex, out int gx, out int gy)) return;
-            HandleSlotLeftClick(gx, gy, consumableOnly: false);
+            // ── Weight text ──
+            // m_containerWeight is inside m_container and was cloned — find it
+            _weightText = FindClonedComponent<TMP_Text>(gui.m_containerWeight, gui.m_container);
+
+            if (_weightText != null)
+            {
+                // Match player weight text size — the container weight is smaller by default
+                if (gui.m_weight != null)
+                {
+                    _weightText.fontSize = gui.m_weight.fontSize;
+                    _weightText.fontSizeMin = gui.m_weight.fontSizeMin;
+                    _weightText.fontSizeMax = gui.m_weight.fontSizeMax;
+                    _weightText.enableAutoSizing = gui.m_weight.enableAutoSizing;
+                }
+
+                CompanionsPlugin.Log.LogDebug(
+                    $"[UI] Found cloned weight text: \"{_weightText.name}\" fontSize={_weightText.fontSize}");
+            }
+            else
+            {
+                CompanionsPlugin.Log.LogWarning(
+                    "[UI] Could not find cloned m_containerWeight — weight display unavailable");
+            }
+
+            // ── Armor display ──
+            // m_armor is on m_infoPanel (NOT inside m_container), so it wasn't cloned.
+            // Create a new armor text+icon next to the weight display.
+            BuildArmorDisplay(gui);
         }
 
-        private void OnSlotRightClick(int slotIndex)
+        private void BuildArmorDisplay(InventoryGui gui)
         {
-            CompanionsPlugin.Log.LogDebug($"[UI] OnSlotRightClick — slotIndex={slotIndex}");
-            if (!TryGetMainGridCoord(slotIndex, out int gx, out int gy)) return;
-            HandleSlotRightClick(gx, gy);
+            if (gui.m_armor == null)
+            {
+                CompanionsPlugin.Log.LogWarning("[UI] gui.m_armor is null — cannot clone armor display");
+                return;
+            }
+
+            if (_weightText == null)
+            {
+                CompanionsPlugin.Log.LogWarning("[UI] Weight text not found — cannot position armor display");
+                return;
+            }
+
+            // Clone the vanilla armor group (parent contains shield icon + text)
+            Transform armorSourceParent = gui.m_armor.transform.parent;
+            if (armorSourceParent == null)
+            {
+                CompanionsPlugin.Log.LogWarning("[UI] m_armor has no parent — cannot clone armor display");
+                return;
+            }
+
+            // Parent to the same container as the weight text so coordinates align.
+            // Previously this was parented to _root which is a different coordinate
+            // space, causing the armor display to appear in the middle of the grid.
+            var armorClone = Instantiate(armorSourceParent.gameObject, _weightText.transform.parent);
+            armorClone.name = "HC_ArmorDisplay";
+            armorClone.SetActive(true);
+
+            _armorText = armorClone.GetComponentInChildren<TMP_Text>(true);
+
+            // Position directly above the weight text
+            var armorRT = armorClone.GetComponent<RectTransform>();
+            var weightRT = _weightText.GetComponent<RectTransform>();
+            armorRT.anchorMin = weightRT.anchorMin;
+            armorRT.anchorMax = weightRT.anchorMax;
+            armorRT.pivot = weightRT.pivot;
+            armorRT.anchoredPosition = weightRT.anchoredPosition + new Vector2(0f, 150f);
+
+            CompanionsPlugin.Log.LogDebug(
+                $"[UI] Cloned armor display — text={_armorText != null} " +
+                $"parent=\"{_weightText.transform.parent.name}\" pos={armorRT.anchoredPosition}");
         }
 
-        private static bool IsConsumableItem(ItemDrop.ItemData item)
+        private void UpdateWeightAndArmor()
         {
-            if (item == null || item.m_shared == null) return false;
-            if (item.m_shared.m_itemType != ItemDrop.ItemData.ItemType.Consumable) return false;
-            return item.m_shared.m_food > 0f ||
-                   item.m_shared.m_foodStamina > 0f ||
-                   item.m_shared.m_foodEitr > 0f;
+            if (_companion == null) return;
+
+            // ── Weight ──
+            if (_weightText != null && _companionHumanoid != null)
+            {
+                var inv = _companionHumanoid.GetInventory();
+                if (inv != null)
+                {
+                    int current = Mathf.CeilToInt(inv.GetTotalWeight());
+                    int max = Mathf.CeilToInt(CompanionTierData.MaxCarryWeight);
+
+                    if (current > max)
+                    {
+                        _weightText.text = (Mathf.Sin(Time.time * 10f) > 0f)
+                            ? $"<color=red>{current}</color>/{max}"
+                            : $"{current}/{max}";
+                    }
+                    else
+                    {
+                        _weightText.text = $"{current}/{max}";
+                    }
+                }
+            }
+
+            // ── Armor ──
+            if (_armorText != null)
+            {
+                float armor = _companion.GetTotalArmor();
+                _armorText.text = Mathf.FloorToInt(armor).ToString();
+            }
         }
 
-        private bool TryGetMainGridCoord(int slotIndex, out int gx, out int gy)
-        {
-            gx = 0;
-            gy = 0;
-            if (slotIndex < 0 || slotIndex >= MainGridSlots) return false;
-            gx = slotIndex % GridCols;
-            gy = slotIndex / GridCols;
-            return true;
-        }
+        // ══════════════════════════════════════════════════════════════════════
+        //  Grid callbacks
+        // ══════════════════════════════════════════════════════════════════════
 
-        private void HandleSlotLeftClick(int gx, int gy, bool consumableOnly)
+        private void OnCompanionSelected(InventoryGrid grid, ItemDrop.ItemData item,
+            Vector2i pos, InventoryGrid.Modifier mod)
         {
             if (InventoryGui.instance == null) return;
             var inv = GetStorageInventory();
@@ -669,268 +625,149 @@ namespace Companions
 
             var dragItem = _dragItemField?.GetValue(InventoryGui.instance) as ItemDrop.ItemData;
             var dragInv  = _dragInventoryField?.GetValue(InventoryGui.instance) as Inventory;
-            int dragAmt  = (_dragAmountField != null) ? (int)_dragAmountField.GetValue(InventoryGui.instance) : 1;
-            bool changed = false;
+            int dragAmt  = (_dragAmountField != null)
+                ? (int)_dragAmountField.GetValue(InventoryGui.instance) : 1;
 
+            // ── Currently dragging an item ──
             if (dragItem != null && dragInv != null)
             {
-                if (consumableOnly && !IsConsumableItem(dragItem))
-                {
-                    MessageHud.instance?.ShowMessage(
-                        MessageHud.MessageType.Center,
-                        "Food slots only accept food items.");
-                    return;
-                }
-
                 try
                 {
                     if (!dragInv.ContainsItem(dragItem))
-                    {
-                        ClearDrag();
-                        return;
-                    }
+                    { ClearDrag(); return; }
                 }
-                catch (NullReferenceException)
-                {
-                    ClearDrag();
-                    return;
-                }
+                catch (NullReferenceException) { ClearDrag(); return; }
 
-                var targetItem = inv.GetItemAt(gx, gy);
-                if (consumableOnly && targetItem != null && !IsConsumableItem(targetItem))
-                {
-                    MessageHud.instance?.ShowMessage(
-                        MessageHud.MessageType.Center,
-                        "Food slots only accept food items.");
-                    return;
-                }
+                // Unequip the target slot's item on the companion
+                var target = inv.GetItemAt(pos.x, pos.y);
+                if (target != null && _companionHumanoid != null
+                    && _companionHumanoid.IsItemEquiped(target))
+                    _companionHumanoid.UnequipItem(target, false);
 
-                if (targetItem != null && _companionHumanoid.IsItemEquiped(targetItem))
-                    _companionHumanoid.UnequipItem(targetItem, false);
-
+                // Unequip the drag item from the player if applicable
                 var player = Player.m_localPlayer;
-                if (player != null && dragInv == player.GetInventory() && player.IsItemEquiped(dragItem))
+                if (player != null && dragInv == player.GetInventory()
+                    && player.IsItemEquiped(dragItem))
                 {
                     player.RemoveEquipAction(dragItem);
                     player.UnequipItem(dragItem, false);
                 }
 
-                bool moved = DropItemToCompanion(inv, dragInv, dragItem, dragAmt, gx, gy);
-                if (moved)
+                // Use InventoryGrid.DropItem — handles swap & stack merge natively
+                if (_grid.DropItem(dragInv, dragItem, dragAmt, pos))
                 {
                     ClearDrag();
-                    changed = true;
-                }
-            }
-            else
-            {
-                var item = inv.GetItemAt(gx, gy);
-                if (item == null) return;
-
-                if (_setupDragItem != null && InventoryGui.instance != null)
-                {
-                    _setupDragItem.Invoke(InventoryGui.instance,
-                        new object[] { item, inv, item.m_stack });
+                    OnCompanionInventoryMutated();
                 }
                 return;
             }
 
-            if (changed)
-                OnCompanionInventoryMutated();
-            _invRefreshTimer = 0f;
-        }
-
-        private static bool ShouldSwapForDrop(ItemDrop.ItemData dragItem, ItemDrop.ItemData targetItem, int amount)
-        {
-            if (dragItem == null || targetItem == null) return false;
-            if (targetItem == dragItem) return false;
-            if (dragItem.m_stack != amount) return false;
-            return targetItem.m_shared.m_name != dragItem.m_shared.m_name ||
-                   (dragItem.m_shared.m_maxQuality > 1 && targetItem.m_quality != dragItem.m_quality) ||
-                   targetItem.m_shared.m_maxStackSize == 1;
-        }
-
-        private static bool DropItemToCompanion(Inventory targetInv, Inventory fromInv,
-            ItemDrop.ItemData dragItem, int amount, int x, int y)
-        {
-            if (targetInv == null || fromInv == null || dragItem == null) return false;
-            amount = Mathf.Clamp(amount, 1, dragItem.m_stack);
-
-            var targetItem = targetInv.GetItemAt(x, y);
-            if (ShouldSwapForDrop(dragItem, targetItem, amount))
-            {
-                Vector2i oldPos = dragItem.m_gridPos;
-                fromInv.RemoveItem(dragItem);
-                fromInv.MoveItemToThis(targetInv, targetItem, targetItem.m_stack, oldPos.x, oldPos.y);
-                targetInv.MoveItemToThis(fromInv, dragItem, amount, x, y);
-                return true;
-            }
-            return targetInv.MoveItemToThis(fromInv, dragItem, amount, x, y);
-        }
-
-        private void OnCompanionInventoryMutated()
-        {
-            _companion?.SyncEquipmentToInventory();
-            _invRefreshTimer = 0f;
-        }
-
-        private void HandleSlotRightClick(int gx, int gy)
-        {
-            var inv = GetStorageInventory();
-            if (inv == null) return;
-            var item = inv.GetItemAt(gx, gy);
+            // ── Not dragging — modifier-based actions ──
             if (item == null) return;
 
-            bool hadItem = inv.ContainsItem(item);
-            int stackBefore = hadItem ? item.m_stack : 0;
-            bool equippedBefore = _companionHumanoid.IsItemEquiped(item);
+            switch (mod)
+            {
+                case InventoryGrid.Modifier.Move:
+                {
+                    // Ctrl+Click: move item from companion → player
+                    var playerInv = Player.m_localPlayer?.GetInventory();
+                    if (playerInv != null)
+                    {
+                        if (_companionHumanoid != null
+                            && _companionHumanoid.IsItemEquiped(item))
+                            _companionHumanoid.UnequipItem(item, false);
+
+                        playerInv.MoveItemToThis(inv, item, item.m_stack,
+                            item.m_gridPos.x, item.m_gridPos.y);
+                        OnCompanionInventoryMutated();
+                    }
+                    break;
+                }
+
+                case InventoryGrid.Modifier.Drop:
+                    // Ctrl+Shift or gamepad: drop item on ground from companion
+                    Player.m_localPlayer?.DropItem(inv, item, item.m_stack);
+                    OnCompanionInventoryMutated();
+                    break;
+
+                case InventoryGrid.Modifier.Split:
+                    // Shift+Click: show split dialog to pick up partial stack
+                    if (item.m_stack > 1)
+                    {
+                        _showSplitDialog?.Invoke(InventoryGui.instance,
+                            new object[] { item, inv });
+                        return; // Don't pick up full stack
+                    }
+                    goto default; // Single item: pick up normally
+
+                default:
+                    // Select: pick up item from companion grid
+                    _setupDragItem?.Invoke(InventoryGui.instance,
+                        new object[] { item, inv, item.m_stack });
+                    break;
+            }
+        }
+
+        private void OnCompanionRightClick(InventoryGrid grid, ItemDrop.ItemData item, Vector2i pos)
+        {
+            if (item == null) return;
+            var inv = GetStorageInventory();
+            if (inv == null) return;
+
             bool changed = false;
 
+            // Food consumption first
             if (IsConsumableItem(item) && _companionFood != null)
                 changed = _companionFood.TryConsumeItem(item);
 
-            if (!changed)
+            // Fall back to use (equip/unequip toggle)
+            if (!changed && _companionHumanoid != null)
             {
+                bool hadItem = inv.ContainsItem(item);
+                int stackBefore = hadItem ? item.m_stack : 0;
+                bool equippedBefore = _companionHumanoid.IsItemEquiped(item);
+
                 _companionHumanoid.UseItem(inv, item, true);
-                bool hasItemAfter = inv.ContainsItem(item);
-                int stackAfter = hasItemAfter ? item.m_stack : 0;
-                bool equippedAfter = hasItemAfter && _companionHumanoid.IsItemEquiped(item);
-                changed = hadItem != hasItemAfter ||
+
+                bool hasAfter = inv.ContainsItem(item);
+                int stackAfter = hasAfter ? item.m_stack : 0;
+                bool equippedAfter = hasAfter && _companionHumanoid.IsItemEquiped(item);
+                changed = hadItem != hasAfter ||
                           stackBefore != stackAfter ||
                           equippedBefore != equippedAfter;
             }
 
             if (changed)
                 OnCompanionInventoryMutated();
-            else
-                _invRefreshTimer = 0f;
-        }
-
-        private void ClearDrag()
-        {
-            if (InventoryGui.instance == null) return;
-            _setupDragItem?.Invoke(InventoryGui.instance,
-                new object[] { null, null, 1 });
         }
 
         // ══════════════════════════════════════════════════════════════════════
-        //  Name change
+        //  Grid update — called every frame while visible
         // ══════════════════════════════════════════════════════════════════════
 
-        private void OnNameChanged(string newName)
+        private void UpdateGrid()
         {
-            EnsureCompanionOwnership();
-            if (_companionNview == null || _companionNview.GetZDO() == null) return;
-            _companionNview.GetZDO().Set(CompanionSetup.NameHash, newName);
-            if (_companionChar != null)
-                _companionChar.m_name = string.IsNullOrEmpty(newName) ? "Companion" : newName;
-        }
-
-        private void EnsureCompanionOwnership()
-        {
-            if (_companionNview == null || _companionNview.GetZDO() == null) return;
-            if (!_companionNview.IsOwner())
-                _companionNview.ClaimOwnership();
-        }
-
-        private Inventory GetStorageInventory()
-        {
-            if (_builtForDverger && _companionContainer != null)
-                return _companionContainer.GetInventory();
-            return _companionHumanoid?.GetInventory();
-        }
-
-        // ══════════════════════════════════════════════════════════════════════
-        //  Inventory grid refresh
-        // ══════════════════════════════════════════════════════════════════════
-
-        private void RefreshInventoryGrid()
-        {
-            if (_slotIcons == null) return;
-
-            _invRefreshTimer -= Time.deltaTime;
-            if (_invRefreshTimer > 0f) return;
-            _invRefreshTimer = 0.25f;
-
+            if (_grid == null) return;
             var inv = GetStorageInventory();
             if (inv == null) return;
 
-            for (int i = 0; i < MainGridSlots; i++)
-            {
-                _slotIcons[i].enabled   = false;
-                _slotCounts[i].enabled  = false;
-                _slotBorders[i].enabled = false;
-                _slotBgs[i].color       = SlotTint;
-                if (_slotDurabilityBars != null && _slotDurabilityBars[i] != null)
-                    _slotDurabilityBars[i].SetActive(false);
-            }
-            if (_foodSlotIcons != null && _foodSlotCounts != null)
-            {
-                for (int i = 0; i < FoodSlotCount; i++)
-                {
-                    _foodSlotIcons[i].enabled  = false;
-                    _foodSlotCounts[i].enabled = false;
-                }
-            }
+            var dragItem = _dragItemField?.GetValue(InventoryGui.instance) as ItemDrop.ItemData;
 
-            foreach (var item in inv.GetAllItems())
-            {
-                int gx = item.m_gridPos.x;
-                int gy = item.m_gridPos.y;
-                int flatIndex = gy * GridCols + gx;
-                if (flatIndex < 0 || flatIndex >= GridSlots) continue;
+            // First call after build: pass null player so grid element creation
+            // doesn't add hotbar binding numbers (row 0 only).
+            // Subsequent calls: pass Player.m_localPlayer so vanilla natively
+            // handles equipped indicators via item.m_equipped (set by Humanoid.EquipItem).
+            Player gridPlayer = _gridCreated ? Player.m_localPlayer : null;
+            _grid.UpdateInventory(inv, gridPlayer, dragItem);
+            _gridCreated = true;
 
-                _slotIcons[flatIndex].sprite  = item.GetIcon();
-                _slotIcons[flatIndex].enabled = true;
-
-                if (item?.m_shared != null && item.m_shared.m_maxStackSize > 1)
-                {
-                    _slotCounts[flatIndex].text    = FormatStackSize(item);
-                    _slotCounts[flatIndex].enabled = true;
-                }
-
-                if (_companionHumanoid.IsItemEquiped(item))
-                {
-                    _slotBorders[flatIndex].enabled = true;
-                    _slotBgs[flatIndex].color = EquippedSlotTint;
-                }
-
-                if (_slotDurabilityBars != null && _slotDurabilityFills != null
-                    && item.m_shared != null && item.m_shared.m_useDurability)
-                {
-                    bool damaged = item.m_durability < item.GetMaxDurability();
-                    _slotDurabilityBars[flatIndex].SetActive(damaged);
-                    if (damaged)
-                    {
-                        var fillRT = _slotDurabilityFills[flatIndex].GetComponent<RectTransform>();
-                        if (item.m_durability <= 0f)
-                        {
-                            fillRT.anchorMax = Vector2.one;
-                            bool blink = Mathf.Sin(Time.time * 10f) > 0f;
-                            _slotDurabilityFills[flatIndex].color = blink
-                                ? Color.red : new Color(0f, 0f, 0f, 0f);
-                        }
-                        else
-                        {
-                            float pct = item.GetDurabilityPercentage();
-                            fillRT.anchorMax = new Vector2(pct, 1f);
-                            Color durColor = pct > 0.5f
-                                ? Color.Lerp(Color.yellow, Color.green, (pct - 0.5f) * 2f)
-                                : Color.Lerp(Color.red, Color.yellow, pct * 2f);
-                            _slotDurabilityFills[flatIndex].color = durColor;
-                        }
-                    }
-                }
-            }
-
-            if (_hoveredSlot >= 0 && _hoveredSlot < MainGridSlots)
-            {
-                _slotBgs[_hoveredSlot].color = _slotBgs[_hoveredSlot].color == EquippedSlotTint
-                    ? EquippedHoverTint : SlotHoverTint;
-            }
-
+            UpdateWeightAndArmor();
             RefreshFoodSlots(inv);
         }
+
+        // ══════════════════════════════════════════════════════════════════════
+        //  Food slot refresh
+        // ══════════════════════════════════════════════════════════════════════
 
         private void RefreshFoodSlots(Inventory inv)
         {
@@ -939,31 +776,26 @@ namespace Companions
 
             for (int i = 0; i < FoodSlotCount; i++)
             {
-                var activeFood = _companionFood.GetFood(i);
-                if (!activeFood.IsActive) continue;
+                _foodSlotIcons[i].enabled  = false;
+                _foodSlotCounts[i].enabled = false;
 
-                Sprite icon = ResolveFoodIcon(activeFood, inv);
+                var food = _companionFood.GetFood(i);
+                if (!food.IsActive) continue;
+
+                Sprite icon = ResolveFoodIcon(food, inv);
                 if (icon != null)
                 {
-                    _foodSlotIcons[i].sprite = icon;
+                    _foodSlotIcons[i].sprite  = icon;
                     _foodSlotIcons[i].enabled = true;
                 }
 
-                _foodSlotCounts[i].text = FormatFoodDuration(activeFood.RemainingTime);
-                _foodSlotCounts[i].color = activeFood.RemainingTime >= 60f
+                _foodSlotCounts[i].text = FormatFoodDuration(food.RemainingTime);
+                _foodSlotCounts[i].color = food.RemainingTime >= 60f
                     ? Color.white
-                    : new Color(1f, 1f, 1f, Mathf.Clamp01(0.4f + Mathf.Sin(Time.time * 10f) * 0.6f));
+                    : new Color(1f, 1f, 1f,
+                        Mathf.Clamp01(0.4f + Mathf.Sin(Time.time * 10f) * 0.6f));
                 _foodSlotCounts[i].enabled = true;
             }
-        }
-
-        private static string FormatStackSize(ItemDrop.ItemData item)
-        {
-            if (item == null || item.m_shared == null) return "";
-            int current = Mathf.Max(0, item.m_stack);
-            int max = Mathf.Max(1, item.m_shared.m_maxStackSize);
-            return current.ToString(CultureInfo.InvariantCulture) + "/" +
-                   max.ToString(CultureInfo.InvariantCulture);
         }
 
         private static Sprite ResolveFoodIcon(CompanionFood.FoodEffect food, Inventory inv)
@@ -1006,19 +838,76 @@ namespace Companions
         }
 
         // ══════════════════════════════════════════════════════════════════════
+        //  Name / ownership / inventory
+        // ══════════════════════════════════════════════════════════════════════
+
+        private void OnNameChanged(string newName)
+        {
+            EnsureCompanionOwnership();
+            if (_companionNview == null || _companionNview.GetZDO() == null) return;
+            _companionNview.GetZDO().Set(CompanionSetup.NameHash, newName);
+            if (_companionChar != null)
+                _companionChar.m_name = string.IsNullOrEmpty(newName) ? "Companion" : newName;
+        }
+
+        private void EnsureCompanionOwnership()
+        {
+            if (_companionNview == null || _companionNview.GetZDO() == null) return;
+            if (!_companionNview.IsOwner())
+                _companionNview.ClaimOwnership();
+        }
+
+        private Inventory GetStorageInventory()
+        {
+            if (_builtForDverger && _companionContainer != null)
+                return _companionContainer.GetInventory();
+            return _companionHumanoid?.GetInventory();
+        }
+
+        private void OnCompanionInventoryMutated()
+        {
+            _companion?.SyncEquipmentToInventory();
+        }
+
+        // ══════════════════════════════════════════════════════════════════════
+        //  Item interaction helpers
+        // ══════════════════════════════════════════════════════════════════════
+
+        private static bool IsConsumableItem(ItemDrop.ItemData item)
+        {
+            if (item == null || item.m_shared == null) return false;
+            if (item.m_shared.m_itemType != ItemDrop.ItemData.ItemType.Consumable) return false;
+            return item.m_shared.m_food > 0f ||
+                   item.m_shared.m_foodStamina > 0f ||
+                   item.m_shared.m_foodEitr > 0f;
+        }
+
+        private void ClearDrag()
+        {
+            if (InventoryGui.instance == null) return;
+            _setupDragItem?.Invoke(InventoryGui.instance,
+                new object[] { null, null, 1 });
+        }
+
+        // ══════════════════════════════════════════════════════════════════════
         //  Teardown
         // ══════════════════════════════════════════════════════════════════════
 
         private void Teardown()
         {
-            if (_root != null) { UnityEngine.Object.Destroy(_root); _root = null; }
-            _built = false;
-            _panelBgSprite  = null;
-            _sliderBgSprite = null;
+            if (_root != null) { Destroy(_root); _root = null; }
+            _grid               = null;
+            _nameInput          = null;
+            _foodSlotIcons      = null;
+            _foodSlotCounts     = null;
+            _foodSlotsContainer = null;
+            _weightText         = null;
+            _armorText          = null;
+            _built              = false;
         }
 
         // ══════════════════════════════════════════════════════════════════════
-        //  Helpers
+        //  Font helpers
         // ══════════════════════════════════════════════════════════════════════
 
         private static bool IsBrokenTmpFont(TMP_FontAsset font)
@@ -1070,22 +959,9 @@ namespace Companions
             }
         }
 
-        private static TextMeshProUGUI MakeText(Transform parent, string name, string text,
-            TMP_FontAsset font, float size, Color color, TextAlignmentOptions align)
-        {
-            var go  = new GameObject(name, typeof(RectTransform), typeof(TextMeshProUGUI));
-            go.transform.SetParent(parent, false);
-            var tmp = go.GetComponent<TextMeshProUGUI>();
-            tmp.text             = text;
-            tmp.fontSize         = size;
-            tmp.color            = color;
-            tmp.alignment        = align;
-            tmp.textWrappingMode = TextWrappingModes.NoWrap;
-            tmp.overflowMode     = TextOverflowModes.Ellipsis;
-            tmp.raycastTarget    = false;
-            if (font != null) tmp.font = font;
-            return tmp;
-        }
+        // ══════════════════════════════════════════════════════════════════════
+        //  Helpers
+        // ══════════════════════════════════════════════════════════════════════
 
         private static void StretchFill(RectTransform rt)
         {
@@ -1093,18 +969,6 @@ namespace Companions
             rt.anchorMax = Vector2.one;
             rt.offsetMin = Vector2.zero;
             rt.offsetMax = Vector2.zero;
-        }
-
-        private static RectTransform MakePadded(Transform parent, float pad)
-        {
-            var go = new GameObject("Pad", typeof(RectTransform));
-            go.transform.SetParent(parent, false);
-            var rt = go.GetComponent<RectTransform>();
-            rt.anchorMin = Vector2.zero;
-            rt.anchorMax = Vector2.one;
-            rt.offsetMin = new Vector2(pad, pad);
-            rt.offsetMax = new Vector2(-pad, -pad);
-            return rt;
         }
 
         // ══════════════════════════════════════════════════════════════════════
@@ -1115,7 +979,7 @@ namespace Companions
         {
             if (Instance != null) return;
             var go = new GameObject("HC_CompanionInteractPanel");
-            UnityEngine.Object.DontDestroyOnLoad(go);
+            DontDestroyOnLoad(go);
             go.AddComponent<CompanionInteractPanel>();
         }
     }

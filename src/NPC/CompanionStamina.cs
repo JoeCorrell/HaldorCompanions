@@ -134,7 +134,14 @@ namespace Companions
                 _regenDelayTimer = Mathf.Max(0f, _regenDelayTimer - dt);
                 if (_regenDelayTimer <= 0f && Stamina < max)
                 {
-                    float rate = IsResting ? RegenRate * 2f : RegenRate;
+                    // Additive stacking (matches vanilla SE_Stats.ModifyStaminaRegen):
+                    // Base=1x, Resting=+1x, Rested buff=+1x
+                    float regenMult = 1f;
+                    if (IsResting) regenMult += 1f;
+                    var restedBuff = GetComponent<CompanionRestedBuff>();
+                    if (restedBuff != null && restedBuff.IsRested)
+                        regenMult += CompanionRestedBuff.StaminaRegenAdditiveBonus;
+                    float rate = RegenRate * regenMult;
                     Stamina = Mathf.Min(max, Stamina + rate * dt);
                 }
             }

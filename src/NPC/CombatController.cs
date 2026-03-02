@@ -235,6 +235,10 @@ namespace Companions
                 return;
             }
 
+            // ── Wait for equip queue to finish before engaging ──
+            if (_phase == CombatPhase.Idle && _setup != null && _setup.IsEquipping)
+                return;
+
             // ── Log new combat engagement ──
             if (_phase == CombatPhase.Idle)
             {
@@ -411,6 +415,18 @@ namespace Companions
                 return;
             }
 
+            // ── Ranged stance but no bow/arrows — don't fall through to melee ──
+            if (forceRanged && !hasBow)
+            {
+                if (_phase != CombatPhase.Idle)
+                {
+                    RestoreMeleeLoadout();
+                    ExitCombat("ranged stance but no bow/arrows");
+                }
+                _ai.ClearTargets();
+                return;
+            }
+
             // Distance-based weapon selection with hysteresis to prevent oscillation
             if (_phase == CombatPhase.Ranged)
             {
@@ -468,29 +484,45 @@ namespace Companions
             if (_bowEquipped) return; // bow management handles its own weapons
 
             var weapon = ReflectionHelper.GetRightItem(_humanoid);
-            if (weapon == null) return;
 
-            var type = weapon.m_shared.m_itemType;
-            bool isTool = type == ItemDrop.ItemData.ItemType.Tool;
+            bool needsEquip = false;
+            string reason = "";
 
-            // Pickaxes are TwoHandedWeapon with m_pickaxe damage — never use in combat
-            bool isPickaxe = weapon.GetDamage().m_pickaxe > 0f;
-
-            // Also catch weapons that only have chop/pickaxe damage
-            bool isToolDamageOnly = false;
-            if (!isTool && !isPickaxe)
+            if (weapon == null)
             {
-                var dmg = weapon.GetDamage();
-                float combatDmg = dmg.m_damage + dmg.m_blunt + dmg.m_slash + dmg.m_pierce +
-                                  dmg.m_fire + dmg.m_frost + dmg.m_lightning + dmg.m_poison + dmg.m_spirit;
-                isToolDamageOnly = combatDmg <= 0f && (dmg.m_chop > 0f);
+                // No weapon in hand at all — need to equip something
+                needsEquip = true;
+                reason = "empty hands";
+            }
+            else
+            {
+                var type = weapon.m_shared.m_itemType;
+                bool isTool = type == ItemDrop.ItemData.ItemType.Tool;
+
+                // Pickaxes are TwoHandedWeapon with m_pickaxe damage — never use in combat
+                bool isPickaxe = weapon.GetDamage().m_pickaxe > 0f;
+
+                // Also catch weapons that only have chop/pickaxe damage
+                bool isToolDamageOnly = false;
+                if (!isTool && !isPickaxe)
+                {
+                    var dmg = weapon.GetDamage();
+                    float combatDmg = dmg.m_damage + dmg.m_blunt + dmg.m_slash + dmg.m_pierce +
+                                      dmg.m_fire + dmg.m_frost + dmg.m_lightning + dmg.m_poison + dmg.m_spirit;
+                    isToolDamageOnly = combatDmg <= 0f && (dmg.m_chop > 0f);
+                }
+
+                if (isTool || isPickaxe || isToolDamageOnly)
+                {
+                    needsEquip = true;
+                    reason = $"tool \"{weapon.m_shared.m_name}\" (type={type} isTool={isTool} isPickaxe={isPickaxe} toolDmgOnly={isToolDamageOnly})";
+                }
             }
 
-            if (isTool || isPickaxe || isToolDamageOnly)
+            if (needsEquip)
             {
                 CompanionsPlugin.Log.LogDebug(
-                    $"[Combat] WEAPON CHECK — fighting with tool \"{weapon.m_shared.m_name}\" " +
-                    $"(type={type} isTool={isTool} isPickaxe={isPickaxe} toolDmgOnly={isToolDamageOnly}) — forcing re-equip");
+                    $"[Combat] WEAPON CHECK — {reason} — forcing re-equip");
 
                 // Clear suppress flag that HarvestController may have left on
                 if (_setup != null)
@@ -499,7 +531,14 @@ namespace Companions
                 // Force auto-equip to pick best combat weapon
                 _setup?.SyncEquipmentToInventory();
 
+                // If auto-equip didn't find anything, try vanilla EquipBestWeapon
                 var newWeapon = ReflectionHelper.GetRightItem(_humanoid);
+                if (newWeapon == null && _ai?.GetTargetCreature() != null)
+                {
+                    _humanoid.EquipBestWeapon(_ai.GetTargetCreature(), null, null, null);
+                    newWeapon = ReflectionHelper.GetRightItem(_humanoid);
+                }
+
                 CompanionsPlugin.Log.LogDebug(
                     $"[Combat] After re-equip: \"{newWeapon?.m_shared?.m_name ?? "NONE"}\" " +
                     $"type={newWeapon?.m_shared?.m_itemType}");

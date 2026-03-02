@@ -42,6 +42,19 @@ namespace Companions
                 return;
             }
 
+            // Cache SkillDefs from Player prefab before we destroy the Skills component
+            CompanionSkills.InitSkillDefs(playerPrefab);
+
+            // Cache drown effects from Player before destroying the component
+            var playerComp = playerPrefab.GetComponent<Player>();
+            if (playerComp != null && CompanionAI.DrownEffects == null)
+            {
+                CompanionAI.DrownEffects = playerComp.m_drownEffects;
+                int cnt = CompanionAI.DrownEffects?.m_effectPrefabs?.Length ?? 0;
+                CompanionsPlugin.Log.LogInfo(
+                    $"[CompanionPrefabs] Cached m_drownEffects from Player ({cnt} effects)");
+            }
+
             var go = Object.Instantiate(playerPrefab, _container.transform, false);
             go.name = def.PrefabName;
 
@@ -58,9 +71,12 @@ namespace Companions
             {
                 humanoid.m_unarmedWeapon = playerHumanoid.m_unarmedWeapon;
                 humanoid.m_consumeItemEffects = playerHumanoid.m_consumeItemEffects;
+                humanoid.m_equipEffects = playerHumanoid.m_equipEffects;
                 int effectCount = humanoid.m_consumeItemEffects?.m_effectPrefabs?.Length ?? 0;
+                int equipEffectCount = humanoid.m_equipEffects?.m_effectPrefabs?.Length ?? 0;
                 CompanionsPlugin.Log.LogInfo(
-                    $"[CompanionPrefabs]   Copied m_unarmedWeapon + m_consumeItemEffects ({effectCount} effects)");
+                    $"[CompanionPrefabs]   Copied m_unarmedWeapon + m_consumeItemEffects ({effectCount} effects)" +
+                    $" + m_equipEffects ({equipEffectCount} effects)");
             }
             SetupHumanoid(humanoid, zNetScene, def);
 
@@ -242,8 +258,8 @@ namespace Companions
             // Container — for vanilla chest-style inventory interaction
             var container           = go.AddComponent<Container>();
             container.m_name        = def.DisplayName;
-            container.m_width       = 5;
-            container.m_height      = 6;
+            container.m_width       = 8;
+            container.m_height      = 4;
             container.m_privacy     = Container.PrivacySetting.Public;
             container.m_checkGuardStone = false;
             container.m_openEffects  = new EffectList();
@@ -258,6 +274,9 @@ namespace Companions
             // Custom stamina system (base 25 + food bonuses)
             go.AddComponent<CompanionStamina>();
 
+            // Skill system (mirrors vanilla Skills formula, ZDO persistence)
+            go.AddComponent<CompanionSkills>();
+
             // Resource harvesting AI (active in Gather modes 1-3)
             go.AddComponent<HarvestController>();
             CompanionsPlugin.Log.LogInfo($"[CompanionPrefabs]   + HarvestController ({def.PrefabName})");
@@ -271,6 +290,7 @@ namespace Companions
 
             // Campfire sitting + rested regen
             go.AddComponent<CompanionRest>();
+            go.AddComponent<CompanionRestedBuff>();
 
             // Door handling (open, pass through, close behind)
             go.AddComponent<DoorHandler>();
@@ -280,6 +300,9 @@ namespace Companions
 
             // Smelting/refilling kilns and furnaces
             go.AddComponent<SmeltController>();
+
+            // Autonomous base maintenance (refuel fires, repair buildings, sort chests)
+            go.AddComponent<HomesteadController>();
         }
 
         private static void RegisterPrefab(GameObject go, ZNetScene zNetScene)

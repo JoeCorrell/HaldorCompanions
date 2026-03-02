@@ -451,14 +451,14 @@ namespace Companions
                 {
                     var seg = _innerSegments[_hoveredInner];
                     _centerAction.text = seg.Label;
-                    _centerState.text = seg.IsActive ? "ACTIVE" : "";
+                    _centerState.text = seg.IsActive ? ModLocalization.Loc("hc_radial_active") : "";
                 }
                 else if (_hoveredIndex >= 0 && _hoveredIndex < _segments.Count)
                 {
                     var seg = _segments[_hoveredIndex];
                     _centerAction.text = seg.Label;
                     if (seg.IsToggle || seg.IsMode)
-                        _centerState.text = seg.IsActive ? "ON" : "OFF";
+                        _centerState.text = seg.IsActive ? ModLocalization.Loc("hc_radial_on") : ModLocalization.Loc("hc_radial_off");
                     else
                         _centerState.text = "";
                 }
@@ -869,7 +869,7 @@ namespace Companions
             bool commandable = _companion.GetIsCommandable();
 
             _segments.Add(new Segment {
-                Label = "Follow", ActionId = ActionFollow,
+                Label = ModLocalization.Loc("hc_radial_follow"), ActionId = ActionFollow,
                 IsToggle = true, IsActive = follow,
                 IconColor = new Color(0.40f, 0.75f, 0.40f)
             });
@@ -877,55 +877,55 @@ namespace Companions
             if (!_isDverger)
             {
                 _segments.Add(new Segment {
-                    Label = "Wood", ActionId = ActionGatherWood,
+                    Label = ModLocalization.Loc("hc_radial_wood"), ActionId = ActionGatherWood,
                     IsMode = true, IsActive = currentMode == CompanionSetup.ModeGatherWood,
                     IconColor = new Color(0.65f, 0.45f, 0.25f)
                 });
                 _segments.Add(new Segment {
-                    Label = "Stone", ActionId = ActionGatherStone,
+                    Label = ModLocalization.Loc("hc_radial_stone"), ActionId = ActionGatherStone,
                     IsMode = true, IsActive = currentMode == CompanionSetup.ModeGatherStone,
                     IconColor = new Color(0.60f, 0.60f, 0.60f)
                 });
                 _segments.Add(new Segment {
-                    Label = "Ore", ActionId = ActionGatherOre,
+                    Label = ModLocalization.Loc("hc_radial_ore"), ActionId = ActionGatherOre,
                     IsMode = true, IsActive = currentMode == CompanionSetup.ModeGatherOre,
                     IconColor = new Color(0.75f, 0.55f, 0.15f)
                 });
                 _segments.Add(new Segment {
-                    Label = "Forage", ActionId = ActionForage,
+                    Label = ModLocalization.Loc("hc_radial_forage"), ActionId = ActionForage,
                     IsMode = true, IsActive = currentMode == CompanionSetup.ModeForage,
                     IconColor = new Color(0.45f, 0.75f, 0.30f)
                 });
                 _segments.Add(new Segment {
-                    Label = "Smelt", ActionId = ActionSmelt,
+                    Label = ModLocalization.Loc("hc_radial_smelt"), ActionId = ActionSmelt,
                     IsMode = true, IsActive = currentMode == CompanionSetup.ModeSmelt,
                     IconColor = new Color(0.85f, 0.45f, 0.15f)
                 });
             }
 
             _segments.Add(new Segment {
-                Label = "Stay Home", ActionId = ActionStayHome,
+                Label = ModLocalization.Loc("hc_radial_stayhome"), ActionId = ActionStayHome,
                 IsToggle = true, IsActive = stayHome,
                 IconColor = new Color(0.35f, 0.60f, 0.90f)
             });
             _segments.Add(new Segment {
-                Label = "Set Home", ActionId = ActionSetHome,
+                Label = ModLocalization.Loc("hc_radial_sethome"), ActionId = ActionSetHome,
                 IsToggle = false, IsMode = false, IsActive = false,
                 IconColor = new Color(0.25f, 0.70f, 0.70f)
             });
             _segments.Add(new Segment {
-                Label = "Wander", ActionId = ActionWander,
+                Label = ModLocalization.Loc("hc_radial_wander"), ActionId = ActionWander,
                 IsToggle = true, IsActive = wander,
                 IconColor = new Color(0.50f, 0.80f, 0.35f)
             });
             _segments.Add(new Segment {
-                Label = "Pickup", ActionId = ActionAutoPickup,
+                Label = ModLocalization.Loc("hc_radial_pickup"), ActionId = ActionAutoPickup,
                 IsToggle = true, IsActive = autoPickup,
                 IconColor = new Color(0.90f, 0.70f, 0.15f)
             });
 
             _segments.Add(new Segment {
-                Label = "Command", ActionId = ActionCommand,
+                Label = ModLocalization.Loc("hc_radial_command"), ActionId = ActionCommand,
                 IsToggle = true, IsActive = commandable,
                 IconColor = new Color(0.80f, 0.35f, 0.35f)
             });
@@ -936,32 +936,32 @@ namespace Companions
             {
                 int stance = _companion.GetCombatStance();
                 _innerSegments.Add(new Segment {
-                    Label = "Balanced", ActionId = ActionStanceBalanced,
+                    Label = ModLocalization.Loc("hc_radial_balanced"), ActionId = ActionStanceBalanced,
                     IsMode = true, IsActive = stance == CompanionSetup.StanceBalanced,
                     IconColor = new Color(0.65f, 0.65f, 0.65f)
                 });
                 _innerSegments.Add(new Segment {
-                    Label = "Aggressive", ActionId = ActionStanceAggressive,
+                    Label = ModLocalization.Loc("hc_radial_aggressive"), ActionId = ActionStanceAggressive,
                     IsMode = true, IsActive = stance == CompanionSetup.StanceAggressive,
                     IconColor = new Color(0.85f, 0.30f, 0.25f)
                 });
                 _innerSegments.Add(new Segment {
-                    Label = "Defensive", ActionId = ActionStanceDefensive,
+                    Label = ModLocalization.Loc("hc_radial_defensive"), ActionId = ActionStanceDefensive,
                     IsMode = true, IsActive = stance == CompanionSetup.StanceDefensive,
                     IconColor = new Color(0.30f, 0.55f, 0.85f)
                 });
                 _innerSegments.Add(new Segment {
-                    Label = "Passive", ActionId = ActionStancePassive,
+                    Label = ModLocalization.Loc("hc_radial_passive"), ActionId = ActionStancePassive,
                     IsMode = true, IsActive = stance == CompanionSetup.StancePassive,
                     IconColor = new Color(0.55f, 0.75f, 0.40f)
                 });
                 _innerSegments.Add(new Segment {
-                    Label = "Melee", ActionId = ActionStanceMelee,
+                    Label = ModLocalization.Loc("hc_radial_melee"), ActionId = ActionStanceMelee,
                     IsMode = true, IsActive = stance == CompanionSetup.StanceMelee,
                     IconColor = new Color(0.80f, 0.55f, 0.20f)
                 });
                 _innerSegments.Add(new Segment {
-                    Label = "Ranged", ActionId = ActionStanceRanged,
+                    Label = ModLocalization.Loc("hc_radial_ranged"), ActionId = ActionStanceRanged,
                     IsMode = true, IsActive = stance == CompanionSetup.StanceRanged,
                     IconColor = new Color(0.50f, 0.70f, 0.80f)
                 });
@@ -1157,7 +1157,7 @@ namespace Companions
                 iconRT.anchorMin = new Vector2(0.5f, 0.5f);
                 iconRT.anchorMax = new Vector2(0.5f, 0.5f);
                 iconRT.pivot = new Vector2(0.5f, 0.5f);
-                iconRT.sizeDelta = new Vector2(IconSize * 0.78f, IconSize * 0.78f);
+                iconRT.sizeDelta = new Vector2(IconSize * 0.975f, IconSize * 0.975f);
                 iconRT.anchoredPosition = Vector2.zero;
                 var iconImg = iconGO.GetComponent<Image>();
                 iconImg.sprite = GetActionIcon(seg.ActionId);
@@ -1330,7 +1330,7 @@ namespace Companions
                     var ch = _companion.GetComponent<Character>();
                     if (ch != null) name = ch.m_name;
                 }
-                _centerName.text = string.IsNullOrEmpty(name) ? "Companion" : name;
+                _centerName.text = string.IsNullOrEmpty(name) ? ModLocalization.Loc("hc_msg_name_default") : name;
             }
         }
 

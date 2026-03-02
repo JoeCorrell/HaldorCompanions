@@ -48,7 +48,7 @@ namespace Companions
             {
                 MessageHud.instance?.ShowMessage(
                     MessageHud.MessageType.Center,
-                    $"Not enough coins in bank! Need {price:N0}");
+                    ModLocalization.LocFmt("hc_msg_need_coins", price.ToString("N0")));
                 return false;
             }
 
@@ -66,7 +66,7 @@ namespace Companions
 
             MessageHud.instance?.ShowMessage(
                 MessageHud.MessageType.Center,
-                $"Your new {def.DisplayName.ToLower()} has arrived!");
+                ModLocalization.LocFmt("hc_msg_arrived", def.DisplayName.ToLower()));
 
             return true;
         }
@@ -91,7 +91,10 @@ namespace Companions
             public string OwnerId;
             public int CombatStance;
             public long TombstoneId;
+            public string SkillsSerialized;
             public float Timer;
+            public bool HasHomePos;
+            public Vector3 HomePos;
         }
 
         private static readonly List<RespawnData> _respawnQueue = new List<RespawnData>();
@@ -135,9 +138,18 @@ namespace Companions
                 return;
             }
 
-            // Get world spawn point (sacrificial stones / StartTemple)
-            Vector3 spawnPos = GetWorldSpawnPoint();
-            CompanionsPlugin.Log.LogDebug($"[CompanionManager] World spawn point: {spawnPos:F1}");
+            // Respawn at home position if set, otherwise world spawn
+            Vector3 spawnPos;
+            if (data.HasHomePos)
+            {
+                spawnPos = data.HomePos;
+                CompanionsPlugin.Log.LogInfo($"[CompanionManager] Respawning at home position: {spawnPos:F1}");
+            }
+            else
+            {
+                spawnPos = GetWorldSpawnPoint();
+                CompanionsPlugin.Log.LogInfo($"[CompanionManager] Respawning at world spawn: {spawnPos:F1}");
+            }
 
             var prefab = ZNetScene.instance?.GetPrefab(data.PrefabName);
             if (prefab == null)
@@ -147,7 +159,9 @@ namespace Companions
                 return;
             }
 
-            var pos = FindSpawnPosition(spawnPos, 4f);
+            // Bed respawn: spawn directly at bed position (FindSpawnPosition raycasts
+            // from above and can land on roofs). World spawn: offset to avoid overlap.
+            var pos = data.HasHomePos ? spawnPos : FindSpawnPosition(spawnPos, 4f);
             var rot = Quaternion.Euler(0f, Random.Range(0f, 360f), 0f);
             var go = Object.Instantiate(prefab, pos, rot);
             var nview = go.GetComponent<ZNetView>();
@@ -166,9 +180,23 @@ namespace Companions
             zdo.Set(CompanionSetup.NameHash, data.Name);
             zdo.Set(CompanionSetup.CombatStanceHash, data.CombatStance);
             zdo.Set(CompanionSetup.TombstoneIdHash, data.TombstoneId);
-            zdo.Set(CompanionSetup.FollowHash, true);
-            zdo.Set(CompanionSetup.ActionModeHash, CompanionSetup.ModeFollow);
-            zdo.Set(CompanionSetup.StayHomeHash, false);
+            if (data.HasHomePos)
+            {
+                // Respawning at home — restore StayHome state
+                zdo.Set(CompanionSetup.FollowHash, false);
+                zdo.Set(CompanionSetup.ActionModeHash, CompanionSetup.ModeFollow);
+                zdo.Set(CompanionSetup.StayHomeHash, true);
+                zdo.Set(CompanionSetup.HomePosHash, data.HomePos);
+                zdo.Set(CompanionSetup.HomePosSetHash, true);
+            }
+            else
+            {
+                zdo.Set(CompanionSetup.FollowHash, true);
+                zdo.Set(CompanionSetup.ActionModeHash, CompanionSetup.ModeFollow);
+                zdo.Set(CompanionSetup.StayHomeHash, false);
+            }
+            if (!string.IsNullOrEmpty(data.SkillsSerialized))
+                zdo.Set(CompanionSkills.SkillsHash, data.SkillsSerialized);
             zdo.Persistent = true;
 
             // Apply appearance
@@ -181,23 +209,34 @@ namespace Companions
             if (character != null && !string.IsNullOrEmpty(data.Name))
                 character.m_name = data.Name;
 
-            // Set follow target to player
+            // Set follow target — only follow player if not staying home
             var ai = go.GetComponent<CompanionAI>();
-            if (Player.m_localPlayer != null)
+            if (data.HasHomePos)
+            {
+                if (ai != null)
+                    ai.SetPatrolPointAt(data.HomePos);
+            }
+            else if (Player.m_localPlayer != null)
+            {
                 ai?.SetFollowTarget(Player.m_localPlayer.gameObject);
+            }
 
             // Grace period — prevent immediate tombstone recovery and movement
             // so the companion doesn't loot its own grave before the player can see it
             if (ai != null)
                 ai.FreezeTimer = 5f;
 
+            string spawnType = data.HasHomePos ? "home" : "world spawn";
             CompanionsPlugin.Log.LogInfo(
-                $"[CompanionManager] Respawned \"{data.Name}\" at world spawn {pos:F1} — " +
+                $"[CompanionManager] Respawned \"{data.Name}\" at {spawnType} {pos:F1} — " +
                 $"tombstoneId={data.TombstoneId}");
 
+            string locationMsg = data.HasHomePos
+                ? ModLocalization.Loc("hc_msg_location_home")
+                : ModLocalization.Loc("hc_msg_location_spawn");
             MessageHud.instance?.ShowMessage(
                 MessageHud.MessageType.Center,
-                $"{data.Name} has returned at the world spawn!");
+                ModLocalization.LocFmt("hc_msg_returned", data.Name, locationMsg));
         }
 
         private static Vector3 GetWorldSpawnPoint()
@@ -213,28 +252,67 @@ namespace Companions
         // ── Starter companion ────────────────────────────────────────────────
 
         /// <summary>
-        /// Called on first spawn in a world. Spawns a free companion if this
-        /// character hasn't received one in this world yet.
+        /// Called on first spawn in a world. Shows the customisation panel so the
+        /// player can choose their starter companion's appearance before spawning.
         /// </summary>
         public static void SpawnStarterCompanion()
         {
-            if (!CompanionsPlugin.SpawnStarterCompanion.Value) return;
+            if (!CompanionsPlugin.SpawnStarterCompanion.Value)
+            {
+                CompanionsPlugin.Log.LogDebug("[CompanionManager] Starter companion disabled in config");
+                return;
+            }
 
             var player = Player.m_localPlayer;
             if (player == null || ZNet.instance == null) return;
 
             string worldKey = $"HC_StarterCompanion_{ZNet.instance.GetWorldUID()}";
-            if (player.m_customData.ContainsKey(worldKey)) return;
+            if (player.m_customData.ContainsKey(worldKey))
+            {
+                CompanionsPlugin.Log.LogDebug("[CompanionManager] Starter companion already spawned for this world");
+                return;
+            }
 
-            var appearance = CompanionAppearance.Default();
-            appearance.ModelIndex = Random.Range(0, 2);
+            // Fallback: if any companion owned by this player already exists in the scene,
+            // skip the panel (handles cases where m_customData didn't persist)
+            string localId = player.GetPlayerID().ToString();
+            foreach (var setup in Object.FindObjectsByType<CompanionSetup>(FindObjectsSortMode.None))
+            {
+                var zdo = setup.GetComponent<ZNetView>()?.GetZDO();
+                if (zdo != null && zdo.GetString(CompanionSetup.OwnerHash, "") == localId)
+                {
+                    CompanionsPlugin.Log.LogInfo(
+                        "[CompanionManager] Found existing companion in scene — marking world key and skipping panel");
+                    player.m_customData[worldKey] = "1";
+                    return;
+                }
+            }
+
+            // Mark this world so the panel never re-appears (even if skipped)
+            player.m_customData[worldKey] = "1";
+
+            // Force immediate save so the key persists even if the player quits soon
+            if (Game.instance != null)
+                Game.instance.SavePlayerProfile(setLogoutPoint: false);
+
+            CompanionsPlugin.Log.LogInfo("[CompanionManager] First spawn in world — showing starter companion panel");
+            StarterCompanionPanel.ShowPanel();
+        }
+
+        /// <summary>
+        /// Called by StarterCompanionPanel when the player confirms appearance.
+        /// Spawns the companion. World key is already set in SpawnStarterCompanion().
+        /// </summary>
+        public static void SpawnStarterWithAppearance(CompanionAppearance appearance)
+        {
+            var player = Player.m_localPlayer;
+            if (player == null) return;
 
             if (SpawnCompanion(appearance, CompanionTierData.Companion))
             {
-                player.m_customData[worldKey] = "1";
-                CompanionsPlugin.Log.LogInfo("[CompanionManager] Starter companion spawned!");
+                CompanionsPlugin.Log.LogInfo("[CompanionManager] Starter companion spawned with custom appearance!");
                 MessageHud.instance?.ShowMessage(MessageHud.MessageType.Center,
-                    "A companion has joined you on your journey!");
+                    ModLocalization.Loc("hc_msg_starter_joined"));
             }
         }
 

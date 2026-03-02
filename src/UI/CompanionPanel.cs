@@ -60,6 +60,11 @@ namespace Companions
         private CompanionTierDef _selectedDvergerVariant;
         private readonly List<Button> _variantButtons = new List<Button>();
 
+        // ── Starter mode (standalone panel, no TraderUI) ────────────────────
+        internal bool StarterMode;
+        internal Action<CompanionAppearance> OnSpawnConfirmed;
+        private GameObject _bankDisplayGO;
+
         // ── Reflection ────────────────────────────────────────────────────────
         private static readonly System.Reflection.MethodInfo _updateVisuals =
             AccessTools.Method(typeof(VisEquipment), "UpdateVisuals");
@@ -202,7 +207,7 @@ namespace Companions
             nameTmp.fontSize      = 24f;
             nameTmp.color         = Color.white;
             nameTmp.alignment     = TextAlignmentOptions.Center;
-            nameTmp.text          = "Companions";
+            nameTmp.text          = StarterMode ? ModLocalization.Loc("hc_ui_title_choose") : ModLocalization.Loc("hc_ui_title_companions");
             nameTmp.raycastTarget = false;
             var nameRT = nameGO.GetComponent<RectTransform>();
             nameRT.anchorMin        = new Vector2(0f, 1f);
@@ -211,29 +216,32 @@ namespace Companions
             nameRT.sizeDelta        = new Vector2(-20f, 32f);
             nameRT.anchoredPosition = new Vector2(0f, -4f);
 
-            // Bank balance display — above buy button
+            // Bank balance display — above buy button (hidden in starter mode)
             float descBottom = btnH + 44f;
-            var coinGO = new GameObject("BankDisplay", typeof(RectTransform));
-            coinGO.transform.SetParent(col, false);
-            _coinText = coinGO.AddComponent<TextMeshProUGUI>();
+            _bankDisplayGO = new GameObject("BankDisplay", typeof(RectTransform));
+            _bankDisplayGO.transform.SetParent(col, false);
+            _coinText = _bankDisplayGO.AddComponent<TextMeshProUGUI>();
             if (font != null) _coinText.font = font;
             _coinText.fontSize      = 24f;
             _coinText.color         = GoldTextColor;
             _coinText.alignment     = TextAlignmentOptions.Center;
-            _coinText.text          = "Bank: 0";
+            _coinText.text          = ModLocalization.LocFmt("hc_ui_bank", 0.ToString("N0"));
             _coinText.raycastTarget = false;
-            var coinRT = coinGO.GetComponent<RectTransform>();
+            var coinRT = _bankDisplayGO.GetComponent<RectTransform>();
             coinRT.anchorMin        = new Vector2(0f, 0f);
             coinRT.anchorMax        = new Vector2(1f, 0f);
             coinRT.pivot            = new Vector2(0.5f, 0f);
             coinRT.sizeDelta        = new Vector2(-24f, 24f);
             coinRT.anchoredPosition = new Vector2(0f, btnH + 14f);
+            if (StarterMode) _bankDisplayGO.SetActive(false);
 
             // Buy button — from buttonTemplate with tint overlay (action button style)
             if (buttonTemplate != null)
             {
-                var btnGO = CreateActionButton(buttonTemplate, col, "BuyButton",
-                    $"Buy Companion ({CompanionTierData.Price:N0})");
+                string btnLabel = StarterMode
+                    ? ModLocalization.Loc("hc_ui_btn_spawn")
+                    : ModLocalization.LocFmt("hc_ui_btn_buy", "Companion", CompanionTierData.Price.ToString("N0"));
+                var btnGO = CreateActionButton(buttonTemplate, col, "BuyButton", btnLabel);
 
                 _buyButton = btnGO.GetComponent<Button>();
                 if (_buyButton != null)
@@ -274,17 +282,9 @@ namespace Companions
             descTmp.overflowMode     = TextOverflowModes.Overflow;
             descTmp.richText         = true;
             descTmp.raycastTarget    = false;
-            descTmp.text             = "Hire a loyal companion to join your journey. "
-                                     + "They will follow you across the world and fight "
-                                     + "by your side against any threat.\n\n"
-                                     + "Each companion has their own health, stamina "
-                                     + "and inventory. You will need to equip them with "
-                                     + "gear and keep them fed to stay battle-ready.\n\n"
-                                     + "Interact with your companion to open their panel, "
-                                     + "where you can manage their equipment and issue "
-                                     + "commands.\n\n"
-                                     + "Customise their appearance on the left, then "
-                                     + "confirm your purchase.";
+            descTmp.text = StarterMode
+                ? ModLocalization.Loc("hc_ui_desc_starter")
+                : ModLocalization.Loc("hc_ui_desc_trader");
             var dtRT = descTextGO.GetComponent<RectTransform>();
             dtRT.anchorMin        = new Vector2(0f, 1f);
             dtRT.anchorMax        = new Vector2(1f, 1f);
@@ -404,11 +404,11 @@ namespace Companions
             // ── Type (Dverger hidden for now — only Companion available) ────
             {
                 float savedY = y;
-                y = PlacePlainLabel(p, font, "Type", y, labelH);
+                y = PlacePlainLabel(p, font, ModLocalization.Loc("hc_ui_label_type"), y, labelH, "Type");
                 y -= gap;
                 var tRow = MakeAnchoredRow(p, y, genderH);
-                _companionTypeBtn = AddToggleButton(tRow, "Companion", buttonTemplate, new Vector2(0.01f, 0f), new Vector2(0.49f, 1f), () => SetType(CompanionTierData.Companion));
-                _dvergerTypeBtn   = AddToggleButton(tRow, "Dverger",   buttonTemplate, new Vector2(0.51f, 0f), new Vector2(0.99f, 1f), () => SetType(CompanionTierData.Dverger));
+                _companionTypeBtn = AddToggleButton(tRow, "Companion", buttonTemplate, new Vector2(0.01f, 0f), new Vector2(0.49f, 1f), () => SetType(CompanionTierData.Companion), ModLocalization.Loc("hc_ui_btn_companion"));
+                _dvergerTypeBtn   = AddToggleButton(tRow, "Dverger",   buttonTemplate, new Vector2(0.51f, 0f), new Vector2(0.99f, 1f), () => SetType(CompanionTierData.Dverger), ModLocalization.Loc("hc_ui_btn_dverger"));
                 // Hide type section — always Companion
                 tRow.gameObject.SetActive(false);
                 var typeLabel = p.Find("TypeLabel");
@@ -428,16 +428,16 @@ namespace Companions
             float ay = 0f; // local Y within appearance group
 
             // ── Gender ──────────────────────────────────────────────────────
-            ay = PlacePlainLabel(_appearanceGroup.transform, font, "Gender", ay, labelH);
+            ay = PlacePlainLabel(_appearanceGroup.transform, font, ModLocalization.Loc("hc_ui_label_gender"), ay, labelH, "Gender");
             ay -= gap;
 
             var gRow = MakeAnchoredRow(_appearanceGroup.transform, ay, genderH);
             ay -= genderH + secGap;
-            _maleBtn   = AddToggleButton(gRow, "Male",   buttonTemplate, new Vector2(0.01f, 0f), new Vector2(0.49f, 1f), () => SetGender(0));
-            _femaleBtn = AddToggleButton(gRow, "Female", buttonTemplate, new Vector2(0.51f, 0f), new Vector2(0.99f, 1f), () => SetGender(1));
+            _maleBtn   = AddToggleButton(gRow, "Male",   buttonTemplate, new Vector2(0.01f, 0f), new Vector2(0.49f, 1f), () => SetGender(0), ModLocalization.Loc("hc_ui_btn_male"));
+            _femaleBtn = AddToggleButton(gRow, "Female", buttonTemplate, new Vector2(0.51f, 0f), new Vector2(0.99f, 1f), () => SetGender(1), ModLocalization.Loc("hc_ui_btn_female"));
 
             // ── Hair Style ──────────────────────────────────────────────────
-            ay = PlacePlainLabel(_appearanceGroup.transform, font, "Hair Style", ay, labelH);
+            ay = PlacePlainLabel(_appearanceGroup.transform, font, ModLocalization.Loc("hc_ui_label_hair"), ay, labelH, "HairStyle");
             ay -= gap;
 
             BuildPickerRow(_appearanceGroup.transform, out _hairNameText, "Hair1", ay, pickerH, font, buttonTemplate,
@@ -454,9 +454,9 @@ namespace Companions
             bgRT.anchoredPosition = new Vector2(0f, ay);
 
             float by = 0f;
-            by = PlacePlainLabel(_beardGroup.transform, font, "Beard Style", by, labelH);
+            by = PlacePlainLabel(_beardGroup.transform, font, ModLocalization.Loc("hc_ui_label_beard"), by, labelH, "BeardStyle");
             by -= gap;
-            BuildPickerRow(_beardGroup.transform, out _beardNameText, "None", by, pickerH, font, buttonTemplate,
+            BuildPickerRow(_beardGroup.transform, out _beardNameText, ModLocalization.Loc("hc_ui_beard_none"), by, pickerH, font, buttonTemplate,
                 () => CycleBeard(-1), () => CycleBeard(1));
             by -= pickerH + secGap;
 
@@ -465,7 +465,7 @@ namespace Companions
             ay -= beardGroupH;
 
             // ── Skin Tone ───────────────────────────────────────────────────
-            ay = PlacePlainLabel(_appearanceGroup.transform, font, "Skin Tone", ay, labelH);
+            ay = PlacePlainLabel(_appearanceGroup.transform, font, ModLocalization.Loc("hc_ui_label_skin"), ay, labelH, "SkinTone");
             ay -= gap;
             _skinSlider = MakeSlider(_appearanceGroup.transform, "SkinSlider", ay, sliderH, 0.05f, v =>
             {
@@ -475,13 +475,13 @@ namespace Companions
             ay -= sliderH + secGap;
 
             // ── Hair Tone ───────────────────────────────────────────────────
-            ay = PlacePlainLabel(_appearanceGroup.transform, font, "Hair Tone", ay, labelH);
+            ay = PlacePlainLabel(_appearanceGroup.transform, font, ModLocalization.Loc("hc_ui_label_hairtone"), ay, labelH, "HairTone");
             ay -= gap;
             _hairHueSlider = MakeSlider(_appearanceGroup.transform, "HairHue", ay, sliderH, 0.45f, _ => UpdateHairColor());
             ay -= sliderH + secGap;
 
             // ── Hair Shade ──────────────────────────────────────────────────
-            ay = PlacePlainLabel(_appearanceGroup.transform, font, "Hair Shade", ay, labelH);
+            ay = PlacePlainLabel(_appearanceGroup.transform, font, ModLocalization.Loc("hc_ui_label_hairshade"), ay, labelH, "HairShade");
             ay -= gap;
             _hairBrightSlider = MakeSlider(_appearanceGroup.transform, "HairBright", ay, sliderH, 0.85f, _ => UpdateHairColor());
             ay -= sliderH + secGap;
@@ -499,7 +499,7 @@ namespace Companions
             dgRT.anchoredPosition = new Vector2(0f, y);
 
             float dy = 0f;
-            dy = PlacePlainLabel(_dvergerGroup.transform, font, "Sub-Type", dy, labelH);
+            dy = PlacePlainLabel(_dvergerGroup.transform, font, ModLocalization.Loc("hc_ui_label_subtype"), dy, labelH, "SubType");
             dy -= gap;
 
             _variantButtons.Clear();
@@ -1033,7 +1033,7 @@ namespace Companions
         private void RefreshBuyButtonLabel()
         {
             if (_buyButtonLabel != null)
-                _buyButtonLabel.text = $"Buy {_selectedTier.DisplayName} ({CompanionTierData.Price:N0})";
+                _buyButtonLabel.text = ModLocalization.LocFmt("hc_ui_btn_buy", _selectedTier.DisplayName, CompanionTierData.Price.ToString("N0"));
         }
 
         private void SetGender(int model)
@@ -1075,6 +1075,14 @@ namespace Companions
 
         private void OnBuyClicked()
         {
+            if (StarterMode)
+            {
+                CompanionsPlugin.Log.LogInfo(
+                    $"[Panel] Starter spawn confirmed — gender={_current.ModelIndex}, " +
+                    $"hair={_current.HairItem}, beard={_current.BeardItem}");
+                OnSpawnConfirmed?.Invoke(_current);
+                return;
+            }
             CompanionManager.Purchase(_current, _selectedTier);
             RefreshBankDisplay();
         }
@@ -1088,7 +1096,7 @@ namespace Companions
             if (_hairNameText  != null)
                 _hairNameText.text  = _hairs.Count > 0 ? _hairs[_hairIndex] : "\u2014";
             if (_beardNameText != null)
-                _beardNameText.text = _beardIndex == 0 ? "None"
+                _beardNameText.text = _beardIndex == 0 ? ModLocalization.Loc("hc_ui_beard_none")
                     : (_beards.Count > _beardIndex ? _beards[_beardIndex] : "\u2014");
         }
 
@@ -1113,11 +1121,17 @@ namespace Companions
 
         private void RefreshBankDisplay()
         {
+            if (StarterMode)
+            {
+                if (_buyButton != null) _buyButton.interactable = true;
+                return;
+            }
+
             int balance = GetBankBalance();
             int price   = CompanionTierData.Price;
 
             if (_coinText != null)
-                _coinText.text = $"Bank: {balance:N0}";
+                _coinText.text = ModLocalization.LocFmt("hc_ui_bank", balance.ToString("N0"));
 
             if (_buyButton != null)
                 _buyButton.interactable = balance >= price;
@@ -1126,8 +1140,8 @@ namespace Companions
             {
                 string typeName = _selectedTier?.DisplayName ?? "Companion";
                 _buyButtonLabel.text = balance >= price
-                    ? $"Buy {typeName} ({price:N0})"
-                    : $"Need {price:N0}";
+                    ? ModLocalization.LocFmt("hc_ui_btn_buy", typeName, price.ToString("N0"))
+                    : ModLocalization.LocFmt("hc_ui_btn_need", price.ToString("N0"));
             }
         }
 
@@ -1212,9 +1226,10 @@ namespace Companions
         /// No tint avoids double-darkness inside the already-dark left column.
         /// </summary>
         private static Button AddToggleButton(Transform parent, string label,
-            GameObject buttonTemplate, Vector2 anchorMin, Vector2 anchorMax, Action onClick)
+            GameObject buttonTemplate, Vector2 anchorMin, Vector2 anchorMax, Action onClick,
+            string displayLabel = null)
         {
-            var go = CreateButton(buttonTemplate, parent, label, label);
+            var go = CreateButton(buttonTemplate, parent, label, displayLabel ?? label);
             var rt = go.GetComponent<RectTransform>();
             rt.anchorMin = anchorMin;
             rt.anchorMax = anchorMax;
@@ -1495,9 +1510,10 @@ namespace Companions
         /// Plain text label — no background tint. Just the label text.
         /// </summary>
         private static float PlacePlainLabel(Transform parent, TMP_FontAsset font,
-            string text, float y, float h)
+            string text, float y, float h, string goName = null)
         {
-            var tmp = MakeText(parent, text + "Label", text, font, 14f,
+            string name = (goName ?? text) + "Label";
+            var tmp = MakeText(parent, name, text, font, 14f,
                 LabelText, TextAlignmentOptions.MidlineLeft);
             tmp.fontStyle = FontStyles.Bold;
             var rt = tmp.GetComponent<RectTransform>();

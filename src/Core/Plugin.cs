@@ -11,17 +11,18 @@ using UnityEngine.SceneManagement;
 namespace Companions
 {
     [BepInPlugin(PluginGUID, PluginName, PluginVersion)]
-    [BepInDependency("com.profmags.traderoverhaul")]
+    [BepInDependency("com.profmags.traderoverhaul", BepInDependency.DependencyFlags.SoftDependency)]
     [BepInDependency("com.haldor.bounties", BepInDependency.DependencyFlags.SoftDependency)]
     public class CompanionsPlugin : BaseUnityPlugin
     {
         public const string PluginGUID = "com.profmags.companions";
         public const string PluginName = "Offline Companions";
-        public const string PluginVersion = "0.0.8";
+        public const string PluginVersion = "1.0.3";
 
         private static Harmony _harmony;
         internal static ManualLogSource Log;
         internal static ConfigEntry<KeyCode> DirectTargetKey;
+        internal static ConfigEntry<KeyCode> RadialMenuKey;
         internal static ConfigEntry<bool> MaleShowSpeechText;
         internal static ConfigEntry<bool> MaleEnableVoiceAudio;
         internal static ConfigEntry<bool> FemaleShowSpeechText;
@@ -36,6 +37,11 @@ namespace Companions
 
             DirectTargetKey = Config.Bind("Controls", "DirectTargetKey", KeyCode.Z,
                 "Press while looking at an enemy to direct companions to focus-fire that target.");
+
+            RadialMenuKey = Config.Bind("Controls", "RadialMenuKey", KeyCode.E,
+                "Key to hold while hovering a companion to open the radial command menu. " +
+                "Default is E (same as interact — tap E for inventory, hold E for radial). " +
+                "Set to a different key to open the radial independently from the interact key.");
 
             MaleShowSpeechText = Config.Bind("Speech", "MaleShowOverheadText", false,
                 "Show overhead speech text for male companions.");
@@ -64,6 +70,9 @@ namespace Companions
             {
                 Log.LogError($"[Companions] Harmony PatchAll failed: {ex}");
             }
+
+            ModLocalization.Init();
+            ModLocalization.EnsureDefaultFile();
 
             SceneManager.sceneLoaded += OnSceneLoaded;
             Game.m_playerInitialSpawn += CompanionManager.SpawnStarterCompanion;

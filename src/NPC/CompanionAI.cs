@@ -94,6 +94,30 @@ namespace Companions
         private const float HealRange = 50f;
 
         // ══════════════════════════════════════════════════════════════════════
+        //  Ship Attachment
+        // ══════════════════════════════════════════════════════════════════════
+
+        private bool       _isOnShip;
+        private Ship       _attachedShip;
+        private Vector3    _shipLocalPos;   // companion position in ship-local space
+        private Quaternion _shipLocalRot;   // companion rotation in ship-local space
+        private Collider[] _shipColliders;  // ignored while seated (prevents pushing the ship)
+        private ZSyncAnimation _zanim;
+
+        internal bool IsOnShip => _isOnShip;
+
+        // Pending ship boarding — companion walks to ladder, climbs aboard, then sits
+        private Ship   _pendingShip;
+        private Chair  _pendingShipChair;
+        private Ladder _pendingShipLadder;  // ladder to climb onto ship (null → direct range)
+        private float  _pendingShipTimeout;
+        private const float LadderBoardRange = 6f;    // distance to trigger ladder climb (ladder is elevated on hull)
+        private const float ShipBoardingRange = 10f;  // fallback when no ladder
+        private const float ShipBoardingTimeout = 30f;
+
+        internal bool IsBoardingShip => _pendingShip != null;
+
+        // ══════════════════════════════════════════════════════════════════════
         //  Pending Cart Navigation
         // ══════════════════════════════════════════════════════════════════════
 
@@ -134,6 +158,23 @@ namespace Companions
         private const float TombstoneLootRange = 3f;
 
         // ══════════════════════════════════════════════════════════════════════
+        //  Auto-Pickup (passive item collection like the Player)
+        // ══════════════════════════════════════════════════════════════════════
+
+        private int _autoPickupMask;
+        private readonly Collider[] _autoPickupBuffer = new Collider[32];
+        private const float AutoPickupRange = 2f;
+        private const float AutoPickupPullSpeed = 15f;
+
+        // ══════════════════════════════════════════════════════════════════════
+        //  Drowning (damage when swimming with no stamina)
+        // ══════════════════════════════════════════════════════════════════════
+
+        internal static EffectList DrownEffects;   // copied from Player prefab
+        private CompanionStamina _companionStamina;
+        private float _drownDamageTimer;
+
+        // ══════════════════════════════════════════════════════════════════════
         //  Constants
         // ══════════════════════════════════════════════════════════════════════
 
@@ -154,6 +195,7 @@ namespace Companions
 
         private const float DebugLogInterval = 3f;
         private const float StuckThreshold = 5f;
+        private const float FollowTeleportDist = 50f;
 
         // ── StayHome patrol enforcement ─────────────────────────────────────
         private float _homePatrolTimer;
@@ -175,6 +217,7 @@ namespace Companions
         private CombatController _combat;
         private RepairController _repair;
         private SmeltController _smelt;
+        private HomesteadController _homestead;
         private DoorHandler _doorHandler;
         private CompanionRest _rest;
         private CompanionTalk _talk;
@@ -193,10 +236,14 @@ namespace Companions
             _combat = GetComponent<CombatController>();
             _repair = GetComponent<RepairController>();
             _smelt = GetComponent<SmeltController>();
+            _homestead = GetComponent<HomesteadController>();
             _doorHandler = GetComponent<DoorHandler>();
             _rest = GetComponent<CompanionRest>();
             _talk = GetComponent<CompanionTalk>();
             _body = GetComponent<Rigidbody>();
+            _zanim = GetComponent<ZSyncAnimation>();
+            _autoPickupMask = LayerMask.GetMask("item");
+            _companionStamina = GetComponent<CompanionStamina>();
 
             // Restore sleep state from ZDO
             ZDO zdo = m_nview.GetZDO();
@@ -305,6 +352,246 @@ namespace Companions
             if (PendingCartAttach == null) return;
             PendingCartAttach = null;
             PendingCartHumanoid = null;
+            RestoreFollowOrPatrol();
+        }
+
+        // ══════════════════════════════════════════════════════════════════════
+        //  Ship Boarding
+        // ══════════════════════════════════════════════════════════════════════
+
+        /// <summary>
+        /// Attach companion to a ship stool. Teleports to the chair's attach
+        /// point, plays sit animation, disables physics, and snaps position
+        /// to the ship every frame via UpdateShipAttach().
+        /// </summary>
+        internal void AttachToShip(Ship ship, Chair chair)
+        {
+            if (_isOnShip) DetachFromShip();
+
+            _attachedShip = ship;
+            _isOnShip = true;
+
+            // Ignore collision between companion and ship so we don't push it
+            var myCollider = GetComponent<CapsuleCollider>();
+            if (myCollider != null)
+            {
+                _shipColliders = ship.GetComponentsInChildren<Collider>();
+                foreach (var col in _shipColliders)
+                    Physics.IgnoreCollision(myCollider, col, true);
+            }
+
+            // Snap to chair attach point
+            Vector3 seatPos = chair.m_attachPoint.position;
+            Quaternion seatRot = chair.m_attachPoint.rotation;
+            transform.position = seatPos;
+            transform.rotation = seatRot;
+
+            // Store position in ship-local space for per-frame sync
+            _shipLocalPos = ship.transform.InverseTransformPoint(seatPos);
+            _shipLocalRot = Quaternion.Inverse(ship.transform.rotation) * seatRot;
+
+            // Freeze rigidbody so physics doesn't push companion off the stool
+            if (_body != null)
+            {
+                _body.position = seatPos;
+                _body.velocity = Vector3.zero;
+                _body.useGravity = false;
+                _body.isKinematic = true;
+            }
+
+            // Sit animation (Player-model companions only)
+            bool hasPlayerAnims = _setup != null && _setup.CanWearArmor();
+            if (_zanim != null && hasPlayerAnims)
+                _zanim.SetBool("attach_chair", true);
+
+            // Hide weapons while seated
+            var humanoid = m_character as Humanoid;
+            if (humanoid != null) humanoid.HideHandItems();
+
+            // Clear follow so AI doesn't try to walk
+            SetFollowTarget(null);
+
+            CompanionsPlugin.Log.LogInfo(
+                $"[AI] Ship attach — \"{m_character?.m_name}\" seated on \"{ship.name}\" " +
+                $"at {seatPos:F1} localPos={_shipLocalPos:F2}");
+        }
+
+        /// <summary>
+        /// Detach companion from ship. Restores physics, stops sit animation,
+        /// and returns companion to following the player.
+        /// </summary>
+        internal void DetachFromShip()
+        {
+            if (!_isOnShip) return;
+
+            CompanionsPlugin.Log.LogInfo(
+                $"[AI] Ship detach — \"{m_character?.m_name}\" leaving ship");
+
+            Ship shipRef = _attachedShip;
+
+            // Stop sit animation
+            bool hasPlayerAnims = _setup != null && _setup.CanWearArmor();
+            if (_zanim != null && hasPlayerAnims)
+                _zanim.SetBool("attach_chair", false);
+
+            // Restore collision with ship colliders
+            if (_shipColliders != null)
+            {
+                var myCollider = GetComponent<CapsuleCollider>();
+                if (myCollider != null)
+                {
+                    foreach (var col in _shipColliders)
+                        if (col != null)
+                            Physics.IgnoreCollision(myCollider, col, false);
+                }
+                _shipColliders = null;
+            }
+
+            // Restore physics
+            if (_body != null)
+            {
+                _body.isKinematic = false;
+                _body.useGravity = true;
+                _body.velocity = Vector3.zero;
+            }
+
+            _isOnShip = false;
+            _attachedShip = null;
+
+            // Teleport off the ship — use the ladder (climb down) if available,
+            // otherwise teleport near the player. The ship deck has no NavMesh
+            // so the companion can't pathfind off it.
+            bool teleported = false;
+            if (shipRef != null)
+            {
+                var ladder = shipRef.GetComponentInChildren<Ladder>();
+                if (ladder != null)
+                {
+                    // Ladder transform is at the base (water/dock side) — climb down
+                    Vector3 disembarkPos = ladder.transform.position + Vector3.up * 0.3f;
+                    transform.position = disembarkPos;
+                    if (_body != null)
+                    {
+                        _body.position = disembarkPos;
+                        _body.velocity = Vector3.zero;
+                    }
+                    teleported = true;
+                    CompanionsPlugin.Log.LogDebug(
+                        $"[AI] Ship detach — climbed down ladder to {disembarkPos:F1}");
+                }
+            }
+
+            if (!teleported && Player.m_localPlayer != null)
+            {
+                // No ladder — teleport near the player
+                Vector3 playerPos = Player.m_localPlayer.transform.position;
+                Vector3 spawnPos = playerPos + Vector3.right * 2f;
+                for (int i = 0; i < 20; i++)
+                {
+                    Vector2 rnd = UnityEngine.Random.insideUnitCircle * 3f;
+                    Vector3 candidate = playerPos + new Vector3(rnd.x, 0f, rnd.y);
+                    if (ZoneSystem.instance != null &&
+                        ZoneSystem.instance.FindFloor(candidate, out float height))
+                    {
+                        candidate.y = height;
+                        spawnPos = candidate;
+                        break;
+                    }
+                }
+                transform.position = spawnPos;
+                if (_body != null)
+                {
+                    _body.position = spawnPos;
+                    _body.velocity = Vector3.zero;
+                }
+                CompanionsPlugin.Log.LogDebug(
+                    $"[AI] Ship detach — teleported near player at {spawnPos:F1}");
+            }
+
+            if (!teleported && Player.m_localPlayer == null)
+            {
+                // Last resort — nudge up so they don't clip
+                transform.position += new Vector3(0f, 0.5f, 0f);
+            }
+
+            RestoreFollowOrPatrol();
+        }
+
+        /// <summary>
+        /// Per-frame update while seated on a ship. Snaps position/rotation
+        /// to the stored local-space offset so the companion moves with the ship.
+        /// </summary>
+        private void UpdateShipAttach()
+        {
+            // Ship destroyed or unloaded?
+            if (_attachedShip == null)
+            {
+                DetachFromShip();
+                return;
+            }
+
+            // Snap position to ship-local offset
+            Vector3 worldPos = _attachedShip.transform.TransformPoint(_shipLocalPos);
+            Quaternion worldRot = _attachedShip.transform.rotation * _shipLocalRot;
+            transform.position = worldPos;
+            transform.rotation = worldRot;
+
+            if (_body != null)
+            {
+                _body.position = worldPos;
+                // Sync velocity with ship so any physics interaction stays consistent
+                Rigidbody shipBody = _attachedShip.GetComponent<Rigidbody>();
+                if (shipBody != null)
+                    _body.velocity = shipBody.GetPointVelocity(worldPos);
+            }
+        }
+
+        /// <summary>
+        /// Begin walking toward a ship to board it. Once within range, the companion
+        /// will teleport to the chair and attach. Falls back to direct attach on timeout.
+        /// </summary>
+        internal void SetPendingShipBoard(Ship ship, Chair chair)
+        {
+            _pendingShip = ship;
+            _pendingShipChair = chair;
+            _pendingShipTimeout = ShipBoardingTimeout;
+            SetFollowTarget(null);
+
+            // Find the nearest ladder on the ship to climb aboard
+            var ladders = ship.GetComponentsInChildren<Ladder>();
+            if (ladders != null && ladders.Length > 0)
+            {
+                Ladder best = null;
+                float bestDist = float.MaxValue;
+                foreach (var lad in ladders)
+                {
+                    float d = Vector3.Distance(transform.position, lad.transform.position);
+                    if (d < bestDist) { bestDist = d; best = lad; }
+                }
+                _pendingShipLadder = best;
+            }
+            else
+            {
+                _pendingShipLadder = null;
+            }
+
+            string ladderInfo = _pendingShipLadder != null
+                ? $"ladder at {_pendingShipLadder.transform.position:F1}"
+                : "no ladder found";
+            CompanionsPlugin.Log.LogDebug(
+                $"[AI] SetPendingShipBoard — ship=\"{ship.name}\" " +
+                $"chair at {chair.m_attachPoint.position:F1} " +
+                $"{ladderInfo} dist={Vector3.Distance(transform.position, ship.transform.position):F1}");
+        }
+
+        internal void CancelPendingShipBoard()
+        {
+            if (_pendingShip == null) return;
+            CompanionsPlugin.Log.LogDebug(
+                $"[AI] CancelPendingShipBoard — was heading to \"{_pendingShip?.name}\"");
+            _pendingShip = null;
+            _pendingShipChair = null;
+            _pendingShipLadder = null;
             RestoreFollowOrPatrol();
         }
 
@@ -483,7 +770,7 @@ namespace Companions
                     $"[AI] Found tombstone at {ts.transform.position:F1} — dist={dist:F1}m, navigating to recover items");
 
                 if (_talk != null)
-                    _talk.Say("My belongings!");
+                    _talk.Say(ModLocalization.Loc("hc_speech_tomb_found"));
 
                 // Override follow to navigate
                 SetFollowTarget(null);
@@ -561,7 +848,7 @@ namespace Companions
                 $", {tombInv.NrOfItems()} remaining in tombstone");
 
             if (_talk != null)
-                _talk.Say(moved > 0 ? "Got everything back." : "Nothing left to take.");
+                _talk.Say(moved > 0 ? ModLocalization.Loc("hc_speech_tomb_recovered") : ModLocalization.Loc("hc_speech_tomb_empty"));
         }
 
         private void ClearTombstoneId()
@@ -700,9 +987,30 @@ namespace Companions
             if (_rest != null && _rest.IsResting)
                 return true;
 
+            // Ship attachment — snap to seat every frame, suppress all AI
+            if (_isOnShip)
+            {
+                UpdateShipAttach();
+                return true;
+            }
+
+            // Drowning — damage companion when swimming with no stamina
+            UpdateDrowning(dt);
+
+            // Auto-pickup — passively collect nearby items
+            AutoPickup(dt);
+
             // Stuck-on-furniture recovery — if stuck on a Bed/Chair collider,
             // nudge off so pathfinding can resume (NavMesh doesn't cover furniture).
             UpdateFurnitureUnstuck(dt);
+
+            // Follow-mode teleport — warp companion near player if too far away
+            if (m_follow != null)
+            {
+                float distToFollow = Vector3.Distance(transform.position, m_follow.transform.position);
+                if (distToFollow > FollowTeleportDist)
+                    TeleportToFollowTarget();
+            }
 
             // Rest navigation — walking to a bed or fire
             if (_rest != null && _rest.IsNavigating)
@@ -716,6 +1024,101 @@ namespace Companions
                 else
                 {
                     MoveTo(dt, navTarget, 1.5f, true);
+                }
+                return true;
+            }
+
+            // Ship boarding — walk to ladder, climb aboard, then sit on chair
+            if (_pendingShip != null)
+            {
+                _pendingShipTimeout -= dt;
+
+                // Ship or chair destroyed while walking?
+                if (_pendingShip == null || _pendingShipChair == null ||
+                    _pendingShipChair.m_attachPoint == null)
+                {
+                    CompanionsPlugin.Log.LogDebug("[AI] Ship boarding target lost — cancelling");
+                    CancelPendingShipBoard();
+                }
+                else if (_pendingShipTimeout <= 0f)
+                {
+                    // Timeout — teleport-attach as fallback
+                    CompanionsPlugin.Log.LogDebug(
+                        "[AI] Ship boarding timed out — teleporting to chair as fallback");
+                    Ship ship = _pendingShip;
+                    Chair chair = _pendingShipChair;
+                    _pendingShip = null;
+                    _pendingShipChair = null;
+                    _pendingShipLadder = null;
+                    AttachToShip(ship, chair);
+                }
+                else if (_pendingShipLadder != null)
+                {
+                    // Walk toward ship, use ladder when close enough.
+                    // Use horizontal (XZ) distance because the ladder is on the hull
+                    // above water — 3D distance includes the hull height penalty.
+                    Vector3 ladderPos = _pendingShipLadder.transform.position;
+                    Vector3 toladder = ladderPos - transform.position;
+                    float horizDist = new Vector2(toladder.x, toladder.z).magnitude;
+
+                    if (horizDist < LadderBoardRange)
+                    {
+                        // Close enough horizontally — use the ladder to climb aboard
+                        CompanionsPlugin.Log.LogDebug(
+                            $"[AI] Ship boarding — using ladder (horiz={horizDist:F1}m, " +
+                            $"3D={Vector3.Distance(transform.position, ladderPos):F1}m)");
+
+                        // Replicate Ladder.Interact: teleport to deck landing point
+                        if (_pendingShipLadder.m_targetPos != null)
+                        {
+                            transform.position = _pendingShipLadder.m_targetPos.position;
+                            transform.rotation = _pendingShipLadder.m_targetPos.rotation;
+                            if (_body != null)
+                            {
+                                _body.position = _pendingShipLadder.m_targetPos.position;
+                                _body.velocity = Vector3.zero;
+                            }
+                        }
+
+                        // Now on deck — sit on the assigned chair
+                        Ship ship = _pendingShip;
+                        Chair chair = _pendingShipChair;
+                        _pendingShip = null;
+                        _pendingShipChair = null;
+                        _pendingShipLadder = null;
+                        AttachToShip(ship, chair);
+                    }
+                    else
+                    {
+                        // Pathfind toward the ship center (always on water NavMesh).
+                        // We can't path directly to the ladder because it's on the hull
+                        // with no NavMesh. Horizontal distance to the ladder drives the
+                        // boarding trigger above, so approaching the ship from any angle works.
+                        Vector3 navTarget = _pendingShip.transform.position;
+                        MoveTo(dt, navTarget, 0.5f, horizDist > 15f);
+                    }
+                }
+                else
+                {
+                    // No ladder — walk toward ship and board when within range
+                    Vector3 shipPos = _pendingShip.transform.position;
+                    float distToShip = Vector3.Distance(transform.position, shipPos);
+
+                    if (distToShip < ShipBoardingRange)
+                    {
+                        CompanionsPlugin.Log.LogDebug(
+                            $"[AI] Ship boarding — within range ({distToShip:F1}m), attaching to chair");
+                        Ship ship = _pendingShip;
+                        Chair chair = _pendingShipChair;
+                        _pendingShip = null;
+                        _pendingShipChair = null;
+                        _pendingShipLadder = null;
+                        AttachToShip(ship, chair);
+                    }
+                    else
+                    {
+                        MoveTo(dt, shipPos, 0.5f, distToShip > 15f);
+                    }
                 }
                 return true;
             }
@@ -842,7 +1245,7 @@ namespace Companions
                             $"[AI] Deposit complete — {_depositCount} item(s) into \"{PendingDepositContainer.m_name}\"");
 
                         if (_talk != null)
-                            _talk.Say(_depositCount > 0 ? "All stowed away." : "Nothing to deposit.");
+                            _talk.Say(_depositCount > 0 ? ModLocalization.Loc("hc_speech_deposit_done") : ModLocalization.Loc("hc_speech_deposit_empty"));
 
                         CancelPendingDeposit();
                     }
@@ -890,7 +1293,7 @@ namespace Companions
                             _depositChestOpen = false;
 
                             if (_talk != null)
-                                _talk.Say("Nothing to deposit.");
+                                _talk.Say(ModLocalization.Loc("hc_speech_deposit_empty"));
 
                             CancelPendingDeposit();
                         }
@@ -925,6 +1328,7 @@ namespace Companions
                 if ((_harvest != null && _harvest.IsActive) ||
                     (_repair != null && _repair.IsActive) ||
                     (_smelt != null && _smelt.IsActive) ||
+                    (_homestead != null && _homestead.IsActive) ||
                     (_doorHandler != null && _doorHandler.IsActive))
                     return true;
 
@@ -1038,6 +1442,7 @@ namespace Companions
                 if ((_harvest != null && _harvest.IsActive) ||
                     (_repair != null && _repair.IsActive) ||
                     (_smelt != null && _smelt.IsActive) ||
+                    (_homestead != null && _homestead.IsActive) ||
                     (_doorHandler != null && _doorHandler.IsActive))
                     return true;
 
@@ -1073,6 +1478,21 @@ namespace Companions
                 ThrottledTargetLog("UIOpen");
                 ClearTargets();
                 return;
+            }
+
+            // ── StayHome mode → only fight if physically hit (self-defense) ──
+            bool stayHome = _setup != null && _setup.GetStayHome()
+                         && _setup.HasHomePosition() && !_setup.GetFollow();
+            if (stayHome)
+            {
+                if (m_timeSinceHurt > 10f)
+                {
+                    ThrottledTargetLog("StayHome(peaceful)");
+                    ClearTargets();
+                    if (IsAlerted()) SetAlerted(false);
+                    return;
+                }
+                // Recently hit — allow targeting for self-defense
             }
 
             // ── Harvest mode → suppress unless enemy nearby (self-defense) ──
@@ -1264,9 +1684,20 @@ namespace Companions
             if (m_targetCreature == null) return;
 
             ItemDrop.ItemData weapon = humanoid.GetCurrentWeapon();
+
+            // If holding unarmed weapon or nothing, try to equip a real weapon first
+            bool isUnarmed = weapon != null && humanoid.m_unarmedWeapon != null &&
+                             weapon == humanoid.m_unarmedWeapon.m_itemData;
+            if (weapon == null || isUnarmed)
+            {
+                if (_setup != null) _setup.SuppressAutoEquip = false;
+                humanoid.EquipBestWeapon(m_targetCreature, m_targetStatic, null, null);
+                weapon = humanoid.GetCurrentWeapon();
+            }
+
             if (weapon == null)
             {
-                // No weapon — just follow
+                // Still no weapon after equip attempt — just follow
                 if (m_follow != null) Follow(m_follow, dt);
                 else IdleMovement(dt);
                 return;
@@ -1410,6 +1841,168 @@ namespace Companions
             }
 
             return success;
+        }
+
+        // ══════════════════════════════════════════════════════════════════════
+        //  Auto-Pickup (passive item collection)
+        // ══════════════════════════════════════════════════════════════════════
+
+        /// <summary>
+        /// Passively picks up nearby items, same as the Player's auto-pickup.
+        /// Items are pulled toward the companion and picked up when very close.
+        /// </summary>
+        private void AutoPickup(float dt)
+        {
+            var humanoid = m_character as Humanoid;
+            if (humanoid == null) return;
+
+            var inv = humanoid.GetInventory();
+            if (inv == null) return;
+
+            Vector3 center = transform.position + Vector3.up;
+            int count = Physics.OverlapSphereNonAlloc(
+                center, AutoPickupRange, _autoPickupBuffer, _autoPickupMask);
+
+            for (int i = 0; i < count; i++)
+            {
+                var col = _autoPickupBuffer[i];
+                if (col == null || col.attachedRigidbody == null) continue;
+
+                var itemDrop = col.attachedRigidbody.GetComponent<ItemDrop>();
+                if (itemDrop == null || !itemDrop.m_autoPickup) continue;
+
+                var nview = itemDrop.GetComponent<ZNetView>();
+                if (nview == null || !nview.IsValid()) continue;
+
+                if (!itemDrop.CanPickup())
+                {
+                    itemDrop.RequestOwn();
+                    continue;
+                }
+
+                if (itemDrop.InTar()) continue;
+
+                itemDrop.Load();
+                string itemName = itemDrop.m_itemData?.m_shared?.m_name ?? "?";
+
+                if (!inv.CanAddItem(itemDrop.m_itemData))
+                {
+                    CompanionsPlugin.Log.LogDebug(
+                        $"[AutoPickup] Skipping \"{itemName}\" — inventory full");
+                    continue;
+                }
+
+                // Weight check
+                float newWeight = inv.GetTotalWeight() + itemDrop.m_itemData.GetWeight();
+                if (newWeight > CompanionTierData.MaxCarryWeight)
+                {
+                    CompanionsPlugin.Log.LogDebug(
+                        $"[AutoPickup] Skipping \"{itemName}\" — would exceed carry weight " +
+                        $"({newWeight:F1} > {CompanionTierData.MaxCarryWeight})");
+                    continue;
+                }
+
+                float dist = Vector3.Distance(itemDrop.transform.position, center);
+                if (dist < 0.3f)
+                {
+                    bool picked = humanoid.Pickup(itemDrop.gameObject, false, false);
+                    if (picked)
+                        CompanionsPlugin.Log.LogDebug(
+                            $"[AutoPickup] Picked up \"{itemName}\" x{itemDrop.m_itemData?.m_stack ?? 1}");
+                }
+                else
+                {
+                    // Pull item toward companion
+                    Vector3 dir = (center - itemDrop.transform.position).normalized;
+                    itemDrop.transform.position += dir * AutoPickupPullSpeed * dt;
+                }
+            }
+        }
+
+        // ══════════════════════════════════════════════════════════════════════
+        //  Drowning — damage when swimming with no stamina
+        // ══════════════════════════════════════════════════════════════════════
+
+        private void UpdateDrowning(float dt)
+        {
+            if (!m_character.IsSwimming())
+            {
+                _drownDamageTimer = 0f;
+                return;
+            }
+
+            if (_companionStamina == null || _companionStamina.Stamina > 0f)
+            {
+                _drownDamageTimer = 0f;
+                return;
+            }
+
+            // Accumulate timer — deal damage every 1 second (matches vanilla Player)
+            _drownDamageTimer += dt;
+            if (_drownDamageTimer > 1f)
+            {
+                _drownDamageTimer = 0f;
+
+                // 5% of max health per tick, rounded up (same as Player)
+                float damage = Mathf.Ceil(m_character.GetMaxHealth() / 20f);
+                HitData hitData = new HitData();
+                hitData.m_damage.m_damage = damage;
+                hitData.m_point = m_character.GetCenterPoint();
+                hitData.m_dir = Vector3.down;
+                hitData.m_pushForce = 10f;
+                hitData.m_hitType = HitData.HitType.Drowning;
+                m_character.Damage(hitData);
+
+                // Play drowning effects (sound + splash) at water surface
+                if (DrownEffects != null)
+                {
+                    Vector3 pos = transform.position;
+                    pos.y = m_character.GetLiquidLevel();
+                    DrownEffects.Create(pos, transform.rotation);
+                }
+
+                CompanionsPlugin.Log.LogDebug(
+                    $"[AI] Drowning — dealt {damage:F1} damage " +
+                    $"(hp={m_character.GetHealth():F1}/{m_character.GetMaxHealth():F1}) " +
+                    $"companion=\"{m_character.m_name}\"");
+            }
+        }
+
+        // ══════════════════════════════════════════════════════════════════════
+        //  Follow Teleport
+        // ══════════════════════════════════════════════════════════════════════
+
+        private void TeleportToFollowTarget()
+        {
+            if (m_follow == null) return;
+            Vector3 targetPos = m_follow.transform.position;
+
+            // Find a valid nearby position using ground height
+            Vector3 spawnPos = targetPos + Vector3.right * 2f;
+            for (int i = 0; i < 20; i++)
+            {
+                Vector2 rnd = UnityEngine.Random.insideUnitCircle * 3f;
+                Vector3 candidate = targetPos + new Vector3(rnd.x, 0f, rnd.y);
+                if (ZoneSystem.instance != null &&
+                    ZoneSystem.instance.FindFloor(candidate, out float height))
+                {
+                    candidate.y = height;
+                    spawnPos = candidate;
+                    break;
+                }
+            }
+
+            transform.position = spawnPos;
+            var body = GetComponent<Rigidbody>();
+            if (body != null)
+            {
+                body.position = spawnPos;
+                body.linearVelocity = Vector3.zero;
+            }
+
+            CompanionsPlugin.Log.LogInfo(
+                $"[AI] Teleported companion to follow target at {spawnPos:F1} " +
+                $"(was {FollowTeleportDist:F0}m+ away)");
         }
 
         // ══════════════════════════════════════════════════════════════════════
@@ -1721,7 +2314,7 @@ namespace Companions
             if (m_character == null) return;
             float vel = m_character.GetVelocity().magnitude;
             bool wantsToMove = m_follow != null || PendingMoveTarget.HasValue ||
-                               PendingCartAttach != null ||
+                               PendingCartAttach != null || _pendingShip != null ||
                                (_rest != null && _rest.IsNavigating);
 
             if (vel < 0.1f && wantsToMove)
@@ -1790,6 +2383,7 @@ namespace Companions
             // Use IsSmeltMode (ZDO assignment) rather than IsActive (processing phase)
             // to suppress stuck detection during idle gaps between scan cycles.
             bool smelting = _smelt != null && (_smelt.IsActive || _smelt.IsSmeltMode());
+            bool homesteading = _homestead != null && _homestead.IsActive;
             bool handlingDoor = _doorHandler != null && _doorHandler.IsActive;
 
             // StayHome with wander OFF: companion is intentionally stationary
@@ -1802,7 +2396,7 @@ namespace Companions
             bool intentionallyStationary = stayingHome || _returningHome || followOffIdle;
 
             if (moved < 0.1f && !inAttack && !atFollowDist && !harvesting
-                && !repairing && !smelting && !handlingDoor && !intentionallyStationary)
+                && !repairing && !smelting && !homesteading && !handlingDoor && !intentionallyStationary)
                 _stuckDetectTimer += dt;
             else
                 _stuckDetectTimer = 0f;

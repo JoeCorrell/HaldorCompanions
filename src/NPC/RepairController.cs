@@ -216,7 +216,7 @@ namespace Companions
             Log($"Found {_repairQueue.Count} items to repair at " +
                 $"\"{_targetStation.m_name}\" level={_targetStation.GetLevel()} ({bestDist:F1}m away)");
 
-            if (_talk != null) _talk.Say("Time for repairs.", "Repair");
+            if (_talk != null) _talk.Say(ModLocalization.Loc("hc_speech_repair_start"), "Repair");
         }
 
         // ── Moving to station ───────────────────────────────────────────────
@@ -380,7 +380,7 @@ namespace Companions
         {
             if (_zanim != null && _setup != null && _setup.CanWearArmor()) _zanim.SetInt("crafting", 0);
             Log($"All items repaired at \"{_targetStation?.m_name ?? "?"}\"");
-            if (_talk != null) _talk.Say("All fixed up!", "Repair");
+            if (_talk != null) _talk.Say(ModLocalization.Loc("hc_speech_repair_done"), "Repair");
             _targetStation = null;
             _repairQueue.Clear();
             _phase = RepairPhase.Idle;

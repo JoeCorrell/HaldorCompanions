@@ -80,7 +80,7 @@
     <Reference Include="UnityEngine.UnityWebRequestAudioModule">
       <HintPath>C:\Program Files (x86)\Steam\steamapps\common\Valheim\Valheim_Data\Managed\UnityEngine.UnityWebRequestAudioModule.dll</HintPath>
     </Reference>
-    <!-- TraderOverhaul (hard dependency) -->
+    <!-- TraderOverhaul (optional — compile ref for trader tab patches, soft dependency at runtime) -->
     <Reference Include="TraderOverhaul">
       <HintPath>C:\Program Files (x86)\Steam\steamapps\common\Valheim\BepInEx\plugins\TraderOverhaul\TraderOverhaul.dll</HintPath>
     </Reference>
@@ -107,6 +107,14 @@
     <Copy SourceFiles="@(AudioFiles)"
           DestinationFiles="@(AudioFiles->'$(PluginDir)\Audio\%(RecursiveDir)%(Filename)%(Extension)')"
           SkipUnchangedFiles="true" />
+    <!-- Deploy Translations folder alongside DLL -->
+    <ItemGroup>
+      <TranslationFiles Include="$(MSBuildProjectDirectory)\Translations\**\*.json" />
+    </ItemGroup>
+    <Copy SourceFiles="@(TranslationFiles)"
+          DestinationFiles="@(TranslationFiles->'$(PluginDir)\Translations\%(RecursiveDir)%(Filename)%(Extension)')"
+          SkipUnchangedFiles="true"
+          Condition="@(TranslationFiles) != ''" />
     <Message Text="Deployed $(AssemblyName).dll to $(PluginDir)" Importance="high" />
     <Message Text="Copied $(AssemblyName).dll to $(ReleaseDir)" Importance="high" />
   </Target>

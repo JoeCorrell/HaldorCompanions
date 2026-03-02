@@ -26,7 +26,7 @@ namespace Companions
         internal static readonly int IsCommandableHash = StringExtensionMethods.GetStableHashCode("HC_IsCommandable");
         internal static readonly int StayHomeHash  = StringExtensionMethods.GetStableHashCode("HC_StayHome");
         internal static readonly int HomePosHash    = StringExtensionMethods.GetStableHashCode("HC_HomePos");
-        private  static readonly int HomePosSetHash = StringExtensionMethods.GetStableHashCode("HC_HomePosSet");
+        internal static readonly int HomePosSetHash = StringExtensionMethods.GetStableHashCode("HC_HomePosSet");
         private  static readonly int StarterGearHash = StringExtensionMethods.GetStableHashCode("HC_StarterGear");
         internal static readonly int FollowHash     = StringExtensionMethods.GetStableHashCode("HC_Follow");
         internal static readonly int CombatStanceHash = StringExtensionMethods.GetStableHashCode("HC_CombatStance");
@@ -78,10 +78,19 @@ namespace Companions
         private bool           _ownerMismatchLogged;
         private bool           _uiFrozen;
 
+        // Minimap pin — live-updating, owner-only
+        private Minimap.PinData _minimapPin;
+
         /// <summary>
         /// When true, auto-equip is suppressed (used by CompanionHarvest to keep tools equipped).
         /// </summary>
         internal bool SuppressAutoEquip { get; set; }
+
+        /// <summary>
+        /// True while the equip queue is processing items (weapon + armor).
+        /// CombatController checks this to delay engagement until gear is equipped.
+        /// </summary>
+        internal bool IsEquipping => _equipQueue.Count > 0 || _equipAnimActive;
 
         private void Awake()
         {
@@ -233,6 +242,58 @@ namespace Companions
                         $"[Setup] Follow target was null — restored to player " +
                         $"(mode={mode} harvestActive={_harvestCached?.IsActive ?? false})");
                 }
+            }
+
+            // ── Minimap pin — live position update, owner-only ──
+            UpdateMinimapPin();
+        }
+
+        private void UpdateMinimapPin()
+        {
+            if (Minimap.instance == null) return;
+
+            // Only show pin for the local player's companions
+            var zdo = _nview?.GetZDO();
+            if (zdo == null || Player.m_localPlayer == null)
+            {
+                RemoveMinimapPin();
+                return;
+            }
+
+            string owner = zdo.GetString(OwnerHash, "");
+            long localPid = Player.m_localPlayer.GetPlayerID();
+            if (localPid == 0L) return;
+
+            if (owner != localPid.ToString())
+            {
+                RemoveMinimapPin();
+                return;
+            }
+
+            // Create pin if it doesn't exist
+            if (_minimapPin == null)
+            {
+                string compName = zdo.GetString(NameHash, "Companion");
+                _minimapPin = Minimap.instance.AddPin(
+                    transform.position, Minimap.PinType.Player,
+                    compName, false, false, 0L);
+                CompanionsPlugin.Log.LogDebug(
+                    $"[Minimap] Created pin for \"{compName}\" at {transform.position:F1}");
+            }
+
+            // Update position every frame
+            if (_minimapPin.m_pos != transform.position)
+                _minimapPin.m_pos = transform.position;
+        }
+
+        private void RemoveMinimapPin()
+        {
+            if (_minimapPin != null && Minimap.instance != null)
+            {
+                CompanionsPlugin.Log.LogDebug(
+                    $"[Minimap] Removed pin for \"{_minimapPin.m_name}\"");
+                Minimap.instance.RemovePin(_minimapPin);
+                _minimapPin = null;
             }
         }
 
@@ -539,13 +600,24 @@ namespace Companions
             CompanionsPlugin.Log.LogInfo(
                 $"[Setup] Companion \"{companionName}\" died at {deathPos:F1} — prefab={prefabName}");
 
+            // Apply skill death penalty and serialize for respawn
+            string skillsSerialized = "";
+            var skills = GetComponent<CompanionSkills>();
+            if (skills != null)
+            {
+                skills.OnDeath();
+                skillsSerialized = skills.SerializeSkills();
+            }
+
             // Generate unique tombstone ID for precise matching after respawn
             long tombstoneId = System.DateTime.UtcNow.Ticks;
 
             // Spawn tombstone with all inventory items
             CreateCompanionTombstone(companionName, deathPos, tombstoneId);
 
-            // Queue respawn at world spawn
+            // Queue respawn — at home position if set, otherwise world spawn
+            bool hasHome = HasHomePosition();
+            Vector3 homePos = hasHome ? GetHomePosition() : Vector3.zero;
             CompanionManager.QueueRespawn(new CompanionManager.RespawnData
             {
                 PrefabName = prefabName,
@@ -554,7 +626,10 @@ namespace Companions
                 OwnerId = owner,
                 CombatStance = stance,
                 TombstoneId = tombstoneId,
-                Timer = 5f
+                SkillsSerialized = skillsSerialized,
+                Timer = 5f,
+                HasHomePos = hasHome,
+                HomePos = homePos
             });
         }
 
@@ -623,6 +698,7 @@ namespace Companions
 
         private void OnDestroy()
         {
+            RemoveMinimapPin();
             UnregisterInventoryCallback();
             if (_visEquip != null)
                 _companionVisEquips.Remove(_visEquip);

@@ -44,6 +44,24 @@ namespace Companions
             }
         }
 
+        /// <summary>
+        /// Neutralize backstab damage multiplier on companions.
+        /// Vanilla checks m_baseAI != null && hit.m_backstabBonus > 1f — since companions
+        /// have a BaseAI, they'd take full backstab damage from behind. Setting the bonus
+        /// to 1f before the check means the multiplier is never applied.
+        /// </summary>
+        [HarmonyPatch(typeof(Character), "RPC_Damage")]
+        private static class RPC_Damage_NoBackstab
+        {
+            static void Prefix(Character __instance, HitData hit)
+            {
+                if (hit == null) return;
+                if (hit.m_backstabBonus <= 1f) return;
+                if (__instance.GetComponent<CompanionSetup>() == null) return;
+                hit.m_backstabBonus = 1f;
+            }
+        }
+
         [HarmonyPatch(typeof(Character), nameof(Character.GetMaxHealth))]
         private static class GetMaxHealth_Patch
         {
