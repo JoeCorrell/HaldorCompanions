@@ -9,7 +9,7 @@
 <br/>
 
 <p align="center">
-<a href="https://github.com/JoeCorrell/OfflineCompanions/releases"><img src="https://img.shields.io/badge/Version-1.0.3-c9a44a?style=for-the-badge&labelColor=0d1117" alt="Version"></a>
+<a href="https://github.com/JoeCorrell/OfflineCompanions/releases"><img src="https://img.shields.io/badge/Version-1.0.6-c9a44a?style=for-the-badge&labelColor=0d1117" alt="Version"></a>
 <a href="#-requirements"><img src="https://img.shields.io/badge/BepInEx-5.4.2200+-e06c20?style=for-the-badge&labelColor=0d1117" alt="BepInEx"></a>
 <a href="#-requirements"><img src="https://img.shields.io/badge/Valheim-0.219+-4ade80?style=for-the-badge&labelColor=0d1117" alt="Valheim"></a>
 <a href="#"><img src="https://img.shields.io/badge/License-MIT-7c3aed?style=for-the-badge&labelColor=0d1117" alt="License"></a>
@@ -135,6 +135,8 @@ The companion's name is shown in the center. Active toggles show their current O
 Companions **auto-equip the best gear** from their inventory: best weapon, shield, chest, legs, helmet, shoulder, and utility item. Items equip one at a time with proper animation. Broken items (0 durability) are skipped and unequipped.
 
 Right-click an item to use/equip it. Right-click food to feed it to the companion. Drag items between your inventory and theirs using vanilla drag-and-drop.
+
+Press **F7** while the panel is open to enter **UI Reposition Mode** — click and drag the panel to move it anywhere on screen. Press **F7** again to confirm. Your custom position is saved and persists across sessions.
 
 <br/>
 </td></tr></table>

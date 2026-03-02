@@ -82,7 +82,7 @@
     </Reference>
     <!-- TraderOverhaul (optional — compile ref for trader tab patches, soft dependency at runtime) -->
     <Reference Include="TraderOverhaul">
-      <HintPath>C:\Program Files (x86)\Steam\steamapps\common\Valheim\BepInEx\plugins\TraderOverhaul\TraderOverhaul.dll</HintPath>
+      <HintPath>C:\Program Files (x86)\Steam\steamapps\common\Valheim\BepInEx\plugins\TraderOverhaul.dll</HintPath>
     </Reference>
   </ItemGroup>
 

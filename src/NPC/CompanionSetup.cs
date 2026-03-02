@@ -581,6 +581,15 @@ namespace Companions
             var zdo = _nview.GetZDO();
             if (zdo == null) return;
 
+            // Close companion UI immediately — prevents glitched empty-grid rendering
+            // and vanilla container panel flash when inventory is emptied below.
+            // Must happen before any inventory manipulation.
+            if (CompanionInteractPanel.IsOpenFor(this))
+            {
+                CompanionInteractPanel.Instance?.Hide();
+                InventoryGui.instance?.Hide();
+            }
+
             // Capture identity before destruction
             string companionName = _humanoid != null ? _humanoid.m_name : "Companion";
             string zdoName = zdo.GetString(NameHash, "");
@@ -660,6 +669,17 @@ namespace Companions
 
             // Unequip all items so MoveInventoryToGrave transfers everything
             _humanoid.UnequipAllItems();
+
+            // Force-clear m_equipped on ALL items in inventory.
+            // After Container.Load() from ZDO (zone transitions, reloads), new ItemData
+            // instances are created with saved m_equipped=true flags, but the humanoid
+            // slot variables still reference old (stale) objects. AutoEquipBest re-equips
+            // the best items to slots, but previously-equipped items that are no longer
+            // "best" retain their stale m_equipped=true flag. MoveInventoryToGrave skips
+            // items with m_equipped=true, causing them to be lost on companion destruction.
+            foreach (var item in inv.GetAllItems())
+                item.m_equipped = false;
+
             CompanionsPlugin.Log.LogDebug("[Setup] Unequipped all items for grave transfer");
 
             // Spawn tombstone at companion's position

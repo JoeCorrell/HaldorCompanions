@@ -45,6 +45,8 @@ namespace Companions
 
         // ── Constants ────────────────────────────────────────────────────────
         private const int FoodSlotCount = 3;
+        private const string PrefKeyOffsetX = "HC_PanelOffsetX";
+        private const string PrefKeyOffsetY = "HC_PanelOffsetY";
 
         // ── Companion references ─────────────────────────────────────────────
         private CompanionSetup   _companion;
@@ -70,6 +72,15 @@ namespace Companions
         private bool _visible;
         private bool _builtForDverger;
         private bool _gridCreated;  // true after first UpdateInventory (grid elements exist)
+
+        // ── Drag-to-reposition (F7) ────────────────────────────────────────
+        private bool _dragMode;
+        private bool _dragging;
+        private Vector2 _dragMouseStart;
+        private Vector2 _dragPanelStart;
+        private Vector2 _defaultPosition;   // panel's original anchoredPosition
+        private Vector2 _userOffset;        // saved offset from default position
+        private CanvasGroup _canvasGroup;
 
         // ══════════════════════════════════════════════════════════════════════
         //  Lifecycle
@@ -100,6 +111,19 @@ namespace Companions
                     Player.m_localPlayer.transform.position,
                     _companion.transform.position);
                 if (dist > 5f) { Hide(); return; }
+            }
+
+            // F7: toggle drag-to-reposition mode
+            if (Input.GetKeyDown(KeyCode.F7) && _root != null)
+            {
+                _dragMode = !_dragMode;
+                SetDragModeUI(_dragMode);
+            }
+
+            if (_dragMode)
+            {
+                HandleDragReposition();
+                return; // skip grid updates while repositioning
             }
 
             UpdateGrid();
@@ -162,6 +186,16 @@ namespace Companions
         {
             if (!_visible) return;
             _visible = false;
+
+            // Exit drag mode cleanly, saving position
+            if (_dragMode)
+            {
+                _dragMode = false;
+                _dragging = false;
+                SavePanelOffset();
+                if (_canvasGroup != null) _canvasGroup.interactable = true;
+            }
+
             if (_nameInput != null)
                 _nameInput.onValueChanged.RemoveAllListeners();
             if (_root != null) _root.SetActive(false);
@@ -172,6 +206,100 @@ namespace Companions
             _companionHumanoid  = null;
             _companionContainer = null;
             _companionNview     = null;
+        }
+
+        // ══════════════════════════════════════════════════════════════════════
+        //  Drag-to-reposition (F7)
+        // ══════════════════════════════════════════════════════════════════════
+
+        private void SetDragModeUI(bool enabled)
+        {
+            if (_canvasGroup == null && _root != null)
+                _canvasGroup = _root.GetComponent<CanvasGroup>() ?? _root.AddComponent<CanvasGroup>();
+
+            if (_canvasGroup != null)
+                _canvasGroup.interactable = !enabled;
+
+            _dragging = false;
+
+            if (enabled)
+            {
+                CompanionsPlugin.Log.LogInfo("[UI] F7 — drag-to-reposition mode ENABLED");
+                Player.m_localPlayer?.Message(MessageHud.MessageType.Center,
+                    ModLocalization.Loc("hc_msg_reposition_on"));
+            }
+            else
+            {
+                SavePanelOffset();
+                CompanionsPlugin.Log.LogInfo(
+                    $"[UI] F7 — drag-to-reposition mode DISABLED, offset=({_userOffset.x:F0}, {_userOffset.y:F0})");
+                Player.m_localPlayer?.Message(MessageHud.MessageType.Center,
+                    ModLocalization.Loc("hc_msg_reposition_off"));
+            }
+        }
+
+        private void HandleDragReposition()
+        {
+            var rt = _root != null ? _root.GetComponent<RectTransform>() : null;
+            if (rt == null) return;
+
+            if (Input.GetMouseButtonDown(0))
+            {
+                if (RectTransformUtility.RectangleContainsScreenPoint(rt, Input.mousePosition))
+                {
+                    _dragging = true;
+                    _dragMouseStart = Input.mousePosition;
+                    _dragPanelStart = rt.anchoredPosition;
+                    CompanionsPlugin.Log.LogDebug(
+                        $"[UI] Drag started — mouse={_dragMouseStart} panel={_dragPanelStart}");
+                }
+            }
+
+            if (_dragging && Input.GetMouseButton(0))
+            {
+                Vector2 delta = (Vector2)Input.mousePosition - _dragMouseStart;
+                var canvas = rt.GetComponentInParent<Canvas>();
+                if (canvas != null)
+                    delta /= canvas.scaleFactor;
+                rt.anchoredPosition = _dragPanelStart + delta;
+            }
+
+            if (Input.GetMouseButtonUp(0) && _dragging)
+            {
+                _dragging = false;
+                CompanionsPlugin.Log.LogDebug(
+                    $"[UI] Drag ended — final position={rt.anchoredPosition}");
+            }
+        }
+
+        private void ApplyPanelOffset()
+        {
+            _userOffset = new Vector2(
+                PlayerPrefs.GetFloat(PrefKeyOffsetX, 0f),
+                PlayerPrefs.GetFloat(PrefKeyOffsetY, 0f));
+
+            var rt = _root != null ? _root.GetComponent<RectTransform>() : null;
+            if (rt != null)
+            {
+                rt.anchoredPosition = _defaultPosition + _userOffset;
+                if (_userOffset.sqrMagnitude > 0.01f)
+                    CompanionsPlugin.Log.LogInfo(
+                        $"[UI] Applied saved panel offset=({_userOffset.x:F0}, {_userOffset.y:F0}) " +
+                        $"→ position={rt.anchoredPosition}");
+            }
+        }
+
+        private void SavePanelOffset()
+        {
+            var rt = _root != null ? _root.GetComponent<RectTransform>() : null;
+            if (rt == null) return;
+
+            _userOffset = rt.anchoredPosition - _defaultPosition;
+            PlayerPrefs.SetFloat(PrefKeyOffsetX, _userOffset.x);
+            PlayerPrefs.SetFloat(PrefKeyOffsetY, _userOffset.y);
+            PlayerPrefs.Save();
+            CompanionsPlugin.Log.LogDebug(
+                $"[UI] Panel offset saved=({_userOffset.x:F0}, {_userOffset.y:F0})");
         }
 
         // ══════════════════════════════════════════════════════════════════════
@@ -199,7 +327,11 @@ namespace Companions
                 var pos = cloneRT.anchoredPosition;
                 pos.y -= 110f;
                 cloneRT.anchoredPosition = pos;
+                _defaultPosition = pos;
             }
+
+            // Apply saved user offset from F7 repositioning
+            ApplyPanelOffset();
 
             // Find the cloned InventoryGrid
             _grid = _root.GetComponentInChildren<InventoryGrid>();
@@ -903,6 +1035,9 @@ namespace Companions
             _foodSlotsContainer = null;
             _weightText         = null;
             _armorText          = null;
+            _canvasGroup        = null;
+            _dragMode           = false;
+            _dragging           = false;
             _built              = false;
         }
 

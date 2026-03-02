@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.0.6
+
+### Bug Fixes
+- Fixed Companions tab not appearing in Trader UI when Bounties mod is installed — assembly reference mismatch (`HaldorOverhaul` vs `TraderOverhaul`) caused `Prepare()` to silently disable all trader tab patches
+- Fixed controller radial menu not opening — holding X on gamepad opened inventory instead of radial; `ZInput.GetButton("JoyUse")` is unreliable for continuous polling so gamepad hold detection now tracks `GetButtonUp` as a positive release signal instead
+
+## 1.0.4
+
+### Features
+- Added UI Reposition Mode (F7) — press F7 while the companion inventory panel is open to drag and reposition it anywhere on screen; position persists across sessions
+
+### Bug Fixes
+- Fixed companion tombstone missing items — stale `m_equipped` flags from ZDO deserialization caused `MoveInventoryToGrave` to skip items not currently in a humanoid equipment slot
+- Fixed companion inventory UI glitching on death — panel now closes immediately before inventory is emptied, preventing empty-grid rendering and vanilla container panel flash
+- Fixed controller radial menu not opening — holding X on gamepad opened inventory instead of radial due to `ZInput.GetButton("JoyUse")` returning false on the deferred frame; added 60ms grace period before accepting button release
+
 ## 1.0.3
 
 ### Bug Fixes

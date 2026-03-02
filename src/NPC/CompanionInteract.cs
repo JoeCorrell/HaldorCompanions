@@ -30,6 +30,14 @@ namespace Companions
         private static float     _pendingTapTime;
         private static bool      _bypassPrefix;
 
+        // ── Gamepad hold detection ──
+        // ZInput.GetButton("JoyUse") is unreliable for continuous polling —
+        // it can return false on frames where the button IS held due to
+        // internal state timing. Instead, we track GetButtonUp as a
+        // positive release signal and assume held until it fires.
+        private static bool _pendingIsGamepad;
+        private static bool _gamepadReleaseDetected;
+
         private const float HoldThreshold = 0.2f;
 
         // ── Player hover reflection (for separate-key radial detection) ──
@@ -103,16 +111,33 @@ namespace Companions
 
         /// <summary>
         /// Process any pending tap from the Container.Interact prefix.
-        /// Detects hold via Input.GetKey on the configured key.
+        /// Keyboard: detects hold via Input.GetKey on the configured key.
+        /// Gamepad: tracks ZInput.GetButtonUp("JoyUse") as a positive release
+        /// signal — assumes held until ButtonUp fires, because GetButton is
+        /// unreliable (returns false on frames where the button IS still held
+        /// due to ZInput internal state timing vs Player.Interact debounce).
         /// </summary>
         private void ProcessPendingTap()
         {
             if (_pendingTapContainer == null) return;
 
-            // Use raw Unity input for the configured key + ZInput for gamepad
-            bool useHeld = Input.GetKey(CompanionsPlugin.RadialMenuKey.Value)
-                        || ZInput.GetButton("JoyUse");
             float elapsed = Time.time - _pendingTapTime;
+
+            // Gamepad: detect release via discrete ButtonUp event
+            if (_pendingIsGamepad && !_gamepadReleaseDetected &&
+                ZInput.GetButtonUp("JoyUse"))
+            {
+                _gamepadReleaseDetected = true;
+                CompanionsPlugin.Log.LogInfo(
+                    $"[Interact] Gamepad ButtonUp detected at {elapsed:F3}s");
+            }
+
+            // Determine hold state based on input source
+            bool useHeld;
+            if (_pendingIsGamepad)
+                useHeld = !_gamepadReleaseDetected;
+            else
+                useHeld = Input.GetKey(CompanionsPlugin.RadialMenuKey.Value);
 
             // Log once when we start processing a pending tap
             if (!_loggedPendingStart)
@@ -120,21 +145,24 @@ namespace Companions
                 _loggedPendingStart = true;
                 CompanionsPlugin.Log.LogInfo(
                     $"[Interact] Update — processing pending tap: " +
-                    $"keyHeld={useHeld} key={CompanionsPlugin.RadialMenuKey.Value} " +
+                    $"useHeld={useHeld} gamepad={_pendingIsGamepad} " +
+                    $"key={CompanionsPlugin.RadialMenuKey.Value} " +
                     $"elapsed={elapsed:F3}s");
             }
 
             if (!useHeld)
             {
-                // Key released → genuine tap → open inventory
+                // Button released → genuine tap → open inventory
                 CompanionsPlugin.Log.LogInfo(
-                    $"[Interact] Update — key RELEASED after {elapsed:F3}s, opening inventory");
+                    $"[Interact] Update — RELEASED after {elapsed:F3}s " +
+                    $"(gamepad={_pendingIsGamepad}), opening inventory");
 
                 var container = _pendingTapContainer;
                 var player    = _pendingTapPlayer;
-                _pendingTapContainer = null;
-                _pendingTapPlayer    = null;
-                _loggedPendingStart  = false;
+                _pendingTapContainer    = null;
+                _pendingTapPlayer       = null;
+                _loggedPendingStart     = false;
+                _gamepadReleaseDetected = false;
 
                 if (container != null && player != null)
                 {
@@ -144,16 +172,18 @@ namespace Companions
                 return;
             }
 
-            // Key still held — once past the threshold, it's a hold → open radial
+            // Key/button still held — once past the threshold, it's a hold → open radial
             if (elapsed >= HoldThreshold)
             {
                 CompanionsPlugin.Log.LogInfo(
-                    $"[Interact] Update — hold threshold reached ({elapsed:F3}s), opening radial");
+                    $"[Interact] Update — hold threshold reached ({elapsed:F3}s), " +
+                    $"gamepad={_pendingIsGamepad}, opening radial");
 
                 var setup = _pendingTapContainer.GetComponent<CompanionSetup>();
-                _pendingTapContainer = null;
-                _pendingTapPlayer    = null;
-                _loggedPendingStart  = false;
+                _pendingTapContainer    = null;
+                _pendingTapPlayer       = null;
+                _loggedPendingStart     = false;
+                _gamepadReleaseDetected = false;
 
                 if (setup != null)
                 {
@@ -173,9 +203,10 @@ namespace Companions
         {
             if (_pendingTapContainer != null)
                 CompanionsPlugin.Log.LogDebug("[Interact] ClearPendingTap called while pending");
-            _pendingTapContainer = null;
-            _pendingTapPlayer    = null;
-            _loggedPendingStart  = false;
+            _pendingTapContainer    = null;
+            _pendingTapPlayer       = null;
+            _loggedPendingStart     = false;
+            _gamepadReleaseDetected = false;
         }
 
         internal string GetHoverText()
@@ -276,9 +307,10 @@ namespace Companions
                     CompanionsPlugin.Log.LogInfo(
                         $"[Interact] Prefix — hold=true arrived, opening radial");
 
-                    _pendingTapContainer = null;
-                    _pendingTapPlayer    = null;
-                    _loggedPendingStart  = false;
+                    _pendingTapContainer    = null;
+                    _pendingTapPlayer       = null;
+                    _loggedPendingStart     = false;
+                    _gamepadReleaseDetected = false;
 
                     CompanionRadialMenu.EnsureInstance();
                     if (CompanionRadialMenu.Instance != null &&
@@ -292,13 +324,16 @@ namespace Companions
                 // Guard: only set if not already pending (prevents timer reset).
                 if (_pendingTapContainer == null)
                 {
-                    _pendingTapContainer = __instance;
-                    _pendingTapPlayer    = player;
-                    _pendingTapTime      = Time.time;
-                    _loggedPendingStart  = false;
+                    _pendingTapContainer    = __instance;
+                    _pendingTapPlayer       = player;
+                    _pendingTapTime         = Time.time;
+                    _loggedPendingStart     = false;
+                    _pendingIsGamepad       = ZInput.IsGamepadActive();
+                    _gamepadReleaseDetected = false;
 
                     CompanionsPlugin.Log.LogInfo(
                         $"[Interact] Prefix — tap deferred, " +
+                        $"gamepad={_pendingIsGamepad} " +
                         $"InputKey={Input.GetKey(CompanionsPlugin.RadialMenuKey.Value)} " +
                         $"time={Time.time:F3}");
                 }
