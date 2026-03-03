@@ -105,6 +105,11 @@ namespace Companions
                 AddIfValid(_armorPieces, _helmetItem?.GetValue(humanoid) as ItemDrop.ItemData);
                 AddIfValid(_armorPieces, _shoulderItem?.GetValue(humanoid) as ItemDrop.ItemData);
 
+                // Include extra utility items in durability drain pool (ExtraSlots compat)
+                int extraCount = setup.GetExtraUtilityCount();
+                for (int i = 0; i < extraCount; i++)
+                    AddIfValid(_armorPieces, setup.GetExtraUtilityItem(i));
+
                 if (_armorPieces.Count == 0)
                 {
                     CompanionsPlugin.Log.LogDebug(

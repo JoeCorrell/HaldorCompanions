@@ -72,6 +72,7 @@ namespace Companions
         private static readonly FieldInfo _helmetItemField   = AccessTools.Field(typeof(Humanoid), "m_helmetItem");
         private static readonly FieldInfo _shoulderItemField = AccessTools.Field(typeof(Humanoid), "m_shoulderItem");
         private static readonly FieldInfo _utilityItemField  = AccessTools.Field(typeof(Humanoid), "m_utilityItem");
+        private static readonly FieldInfo _trinketItemField  = AccessTools.Field(typeof(Humanoid), "m_trinketItem");
 
         private ZNetView         _nview;
         private VisEquipment     _visEquip;
@@ -85,6 +86,10 @@ namespace Companions
         private bool           _ownerMismatchLogged;
         private bool           _uiFrozen;
         private bool           _dead;
+
+        // ── Extra utility slots (ExtraSlots compat) ─────────────────────────
+        private ItemDrop.ItemData[] _extraUtilities;
+        internal const string ExtraUtilitySlotKey = "HC_ExtraUtilitySlot";
 
         // Minimap pin — live-updating, owner-only
         private Minimap.PinData _minimapPin;
@@ -100,6 +105,40 @@ namespace Companions
         /// CombatController checks this to delay engagement until gear is equipped.
         /// </summary>
         internal bool IsEquipping => _equipQueue.Count > 0 || _equipAnimActive;
+
+        // ── Extra utility accessors (for Harmony patches) ───────────────────
+        internal int GetExtraUtilityCount() => _extraUtilities?.Length ?? 0;
+
+        internal ItemDrop.ItemData GetExtraUtilityItem(int index)
+        {
+            if (_extraUtilities == null || index < 0 || index >= _extraUtilities.Length)
+                return null;
+            return _extraUtilities[index];
+        }
+
+        internal ItemDrop.ItemData GetHelmetItem()   => GetEquipSlot(_helmetItemField);
+        internal ItemDrop.ItemData GetChestItem()    => GetEquipSlot(_chestItemField);
+        internal ItemDrop.ItemData GetLegsItem()     => GetEquipSlot(_legItemField);
+        internal ItemDrop.ItemData GetShoulderItem() => GetEquipSlot(_shoulderItemField);
+        internal ItemDrop.ItemData GetUtilityItem()  => GetEquipSlot(_utilityItemField);
+        internal ItemDrop.ItemData GetTrinketItem()  => GetEquipSlot(_trinketItemField);
+
+        internal ItemDrop.ItemData GetItemForExtraSlotsSlot(string slotId)
+        {
+            if (string.IsNullOrEmpty(slotId)) return null;
+
+            if (string.Equals(slotId, "Helmet", StringComparison.OrdinalIgnoreCase))   return GetHelmetItem();
+            if (string.Equals(slotId, "Chest", StringComparison.OrdinalIgnoreCase))    return GetChestItem();
+            if (string.Equals(slotId, "Legs", StringComparison.OrdinalIgnoreCase))     return GetLegsItem();
+            if (string.Equals(slotId, "Shoulder", StringComparison.OrdinalIgnoreCase)) return GetShoulderItem();
+            if (string.Equals(slotId, "Utility", StringComparison.OrdinalIgnoreCase))  return GetUtilityItem();
+            if (string.Equals(slotId, "Trinket", StringComparison.OrdinalIgnoreCase))  return GetTrinketItem();
+
+            if (ExtraSlotsCompat.TryGetExtraUtilityIndex(slotId, out int extraIdx))
+                return GetExtraUtilityItem(extraIdx);
+
+            return null;
+        }
 
         private void Awake()
         {
@@ -345,11 +384,13 @@ namespace Companions
             RestoreName();
             RegisterInventoryCallback();
             AddStarterGear(zdo);
+            InitExtraUtilities();
+            RestoreExtraUtilities();
 
             int mode = zdo.GetInt(ActionModeHash, ModeFollow);
             CompanionsPlugin.Log.LogInfo(
                 $"[Setup] Initialized — mode={mode} appearance={(string.IsNullOrEmpty(serial) ? "default" : "saved")} " +
-                $"pos={transform.position:F1}");
+                $"extraSlots={_extraUtilities?.Length ?? 0} pos={transform.position:F1}");
 
             _initialized = true;
         }
@@ -759,6 +800,9 @@ namespace Companions
                     $"pos=({item.m_gridPos.x},{item.m_gridPos.y}) equipped={item.m_equipped}");
             }
 
+            // Clear extra utility slots before death — prevents stale m_customData on tombstone items
+            ClearAllExtraUtilities();
+
             // Unequip all items so MoveInventoryToGrave transfers everything
             _humanoid.UnequipAllItems();
 
@@ -1025,6 +1069,7 @@ namespace Companions
             ItemDrop.ItemData bestHelmet   = null;  float bestHelmetArmor  = 0f;
             ItemDrop.ItemData bestShoulder = null;  float bestShoulderArmor = 0f;
             ItemDrop.ItemData bestUtility  = null;  float bestUtilityArmor = 0f;
+            ItemDrop.ItemData bestTrinket  = null;  float bestTrinketArmor = 0f;
 
             foreach (var item in items)
             {
@@ -1096,6 +1141,50 @@ namespace Companions
                     case ItemDrop.ItemData.ItemType.Utility:
                         if (armor > bestUtilityArmor) { bestUtility  = item; bestUtilityArmor = armor; }
                         break;
+                    case ItemDrop.ItemData.ItemType.Trinket:
+                        if (armor > bestTrinketArmor) { bestTrinket = item; bestTrinketArmor = armor; }
+                        break;
+                }
+
+                // Match ExtraSlots slot validators so companion auto-equip follows the
+                // same slot rules as the player (including modded/customized slot rules).
+                if (ExtraSlotsCompat.IsLoaded)
+                {
+                    if (ExtraSlotsCompat.ItemFitsSlot("Chest", item) && armor > bestChestArmor)
+                    {
+                        bestChest = item;
+                        bestChestArmor = armor;
+                    }
+
+                    if (ExtraSlotsCompat.ItemFitsSlot("Legs", item) && armor > bestLegsArmor)
+                    {
+                        bestLegs = item;
+                        bestLegsArmor = armor;
+                    }
+
+                    if (ExtraSlotsCompat.ItemFitsSlot("Helmet", item) && armor > bestHelmetArmor)
+                    {
+                        bestHelmet = item;
+                        bestHelmetArmor = armor;
+                    }
+
+                    if (ExtraSlotsCompat.ItemFitsSlot("Shoulder", item) && armor > bestShoulderArmor)
+                    {
+                        bestShoulder = item;
+                        bestShoulderArmor = armor;
+                    }
+
+                    if (ExtraSlotsCompat.ItemFitsSlot("Utility", item) && armor > bestUtilityArmor)
+                    {
+                        bestUtility = item;
+                        bestUtilityArmor = armor;
+                    }
+
+                    if (ExtraSlotsCompat.ItemFitsSlot("Trinket", item) && armor > bestTrinketArmor)
+                    {
+                        bestTrinket = item;
+                        bestTrinketArmor = armor;
+                    }
                 }
             }
 
@@ -1106,7 +1195,8 @@ namespace Companions
                 $"shield=\"{bestShield?.m_shared?.m_name ?? "none"}\"(block={bestShieldBlock:F0}) " +
                 $"helm=\"{bestHelmet?.m_shared?.m_name ?? "none"}\" " +
                 $"chest=\"{bestChest?.m_shared?.m_name ?? "none"}\" " +
-                $"legs=\"{bestLegs?.m_shared?.m_name ?? "none"}\""
+                $"legs=\"{bestLegs?.m_shared?.m_name ?? "none"}\" " +
+                $"trinket=\"{bestTrinket?.m_shared?.m_name ?? "none"}\""
             );
 
             // Decide weapons: prefer 2H if it's stronger than 1H+shield combined
@@ -1172,15 +1262,127 @@ namespace Companions
                 _humanoid.UnequipItem(curLeft, false);
             }
 
-            // Armor/accessory slots: always converge to best available piece.
-            // Dverger companions cannot wear armor — skip armor slots entirely.
+            // Armor slots: Dverger companions cannot wear armor — skip armor slots entirely.
             if (CanWearArmor())
             {
                 EquipBestArmorSlot(_chestItemField, bestChest);
                 EquipBestArmorSlot(_legItemField, bestLegs);
                 EquipBestArmorSlot(_helmetItemField, bestHelmet);
                 EquipBestArmorSlot(_shoulderItemField, bestShoulder);
-                EquipBestArmorSlot(_utilityItemField, bestUtility);
+            }
+
+            // Utility & trinket — all companions can use these regardless of CanWearArmor
+            EquipBestArmorSlot(_utilityItemField, bestUtility);
+            EquipBestArmorSlot(_trinketItemField, bestTrinket);
+
+            // Extra utility slots (ExtraSlots mod compatibility)
+            AutoEquipExtraUtilities(items);
+        }
+
+        private void AutoEquipExtraUtilities(List<ItemDrop.ItemData> items)
+        {
+            if (_extraUtilities == null) return;
+
+            ExtraSlotsCompat.RefreshSlotsMetadata();
+            var vanillaUtility = GetEquipSlot(_utilityItemField);
+
+            var slotIds = new string[_extraUtilities.Length];
+            if (ExtraSlotsCompat.IsLoaded)
+            {
+                var defs = ExtraSlotsCompat.GetActiveEquipmentSlots();
+                for (int i = 0; i < defs.Count; i++)
+                {
+                    var def = defs[i];
+                    if (!ExtraSlotsCompat.TryGetExtraUtilityIndex(def.Id, out int slotIdx)) continue;
+                    if (slotIdx < 0 || slotIdx >= slotIds.Length) continue;
+                    slotIds[slotIdx] = def.Id;
+                }
+            }
+
+            // Collect all items that fit at least one extra utility slot.
+            var candidates = new List<ItemDrop.ItemData>();
+            foreach (var item in items)
+            {
+                if (item?.m_shared == null) continue;
+                if (item.m_shared.m_useDurability && item.m_durability <= 0f) continue;
+                if (item == vanillaUtility) continue;
+
+                bool fitsAnySlot = false;
+                for (int slotIdx = 0; slotIdx < slotIds.Length; slotIdx++)
+                {
+                    string slotId = slotIds[slotIdx];
+                    if (!string.IsNullOrEmpty(slotId))
+                    {
+                        if (ExtraSlotsCompat.ItemFitsSlot(slotId, item))
+                        {
+                            fitsAnySlot = true;
+                            break;
+                        }
+                        continue;
+                    }
+
+                    // Fallback when dynamic slot metadata is unavailable.
+                    if (item.m_shared.m_itemType == ItemDrop.ItemData.ItemType.Utility)
+                    {
+                        fitsAnySlot = true;
+                        break;
+                    }
+                }
+
+                if (fitsAnySlot) candidates.Add(item);
+            }
+
+            // Sort by armor descending (best protection first).
+            candidates.Sort((a, b) => b.GetArmor().CompareTo(a.GetArmor()));
+
+            bool changed = false;
+            for (int i = 0; i < _extraUtilities.Length; i++)
+            {
+                var old = _extraUtilities[i];
+                var desired = default(ItemDrop.ItemData);
+
+                for (int c = 0; c < candidates.Count; c++)
+                {
+                    var item = candidates[c];
+                    if (item == null) continue;
+
+                    string slotId = slotIds[i];
+                    bool fits = !string.IsNullOrEmpty(slotId)
+                        ? ExtraSlotsCompat.ItemFitsSlot(slotId, item)
+                        : item.m_shared.m_itemType == ItemDrop.ItemData.ItemType.Utility;
+
+                    if (!fits) continue;
+
+                    desired = item;
+                    candidates.RemoveAt(c);
+                    break;
+                }
+
+                if (old == desired) continue;
+
+                // Unequip old
+                if (old != null)
+                {
+                    UnequipExtraUtility(i);
+                    changed = true;
+                }
+
+                // Equip new
+                if (desired != null)
+                {
+                    EquipExtraUtility(desired, i);
+                    changed = true;
+                }
+            }
+
+            if (changed)
+            {
+                ExtraSlotsPatches.CallSetupEquipment(_humanoid);
+                int equipped = 0;
+                for (int i = 0; i < _extraUtilities.Length; i++)
+                    if (_extraUtilities[i] != null) equipped++;
+                CompanionsPlugin.Log.LogDebug(
+                    $"[Setup] Extra utility slots: {equipped}/{_extraUtilities.Length} filled");
             }
         }
 
@@ -1362,10 +1564,21 @@ namespace Companions
             var legs     = GetEquipSlot(_legItemField);
             var helmet   = GetEquipSlot(_helmetItemField);
             var shoulder = GetEquipSlot(_shoulderItemField);
+            var trinket  = GetEquipSlot(_trinketItemField);
             if (chest    != null) armor += chest.GetArmor();
             if (legs     != null) armor += legs.GetArmor();
             if (helmet   != null) armor += helmet.GetArmor();
             if (shoulder != null) armor += shoulder.GetArmor();
+            if (trinket  != null) armor += trinket.GetArmor();
+
+            // Include extra utility slot armor (ExtraSlots compat)
+            if (_extraUtilities != null)
+            {
+                for (int i = 0; i < _extraUtilities.Length; i++)
+                    if (_extraUtilities[i] != null)
+                        armor += _extraUtilities[i].GetArmor();
+            }
+
             return armor;
         }
 
@@ -1389,6 +1602,135 @@ namespace Companions
             UnequipIfMissing(items, GetEquipSlot(_helmetItemField));
             UnequipIfMissing(items, GetEquipSlot(_shoulderItemField));
             UnequipIfMissing(items, GetEquipSlot(_utilityItemField));
+            UnequipIfMissing(items, GetEquipSlot(_trinketItemField));
+            UnequipMissingExtraUtilities();
+        }
+
+        // ══════════════════════════════════════════════════════════════════════
+        //  Extra Utility Slots (ExtraSlots mod compatibility)
+        // ══════════════════════════════════════════════════════════════════════
+
+        private void InitExtraUtilities()
+        {
+            if (!ExtraSlotsCompat.IsLoaded) return;
+            ExtraSlotsCompat.RefreshSlotsMetadata();
+            ExtraSlotsCompat.RefreshSlotCount();
+            int count = ExtraSlotsCompat.ExtraUtilitySlotCount;
+            if (count <= 0) return;
+            _extraUtilities = new ItemDrop.ItemData[count];
+        }
+
+        private void RestoreExtraUtilities()
+        {
+            if (_extraUtilities == null || _humanoid == null) return;
+
+            var inv = _humanoid.GetInventory();
+            if (inv == null) return;
+
+            bool restored = false;
+            foreach (var item in inv.GetAllItems())
+            {
+                if (item == null || item.m_customData == null) continue;
+                if (!item.m_customData.TryGetValue(ExtraUtilitySlotKey, out string slotStr)) continue;
+                if (!int.TryParse(slotStr, out int slot)) continue;
+                if (slot < 0 || slot >= _extraUtilities.Length) continue;
+
+                // Prevent slot collision — skip if slot already occupied
+                if (_extraUtilities[slot] != null)
+                {
+                    CompanionsPlugin.Log.LogWarning(
+                        $"[Setup] Extra utility slot {slot} collision — " +
+                        $"\"{item.m_shared?.m_name ?? "?"}\" conflicts with " +
+                        $"\"{_extraUtilities[slot].m_shared?.m_name ?? "?"}\" — clearing duplicate");
+                    item.m_equipped = false;
+                    item.m_customData.Remove(ExtraUtilitySlotKey);
+                    continue;
+                }
+
+                _extraUtilities[slot] = item;
+                item.m_equipped = true;
+                ExtraSlotsCompat.SetExtraUtility(_humanoid, slot, item);
+                restored = true;
+
+                CompanionsPlugin.Log.LogDebug(
+                    $"[Setup] Restored extra utility slot {slot}: \"{item.m_shared?.m_name ?? "?"}\"");
+            }
+
+            if (restored)
+                ExtraSlotsPatches.CallSetupEquipment(_humanoid);
+        }
+
+        private void EquipExtraUtility(ItemDrop.ItemData item, int slot)
+        {
+            if (_extraUtilities == null || item == null) return;
+            if (slot < 0 || slot >= _extraUtilities.Length) return;
+
+            item.m_equipped = true;
+            if (item.m_customData == null)
+                item.m_customData = new System.Collections.Generic.Dictionary<string, string>();
+            item.m_customData[ExtraUtilitySlotKey] = slot.ToString();
+            _extraUtilities[slot] = item;
+            ExtraSlotsCompat.SetExtraUtility(_humanoid, slot, item);
+
+            CompanionsPlugin.Log.LogDebug(
+                $"[Setup] Equipped extra utility slot {slot}: \"{item.m_shared?.m_name ?? "?"}\"");
+        }
+
+        private void UnequipExtraUtility(int slot)
+        {
+            if (_extraUtilities == null) return;
+            if (slot < 0 || slot >= _extraUtilities.Length) return;
+
+            var item = _extraUtilities[slot];
+            if (item == null) return;
+
+            item.m_equipped = false;
+            item.m_customData?.Remove(ExtraUtilitySlotKey);
+            _extraUtilities[slot] = null;
+            ExtraSlotsCompat.SetExtraUtility(_humanoid, slot, null);
+
+            CompanionsPlugin.Log.LogDebug(
+                $"[Setup] Unequipped extra utility slot {slot}: \"{item.m_shared?.m_name ?? "?"}\"");
+        }
+
+        private void ClearAllExtraUtilities()
+        {
+            if (_extraUtilities == null) return;
+            for (int i = 0; i < _extraUtilities.Length; i++)
+            {
+                if (_extraUtilities[i] != null)
+                {
+                    _extraUtilities[i].m_equipped = false;
+                    _extraUtilities[i].m_customData?.Remove(ExtraUtilitySlotKey);
+                    _extraUtilities[i] = null;
+                    ExtraSlotsCompat.SetExtraUtility(_humanoid, i, null);
+                }
+            }
+        }
+
+        private void UnequipMissingExtraUtilities()
+        {
+            if (_extraUtilities == null) return;
+            var inv = _humanoid?.GetInventory();
+            if (inv == null) return;
+            var items = inv.GetAllItems();
+            bool changed = false;
+            for (int i = 0; i < _extraUtilities.Length; i++)
+            {
+                var item = _extraUtilities[i];
+                if (item != null && !items.Contains(item))
+                {
+                    CompanionsPlugin.Log.LogDebug(
+                        $"[Setup] Extra utility slot {i} missing from inventory — clearing " +
+                        $"\"{item.m_shared?.m_name ?? "?"}\"");
+                    item.m_equipped = false;
+                    item.m_customData?.Remove(ExtraUtilitySlotKey);
+                    _extraUtilities[i] = null;
+                    ExtraSlotsCompat.SetExtraUtility(_humanoid, i, null);
+                    changed = true;
+                }
+            }
+            if (changed) ExtraSlotsPatches.CallSetupEquipment(_humanoid);
         }
     }
 }

@@ -28,7 +28,6 @@ namespace Companions
         private static Container _pendingTapContainer;
         private static Player    _pendingTapPlayer;
         private static float     _pendingTapTime;
-        private static bool      _bypassPrefix;
 
         // ── Gamepad hold detection (prefix-based, legacy) ──
         private static bool _pendingIsGamepad;
@@ -206,10 +205,7 @@ namespace Companions
 
                     var container = setup.GetComponent<Container>();
                     if (container != null)
-                    {
-                        _bypassPrefix = true;
-                        container.Interact(player, false, false);
-                    }
+                        OpenCompanionInventory(setup, container, player);
                 }
             }
         }
@@ -270,16 +266,14 @@ namespace Companions
 
                 var container = _pendingTapContainer;
                 var player    = _pendingTapPlayer;
+                var setup     = container?.GetComponent<CompanionSetup>();
                 _pendingTapContainer    = null;
                 _pendingTapPlayer       = null;
                 _loggedPendingStart     = false;
                 _gamepadReleaseDetected = false;
 
-                if (container != null && player != null)
-                {
-                    _bypassPrefix = true;
-                    container.Interact(player, false, false);
-                }
+                if (container != null && player != null && setup != null)
+                    OpenCompanionInventory(setup, container, player);
                 return;
             }
 
@@ -368,6 +362,29 @@ namespace Companions
             return _character != null ? _character.m_name : ModLocalization.Loc("hc_msg_name_default");
         }
 
+        /// <summary>
+        /// Opens the companion inventory by showing InventoryGui with the real
+        /// companion Container, then overlaying our custom CompanionInteractPanel.
+        /// Vanilla handles drag-drop, gamepad groups, SetInUse, and IsContainerOpen
+        /// natively — no Harmony patches on InventoryGui needed.
+        /// </summary>
+        internal static void OpenCompanionInventory(CompanionSetup setup, Container container, Player player)
+        {
+            if (InventoryGui.instance == null) return;
+
+            // Claim ZDO ownership before Show() — vanilla's UpdateContainer checks
+            // IsOwner() every frame, and SetInUse() also requires ownership.
+            // The normal RPC chain (Container.Interact → RequestOpen → OpenResponse)
+            // transfers ownership via ZDO.SetOwner(), but we bypass that chain.
+            var nview = container.GetComponent<ZNetView>();
+            if (nview != null && !nview.IsOwner())
+                nview.ClaimOwnership();
+
+            InventoryGui.instance.Show(container);
+            CompanionInteractPanel.EnsureInstance();
+            CompanionInteractPanel.Instance?.Show(setup);
+        }
+
         // ═══════════════════════════════════════════════════════════════════
         //  Harmony patches — ownership check + defer tap on Container.Interact
         // ═══════════════════════════════════════════════════════════════════
@@ -377,14 +394,6 @@ namespace Companions
         {
             static bool Prefix(Container __instance, Humanoid character, bool hold, ref bool __result)
             {
-                // Bypass flag — used when we manually invoke after confirming a tap
-                if (_bypassPrefix)
-                {
-                    CompanionsPlugin.Log.LogDebug("[Interact] Prefix — bypass flag set, allowing vanilla");
-                    _bypassPrefix = false;
-                    return true;
-                }
-
                 var setup = __instance.GetComponent<CompanionSetup>();
                 if (setup == null) return true;
 
@@ -417,7 +426,7 @@ namespace Companions
                     return false;
                 }
 
-                // ── Separate-key mode: no tap/hold deferral, let vanilla open inventory ──
+                // ── Separate-key mode: no tap/hold deferral, open inventory directly ──
                 if (!IsRadialKeyUse)
                 {
                     if (hold)
@@ -426,10 +435,12 @@ namespace Companions
                         __result = false;
                         return false;
                     }
-                    // hold=false (tap) → let vanilla Container.Interact run → opens inventory
+                    // hold=false (tap) → open inventory directly
                     CompanionsPlugin.Log.LogDebug(
-                        "[Interact] Prefix — separate key mode, letting vanilla open inventory");
-                    return true;
+                        "[Interact] Prefix — separate key mode, opening inventory");
+                    OpenCompanionInventory(setup, __instance, player);
+                    __result = true;
+                    return false;
                 }
 
                 // ── Same-key mode (E) — keyboard only below this point ──

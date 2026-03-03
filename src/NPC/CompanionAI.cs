@@ -193,6 +193,13 @@ namespace Companions
         private static float SelfDefenseRange => ModConfig.SelfDefenseRange.Value;
         private const float AlertRange = 9999f;
 
+        // Combat: intercept prediction (lead running targets) + circling
+        private const float InterceptTime = 1.5f;         // seconds of velocity to lead by
+        private const float CircleInterval = 4f;           // seconds between circle repositions
+        private const float CircleDuration = 2f;           // seconds spent circling per cycle
+        private const float CircleDistance = 4.5f;           // radius of circle around target (beyond melee stop range)
+        private float _circleTimer;
+
         // ══════════════════════════════════════════════════════════════════════
         //  Debug Logging
         // ══════════════════════════════════════════════════════════════════════
@@ -321,6 +328,7 @@ namespace Companions
             m_targetStatic = null;
             _inCombatStopRange = false;
             _attackRetryTime = 0f;
+            _circleTimer = 0f;
         }
 
         // ══════════════════════════════════════════════════════════════════════
@@ -342,6 +350,8 @@ namespace Companions
         private const float CtxProbeRange  = 4f;    // how far ahead to scan for obstacles
         private const float CtxDangerWeight = 1.8f; // how strongly obstacles repel
         private const float CtxMinClearance = 0.4f;  // below this distance, danger = max
+        private const float CtxSmoothRate  = 8f;    // lerp speed for direction smoothing (higher = snappier)
+        private Vector3 _ctxSmoothedDir;             // temporally smoothed steer direction
 
         // Fallback stuck detection (when context steering alone can't escape)
         private float _avoidStuckTimer;
@@ -445,6 +455,15 @@ namespace Companions
                 }
             }
 
+            // Temporal smoothing: lerp toward the new best direction to prevent
+            // erratic frame-to-frame oscillation that fights BaseAI's MoveTowards
+            // smooth movement blending. The result is steadier, more natural movement.
+            if (_ctxSmoothedDir.sqrMagnitude < 0.01f)
+                _ctxSmoothedDir = bestDir;
+            else
+                _ctxSmoothedDir = Vector3.Lerp(_ctxSmoothedDir, bestDir,
+                    CtxSmoothRate * Time.deltaTime).normalized;
+
             // Throttled logging — only log every 2 seconds
             _ctxLogTimer -= Time.fixedDeltaTime;
             if (_ctxLogTimer <= 0f)
@@ -456,7 +475,7 @@ namespace Companions
                     $"closestHit={closestHit:F1}m pos={transform.position:F1}");
             }
 
-            return bestDir;
+            return _ctxSmoothedDir;
         }
 
         internal bool MoveToPoint(float dt, Vector3 point, float dist, bool run)
@@ -478,6 +497,7 @@ namespace Companions
                 _avoidCornerTimer = 0f;
                 _avoidStuckTimer = 0f;
                 _pathStuckTimer = 0f;
+                _ctxSmoothedDir = Vector3.zero;
                 return true;
             }
 
@@ -530,6 +550,7 @@ namespace Companions
 
                 _avoidCornerTimer = 0f;
                 _avoidStuckTimer = 0f;
+                _ctxSmoothedDir = Vector3.zero; // reset smoothing when normal pathing resumes
             }
             else
             {
@@ -2188,27 +2209,44 @@ namespace Companions
                     ? stopRange + 0.3f
                     : stopRange;
                 bool shouldStop = dist < stopThreshold && canSee && IsAlerted();
+                bool inCirclePhase = false;
 
                 if (!shouldStop)
                 {
                     _inCombatStopRange = false;
+                    _circleTimer = 0f;
 
-                    // Not close enough to stop — move toward target
+                    // Not close enough to stop — move toward target.
+                    // Lead the target using velocity prediction (vanilla technique
+                    // from MonsterAI) so the companion cuts off running enemies
+                    // instead of tail-chasing their current position.
                     Vector3 moveTarget = m_lastKnownTargetPos;
+                    if (dist > 3f)
+                    {
+                        Vector3 targetVel = m_targetCreature.GetVelocity();
+                        if (targetVel.magnitude > 0.5f)
+                        {
+                            float interceptMag = targetVel.magnitude * InterceptTime;
+                            if (dist > interceptMag * 0.25f)
+                                moveTarget += targetVel * InterceptTime;
+                        }
+                    }
 
-                    // Flanking: approach from opposite side of player
+                    // Flanking: approach from opposite side of player.
+                    // Uses the intercept-adjusted moveTarget so flanking leads the
+                    // target rather than flanking its current (stale) position.
                     if (stance != CompanionSetup.StancePassive &&
                         stance != CompanionSetup.StanceDefensive &&
                         m_follow != null && dist > weaponRange * 2f)
                     {
-                        float playerToTarget = Vector3.Distance(m_follow.transform.position, m_lastKnownTargetPos);
+                        float playerToTarget = Vector3.Distance(m_follow.transform.position, moveTarget);
                         if (playerToTarget < 15f && playerToTarget > 1f)
                         {
-                            Vector3 behindTarget = (m_lastKnownTargetPos - m_follow.transform.position).normalized;
+                            Vector3 behindTarget = (moveTarget - m_follow.transform.position).normalized;
                             float flankDist = stance == CompanionSetup.StanceAggressive
                                 ? weaponRange * 0.5f
                                 : weaponRange;
-                            moveTarget = m_lastKnownTargetPos + behindTarget * flankDist;
+                            moveTarget = moveTarget + behindTarget * flankDist;
                         }
                     }
 
@@ -2258,12 +2296,32 @@ namespace Companions
                 {
                     _inCombatStopRange = true;
 
-                    // Close enough — stop and face target
-                    StopMoving();
+                    // In melee range — use circle/attack pattern instead of standing still.
+                    // This mimics vanilla MonsterAI's circleTarget behavior: pause briefly
+                    // to attack, then reposition around the enemy for a more dynamic fight.
+                    _circleTimer += dt;
+                    inCirclePhase = _circleTimer > CircleInterval &&
+                        _circleTimer < CircleInterval + CircleDuration &&
+                        !m_character.InAttack();
+                    if (inCirclePhase)
+                    {
+                        // Circle phase: move to a new position around the target.
+                        // Attacks are suppressed during this phase (matches vanilla
+                        // MonsterAI where circling returns early before attack checks).
+                        RandomMovementArroundPoint(dt, m_targetCreature.transform.position,
+                            CircleDistance, true);
+                    }
+                    else
+                    {
+                        // Pause phase: stand and face target (ready to attack)
+                        StopMoving();
+                        if (_circleTimer > CircleInterval + CircleDuration)
+                            _circleTimer = UnityEngine.Random.Range(0f, CircleInterval * 0.25f);
+                    }
                 }
 
-                // Attack if in weapon range, can see, and alerted
-                if (inAttackRange && canSee && IsAlerted())
+                // Attack if in weapon range, can see, alerted, and not actively circling
+                if (!inCirclePhase && inAttackRange && canSee && IsAlerted())
                 {
                     LookAt(m_targetCreature.GetTopPoint());
 

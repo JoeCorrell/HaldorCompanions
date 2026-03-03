@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.1.3
+
+### Inventory UI Overhaul
+- Removed all 3 Harmony patches on InventoryGui (Show, Hide, UpdateContainer) — eliminates mod conflicts with Equipment & Quick Slots, AUGA, Better Inventory, and other UI mods
+- Companion inventory now opens through vanilla's container system instead of intercepting it
+
+### AI Combat Improvements
+- Companions now lead running targets using velocity prediction instead of chasing their current position
+- Companions circle and reposition around enemies in melee range instead of standing still like a turret
+- Flanking now leads the target's predicted position instead of its current one
+
+### AI Pathing Improvements
+- Context steering direction is now temporally smoothed between frames for steadier, more natural obstacle avoidance
+
+### Bug Fixes
+- Fixed gamepad D-pad skipping rows in companion inventory — input was being processed twice per frame
+- Fixed gamepad starting on the wrong row when switching from player inventory to companion inventory
+- Fixed equipped item indicators not showing on companion inventory grid
+
 ## 1.1.2
 
 ### New
