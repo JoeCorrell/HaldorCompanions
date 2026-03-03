@@ -352,7 +352,7 @@ namespace Companions
         // ══════════════════════════════════════════════════════════════════════
 
         private const int   CtxRayCount    = 13;    // rays from -90° to +90° in 15° steps
-        private const float CtxProbeRange  = 4f;    // how far ahead to scan for obstacles
+        private const float CtxProbeRange  = 6f;    // how far ahead to scan for obstacles (6m → detects walls earlier)
         private const float CtxDangerWeight = 1.8f; // how strongly obstacles repel
         private const float CtxMinClearance = 0.4f;  // below this distance, danger = max
         private const float CtxSmoothRate  = 8f;    // lerp speed for direction smoothing (higher = snappier)
@@ -387,7 +387,7 @@ namespace Companions
         // but the companion can't actually move (half-wall blocking the NavMesh path).
         // After this timer exceeds the threshold, context steer takes over.
         private float _pathStuckTimer;
-        private const float PathStuckThreshold = 1.5f;
+        private const float PathStuckThreshold = 0.7f;  // lowered from 1.5s: faster response to walking into walls
 
         // Logging throttle — context steer decisions are per-frame, throttle to every 2s
         private float _ctxLogTimer;
@@ -411,11 +411,14 @@ namespace Companions
 
             Vector3 center = m_character.GetCenterPoint();
 
-            // Lazy-init masks
+            // Lazy-init masks.
+            // "piece" is included in the STANDARD mask so context steering always sees
+            // player-built walls — previously it was only included in the path-stuck fallback,
+            // meaning the companion could walk into walls freely during normal ctx-steer nav.
             if (_ctxSteerMask == 0)
             {
-                _ctxSteerMask = LayerMask.GetMask("Default", "static_solid", "Default_small", "terrain", "vehicle");
-                _ctxSteerPieceMask = _ctxSteerMask | LayerMask.GetMask("piece");
+                _ctxSteerMask = LayerMask.GetMask("Default", "static_solid", "Default_small", "terrain", "vehicle", "piece");
+                _ctxSteerPieceMask = _ctxSteerMask; // same mask; kept as alias for existing call sites
             }
 
             float bestScore = float.MinValue;
@@ -424,6 +427,11 @@ namespace Companions
             int dangerousRays = 0;
             float closestHit = CtxProbeRange;
 
+            // Second ray origin at low height — detects half-walls and floor pieces that
+            // a chest-height ray would clear. The two rays are cheap (26 total vs 13) and
+            // catch a broad range of building piece shapes.
+            Vector3 lowOrigin = transform.position + Vector3.up * 0.4f;
+
             for (int i = 0; i < CtxRayCount; i++)
             {
                 // Spread rays from -90° to +90° relative to goal direction
@@ -431,9 +439,13 @@ namespace Companions
                 Vector3 probeDir = Quaternion.Euler(0f, angle, 0f) * goalDir;
 
                 // How far is the nearest obstacle in this direction?
+                // Cast at two heights — chest level (center) and near-ground — and
+                // take the minimum so low obstacles are detected as well as tall ones.
                 int mask = maskOverride != 0 ? maskOverride : _ctxSteerMask;
                 float hitDist = Physics.Raycast(center, probeDir, out RaycastHit ctxHit, CtxProbeRange, mask)
                     ? ctxHit.distance : CtxProbeRange;
+                if (Physics.Raycast(lowOrigin, probeDir, out RaycastHit lowHit, CtxProbeRange, mask))
+                    hitDist = Mathf.Min(hitDist, lowHit.distance);
 
                 // Interest: how aligned with goal (1.0 = perfect, 0 = perpendicular)
                 float interest = Vector3.Dot(probeDir, goalDir);
@@ -536,6 +548,24 @@ namespace Companions
                 float vel = m_character.GetVelocity().magnitude;
                 if (vel < GroundStuckVelThreshold && !m_character.InAttack())
                 {
+                    // Proactive: when velocity has dropped, spherecast in the current
+                    // movement direction. If a building piece is directly ahead (≤2m),
+                    // force the stuck timer to threshold immediately instead of waiting
+                    // up to PathStuckThreshold seconds. This is the main reason companions
+                    // stand still at walls — the stuck timer adds a long visible pause.
+                    if (_pathStuckTimer < PathStuckThreshold)
+                    {
+                        Vector3 moveDir = m_character.GetMoveDir();
+                        moveDir.y = 0f;
+                        if (moveDir.sqrMagnitude > 0.01f)
+                        {
+                            moveDir.Normalize();
+                            Vector3 probeOrigin = m_character.GetCenterPoint();
+                            if (Physics.SphereCast(probeOrigin, 0.35f, moveDir, out _, 2f, _ctxSteerMask))
+                                _pathStuckTimer = PathStuckThreshold; // wall directly ahead — react now
+                        }
+                    }
+
                     _pathStuckTimer += dt;
                     if (_pathStuckTimer >= PathStuckThreshold)
                     {
