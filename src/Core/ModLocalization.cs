@@ -266,6 +266,8 @@ namespace Companions
                 { "hc_radial_hunt", "Hunt" },
                 { "hc_radial_farm", "Farm" },
                 { "hc_radial_fish", "Fish" },
+                { "hc_radial_repair", "Repair" },
+                { "hc_radial_restock", "Restock" },
                 { "hc_radial_active", "ACTIVE" },
                 { "hc_radial_on", "ON" },
                 { "hc_radial_off", "OFF" },
@@ -283,6 +285,8 @@ namespace Companions
                 { "hc_msg_location_spawn", "the world spawn" },
                 { "hc_msg_starter_joined", "A companion has joined you on your journey!" },
                 { "hc_msg_name_default", "Companion" },
+                { "hc_menu_mod_options", "Mod Options" },
+                { "hc_minimap_grave", "Grave" },
 
                 // ── Messages: Sleep / Rested / Harvest ──
                 { "hc_msg_sleep_waiting", "Waiting for {0} to sleep..." },
@@ -306,6 +310,18 @@ namespace Companions
                 { "hc_speech_homestead_repaired", "Good as new." },
                 { "hc_speech_homestead_tidy", "Let me tidy up." },
                 { "hc_speech_homestead_tidied", "All tidied up." },
+
+                // ── Radial Repair / Restock speech ──
+                { "hc_speech_repair_buildings_done", "Everything's patched up." },
+                { "hc_speech_repair_nothing", "Nothing needs repair." },
+                { "hc_speech_repair_no_hammer", "I need a hammer for that." },
+                { "hc_speech_restock_done", "Fires are stoked." },
+                { "hc_speech_restock_nothing", "Nothing needs fuel." },
+                { "hc_speech_farm_planting", "Time to plant some seeds." },
+                { "hc_speech_farm_harvesting", "Crops are ready!" },
+                { "hc_speech_farm_done", "All done farming." },
+                { "hc_speech_farm_no_seeds", "I need seeds to plant." },
+                { "hc_speech_farm_no_cultivator", "I need a cultivator to plant." },
                 { "hc_speech_no_chest", "No chest nearby to unload!" },
                 { "hc_speech_overweight", "My back is hurting from all this weight!" },
 
@@ -368,6 +384,9 @@ namespace Companions
                 { "hc_cmd_tombstone_1", "I'll grab my things." },
                 { "hc_cmd_tombstone_2", "Let me get that." },
                 { "hc_cmd_tombstone_3", "On my way to pick that up." },
+                { "hc_cmd_smelt_1", "I'll keep the fires burning." },
+                { "hc_cmd_smelt_2", "Time to smelt." },
+                { "hc_cmd_smelt_3", "I'll tend the furnace." },
             };
         }
     }

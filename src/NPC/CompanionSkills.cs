@@ -21,7 +21,7 @@ namespace Companions
             StringExtensionMethods.GetStableHashCode("HC_Skills");
 
         private const float SaveInterval = 10f;
-        private const float DeathLowerFactor = 0.25f;
+        private static float DeathLowerFactor => ModConfig.SkillDeathLossFactor.Value;
 
         // ── Static SkillDef cache (shared across all companions) ──
 
@@ -153,6 +153,11 @@ namespace Companions
 
             // Vanilla formula: Pow(Floor(level + 1), 1.5) * 0.5 + 0.5
             float requirement = Mathf.Pow(Mathf.Floor(skill.Level + 1f), 1.5f) * 0.5f + 0.5f;
+
+            string cName = _character?.m_name ?? "?";
+            CompanionsPlugin.Log.LogDebug(
+                $"[CompanionSkills] \"{cName}\" raised {type} +{num:F3} " +
+                $"→ acc {skill.Accumulator:F3}/{requirement:F3} (lvl {(int)skill.Level})");
 
             if (skill.Accumulator >= requirement)
             {

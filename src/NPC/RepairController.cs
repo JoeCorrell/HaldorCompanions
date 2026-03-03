@@ -42,15 +42,15 @@ namespace Companions
         private readonly List<ItemDrop.ItemData> _tempWorn    = new List<ItemDrop.ItemData>();
 
         // ── Config ──────────────────────────────────────────────────────────
-        private const float DurabilityThreshold = 0.50f;
-        private const float ScanInterval        = 5f;
+        private static float DurabilityThreshold => ModConfig.RepairDurabilityThreshold.Value;
+        private static float ScanInterval        => ModConfig.RepairScanInterval.Value;
         private const float ScanBackoffInterval = 60f;   // long backoff when no station can help
-        private const float ScanRadius          = 20f;
-        private const float RepairTickInterval  = 0.8f;
+        private static float ScanRadius          => ModConfig.RepairScanRadius.Value;
+        private static float RepairTickInterval  => ModConfig.RepairTickInterval.Value;
         private const float MoveTimeout         = 12f;
         private const float StuckCheckPeriod    = 1f;     // check movement every 1s
         private const float StuckMinDistance     = 0.5f;   // must move at least 0.5m per check period
-        private const float UseDistance         = 2.5f;
+        private static float UseDistance         => ModConfig.RepairUseDistance.Value;
 
         // ── Lifecycle ───────────────────────────────────────────────────────
 
@@ -177,6 +177,11 @@ namespace Companions
 
                 if (canRepairAny && dist < bestDist)
                 {
+                    if (_ai != null && _ai.IsPositionBlacklisted(station.transform.position))
+                    {
+                        Log($"Scan: skipping \"{station.m_name}\" — position blacklisted");
+                        continue;
+                    }
                     bestStation = station;
                     bestDist = dist;
                 }
@@ -270,6 +275,9 @@ namespace Companions
 
             if (_stuckTimer > MoveTimeout)
             {
+                // Blacklist the station position so we don't keep trying
+                if (_targetStation != null && _ai != null)
+                    _ai.BlacklistPosition(_targetStation.transform.position);
                 Abort($"stuck moving to \"{_targetStation.m_name}\" ({dist:F1}m away, stuck {_stuckTimer:F1}s)");
                 return;
             }

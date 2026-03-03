@@ -4,12 +4,12 @@
 
 <h1 align="center">Offline Companions</h1>
 
-<h3 align="center">Hire NPC companions from Haldor's shop - persistent allies with their own AI, inventory, voice lines, combat, gathering, smelting, and base maintenance systems.</h3>
+<h3 align="center">Hire NPC companions from Haldor's shop - persistent allies with their own AI, inventory, voice lines, combat, gathering, farming, smelting, and base maintenance systems.</h3>
 
 <br/>
 
 <p align="center">
-<a href="https://github.com/JoeCorrell/OfflineCompanions/releases"><img src="https://img.shields.io/badge/Version-1.0.9-c9a44a?style=for-the-badge&labelColor=0d1117" alt="Version"></a>
+<a href="https://github.com/JoeCorrell/OfflineCompanions/releases"><img src="https://img.shields.io/badge/Version-1.1.2-c9a44a?style=for-the-badge&labelColor=0d1117" alt="Version"></a>
 <a href="#-requirements"><img src="https://img.shields.io/badge/BepInEx-5.4.2200+-e06c20?style=for-the-badge&labelColor=0d1117" alt="BepInEx"></a>
 <a href="#-requirements"><img src="https://img.shields.io/badge/Valheim-0.219+-4ade80?style=for-the-badge&labelColor=0d1117" alt="Valheim"></a>
 <a href="#"><img src="https://img.shields.io/badge/License-MIT-7c3aed?style=for-the-badge&labelColor=0d1117" alt="License"></a>
@@ -50,7 +50,7 @@
 
 Offline Companions adds persistent NPC allies to Valheim. A companion automatically spawns with you when you enter a new world for the first time. Additional companions can be purchased from Haldor's shop for **2,000 coins** if the optional [Trader Overhaul](https://github.com/JoeCorrell/TraderOverhaul) mod is installed, or spawned via console commands.
 
-Companions come with their own inventory, equipment, stamina, food system, voice lines, and custom AI. They aren't pets or tames, they're **teammates**. Customize their appearance, gear them up with weapons and armor, feed them food for bonus stats, and command them through a radial wheel or point-and-click hotkey system. They'll fight beside you, gather resources, forage for food, manage your smelting operation, maintain your base, haul your cart, repair their own gear, sit by the fire with you, sleep in beds, and teleport through portals alongside you.
+Companions come with their own inventory, equipment, stamina, food system, voice lines, and custom AI. They aren't pets or tames, they're **teammates**. Customize their appearance, gear them up with weapons and armor, feed them food for bonus stats, and command them through a radial wheel or point-and-click hotkey system. They'll fight beside you, gather resources, forage for food, farm your crops, manage your smelting operation, maintain your base, haul your cart, repair their own gear, sit by the fire with you, sleep in beds, and teleport through portals alongside you.
 
 Leave a companion at home and they'll autonomously repair damaged walls, refuel campfires and torches, sort your chests, and keep your smelters running. They level up skills, receive the Rested buff, and respawn at the last bed they slept in.
 
@@ -106,6 +106,9 @@ The companion's name is shown in the center. Active toggles show their current O
 | **Gather Ore** | Mode | Autonomously find and mine ore deposits nearby |
 | **Forage** | Mode | Autonomously find and pick berry bushes, mushrooms, flowers, and ground items nearby |
 | **Smelt** | Mode | Autonomously refill kilns and furnaces with fuel/ore from chests, collect smelted output |
+| **Farm** | Mode | Autonomously harvest ripe crops, replant seeds, and deposit produce into chests |
+| **Repair Buildings** | Mode | Periodically scan for and repair damaged player-built structures within 50m |
+| **Restock** | Mode | Periodically refuel campfires, torches, and hearths below 50% fuel capacity |
 | **Stay Home** | Toggle | Patrol the home position instead of following you |
 | **Set Home** | Action | Save the companion's current position as their home point |
 | **Wander** | Toggle | Roam up to 50m around home (ON) or stay put (OFF) |
@@ -161,8 +164,20 @@ Companions scan for enemies every 2-6 seconds depending on distance from you. On
 ### Sleep & Wake
 Companions support Valheim's sleep/wake RPC system. They can be directed to sleep in beds and will wake automatically when enemies approach.
 
-### Stuck Detection
-Built-in stuck detection nudges companions clear of furniture colliders, beds, and chairs that block pathfinding. Door handling detects when a companion is stuck behind a closed door and automatically opens, passes through, and closes it.
+### Movement Mirroring
+Companions mirror the player's movement state while in formation. When you walk, they walk. When you crouch, they crouch. Speed overrides clear automatically when catching up from distance or entering combat.
+
+### Obstacle Avoidance (Context Steering)
+A 13-ray, 180-degree forward arc system scores candidate movement directions by balancing goal-seeking with obstacle repulsion. Smoothly steers companions around walls, furniture, smelters, and other structures the NavMesh doesn't model. Uses a dual-mask system so companions can approach smelters/chests without spinning, while still detecting half-walls and fences when stuck.
+
+### Stuck Detection & Recovery
+Built-in stuck detection nudges companions clear of furniture colliders, beds, and chairs that block pathfinding. When stuck behind obstacles, the AI probes 8 directions via raycast to find the best escape angle, prioritizing routes around the obstacle toward the target. A proactive jump system detects minor terrain step-ups and clears them automatically. When the NavMesh path passes through an impassable half-wall or fence, path-stuck detection switches to context steering with a piece-aware mask to navigate around it.
+
+### Hazard Avoidance
+Companions use water-avoiding pathfinding and actively monitor for tar pits and deep water. If caught in a hazard, they immediately disengage combat and seek the nearest shore. Proactive water sampling stops the companion before entering water when stamina is low.
+
+### Target Blacklist
+Positions that cause stuck navigation are blacklisted for 30 seconds. All controllers skip blacklisted positions on future scans, preventing the companion from repeatedly trying to reach unreachable targets.
 
 ### Stay Home Patrol
 When Stay Home is active, the AI switches from following you to patrolling the home position. Combined with gather modes, they'll autonomously harvest resources near home without you being present.
@@ -196,12 +211,16 @@ Companions use a **defensive-first combat system**. They actively scan for incom
 ### Combat Behavior
 - **Backstab immunity** - companions cannot receive backstab bonus damage from enemies attacking from behind
 - **Retreats** when health drops below 30% or stamina below 15%
+- **Stamina-aware retreat** - when stamina triggers a retreat, companions walk instead of run and use defensive blocking with their shield, allowing stamina to regenerate instead of draining further
+- **Opportunistic attacks** - companions can still attack enemies that wander into melee range during retreat
+- **Stamina-aware approach** - companions walk instead of run toward enemies when stamina is below 25%
 - **Re-engages** after recovering above 50% health and 30% stamina
+- **Crossbow support** - crossbow bolts (`AmmoNonEquipable`) are detected for ranged ammo selection
 - Retreat distance is 12m from the target
 - Tools and pickaxes are **never used in combat**. Auto-equip forces a switch to a proper weapon
 
 ### Stamina System
-Companions have their own stamina pool (base 25 + food bonus) with regeneration. Stamina is consumed by attacks, blocking, running, and swimming. When stamina hits zero, attacks fail and blocks don't hold.
+Companions have their own stamina pool (base 25 + food bonus) with regeneration. Stamina is consumed by attacks, blocking, running, and swimming. When stamina hits zero, attacks fail and blocks don't hold. Stamina only drains while the companion is actually moving (velocity > 0.5 m/s), preventing phantom drain during combat oscillation.
 
 <br/>
 </td></tr></table>
@@ -250,7 +269,7 @@ Set a companion to **Gather Wood**, **Gather Stone**, **Gather Ore**, or **Forag
 The companion automatically equips the best matching tool from their inventory. Axe for wood, pickaxe for stone and ore. The tool stays equipped until gathering stops. Companions **won't chop trees** if their axe doesn't meet the tree's minimum tool tier — preventing wasted durability on resources they can't damage.
 
 ### Drop Collection
-After destroying a resource, the companion scans within 8m for item drops and picks them all up before moving to the next target.
+After destroying a resource, the companion scans within 8m for item drops and picks them up one at a time with natural pacing before moving to the next target.
 
 ### Overweight
 Gathering stops automatically at **298/300 weight**. The companion reverts to Follow mode and announces they're overweight.
@@ -300,6 +319,39 @@ Set **Stay Home + Smelt** and the companion will manage your smelting operation 
 <br/>
 
 <p align="center">
+<img src="https://img.shields.io/badge/%F0%9F%8C%BE_FARMING_AUTOMATION-4a9c5e?style=for-the-badge&labelColor=0d1117" alt="Farming Automation">
+</p>
+
+<table><tr><td width="900">
+<br/>
+
+Set a companion to **Farm** via the radial wheel and they'll autonomously manage your crop fields. Place them near cultivated soil with seed chests and output chests, and they'll handle the full cycle.
+
+### How It Works
+1. **Harvest** ripe crops on cultivated soil
+2. **Collect drops** one-at-a-time with natural pacing
+3. **Fetch seeds** from a nearby chest when inventory runs low
+4. **Plant seeds** on empty cultivated soil in a grid layout
+5. **Deposit produce** into a nearby output chest
+
+### Smart Behavior
+- **Crop detection**: only picks cultivated crops — ignores wild pickables (berries, mushrooms, thistle, etc.)
+- **Dynamic crop support**: crop/seed mapping is built at runtime from the game's prefab list, supporting all modded crops automatically
+- **Cultivator required**: a cultivator must be in the companion's inventory to plant seeds; without one they enter harvest-only mode
+- **Priority rotation**: alternates between harvest-priority and plant-priority every 30 seconds to keep both tasks progressing
+- **Overweight protection**: stops at 298 weight and reverts to follow mode
+
+### Combine with Stay Home
+Set **Stay Home + Farm** and the companion will manage your crop fields autonomously. Farm mode also integrates into the Homestead task rotation cycle.
+
+> Companions will pause farming to fight any enemies that enter self-defense range, then resume when the threat is gone.
+
+<br/>
+</td></tr></table>
+
+<br/>
+
+<p align="center">
 <img src="https://img.shields.io/badge/%F0%9F%91%86_POINT--TO--COMMAND-d4a017?style=for-the-badge&labelColor=0d1117" alt="Directed Commands">
 </p>
 
@@ -319,6 +371,7 @@ Point your crosshair at objects in the world and press the **command hotkey** to
 | **Fireplace** | Walk to fire and sit down |
 | **Chest** | Walk to chest and deposit non-essential items (keeps equipped gear, food, weapons, armor) |
 | **Door** | Walk to door and open it |
+| **Tombstone** | Walk to the companion's tombstone and recover their items |
 | **Ground / Terrain** | Walk to that position and wait |
 | **Nothing / Sky** | Cancel all commands, return to following you |
 
@@ -341,7 +394,7 @@ Point your crosshair at objects in the world and press the **command hotkey** to
 Toggle **Stay Home** in the radial to anchor a companion near their home position. Use **Set Home** to mark where they should stay. They'll patrol within range instead of following you.
 
 ### Homestead Mode (Autonomous Base Maintenance)
-When **Stay Home** is ON and **Follow** is OFF, companions automatically maintain your base. Tasks rotate every 15 seconds in a round-robin cycle:
+When **Stay Home** is ON and **Follow** is OFF, companions automatically maintain your base. Tasks rotate every 60 seconds in a round-robin cycle:
 
 | Task | What It Does |
 |:---|:---|
@@ -349,6 +402,7 @@ When **Stay Home** is ON and **Follow** is OFF, companions automatically maintai
 | **Refuel** | Detects campfires, hearths, torches, sconces, and any fireplace below 30% fuel. Fetches the correct fuel type from nearby chests and adds fuel one unit at a time |
 | **Sort** | Finds items split across multiple chests and consolidates smaller stacks into larger ones |
 | **Smelt** | Cycles smelting duties (refill kilns/furnaces, collect output, deposit bars) |
+| **Farm** | Harvests ripe crops, replants seeds from chests, deposits produce |
 
 All chest interactions are slow and animated: the chest opens with a creak sound, items transfer one-by-one at 0.6s intervals, then the chest closes with sound. Companions speak contextual lines while performing each task.
 
@@ -460,6 +514,9 @@ Point at a bed and press the command hotkey to tell companions to sleep. They'll
 ### Resting Benefits
 While sitting or sleeping, companions heal **2 HP/sec** and their stamina regeneration is **doubled**. Companions also receive the **Rested** buff when resting by a fire or in a Comfortable area (shelter + fire).
 
+### Passive Resting
+Companions also receive the Rested buff automatically when standing near a heat source inside a shelter for the warmup duration, matching vanilla player behavior without requiring a directed sit or sleep command.
+
 ### Bed Spawn Point
 When a companion sleeps in a bed, that bed becomes their **spawn point**. If the companion dies, they'll respawn at the last bed they slept in instead of at the world spawn. Stay Home state is automatically restored on respawn.
 
@@ -493,7 +550,7 @@ Companions teleport with you through **portals** and **dungeon entrances** autom
 <table><tr><td width="900">
 <br/>
 
-Companions are marked on the **minimap** with a visible icon so you always know where they are. Markers are only visible to the companion's owner — other players won't see your companions on their map.
+Companions are marked on the **minimap** with a visible icon so you always know where they are. Markers are only visible to the companion's owner — other players won't see your companions on their map. When a companion dies, a **death marker** is placed at their tombstone location to help you find it.
 
 <br/>
 </td></tr></table>
@@ -598,7 +655,9 @@ The weight bar fills as the companion's inventory gets heavier, giving you an at
 <table><tr><td width="900">
 <br/>
 
-| Stat | Value |
+All values below are defaults and can be changed in the F8 config panel or BepInEx .cfg file.
+
+| Stat | Default |
 |:---|:---|
 | **Price** | 2,000 coins (from bank) |
 | **Base Health** | 25 HP (+ food bonus) |
@@ -657,6 +716,27 @@ Translation keys are injected into Valheim's `Localization.m_translations` dicti
 
 ### For Translators
 Translation files use a simple JSON format with `key`/`value` pairs. All mod keys use the `hc_` prefix. Contribute translations by adding a new language file to the `Translations/` folder.
+
+<br/>
+</td></tr></table>
+
+<br/>
+
+<p align="center">
+<img src="https://img.shields.io/badge/%E2%9A%99%EF%B8%8F_CONFIGURATION-4a3a2b?style=for-the-badge&labelColor=0d1117" alt="Configuration">
+</p>
+
+<table><tr><td width="900">
+<br/>
+
+Press **F8** (configurable) at any time to open the in-game configuration panel. All gameplay constants are exposed as configurable settings organized into tabbed categories: General, Combat, AI, Movement, Food, Stamina, Harvest, Smelting, Farming, Repair, Homestead, Rest, Speech, Skills, Controls, and more.
+
+- **Sliders** for numeric values with configured min/max ranges
+- **Toggle buttons** for boolean settings
+- **"Mod Options"** button added to the vanilla ESC pause menu for easy access
+- Settings are saved to the BepInEx config file and persist across sessions
+
+All settings can also be edited directly in the `BepInEx/config/` .cfg file.
 
 <br/>
 </td></tr></table>

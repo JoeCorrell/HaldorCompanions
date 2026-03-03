@@ -13,9 +13,10 @@ namespace Companions
     /// </summary>
     public class CompanionFood : MonoBehaviour
     {
-        public const int   MaxFoodSlots = 3;
-        public const float BaseHealth   = 25f;
-        public const float BaseStamina  = 25f;
+        private const int   MaxFoodSlotsCapacity = 5; // array allocation size (max config allows)
+        public static int   MaxFoodSlots => ModConfig.MaxFoodSlots.Value;
+        public static float BaseHealth   => ModConfig.BaseHealth.Value;
+        public static float BaseStamina  => ModConfig.BaseStamina.Value;
 
         public struct FoodEffect
         {
@@ -31,7 +32,7 @@ namespace Companions
             public bool IsActive => RemainingTime > 0f && !string.IsNullOrEmpty(ItemName);
         }
 
-        private FoodEffect[] _foods = new FoodEffect[MaxFoodSlots];
+        private FoodEffect[] _foods = new FoodEffect[MaxFoodSlotsCapacity];
 
         private ZNetView        _nview;
         private Humanoid        _humanoid;
@@ -50,20 +51,20 @@ namespace Companions
         private float _meadCooldownTimer;
 
         private const float SaveInterval         = 5f;
-        private const float ConsumeCheckInterval = 1f;
+        private static float ConsumeCheckInterval => ModConfig.ConsumeCheckInterval.Value;
         private const float RemoteSyncInterval   = 0.5f;
-        private const float FoodRegenInterval    = 10f;
+        private static float FoodRegenInterval    => ModConfig.FoodRegenInterval.Value;
         private const float MeadCheckInterval    = 2f;
-        private const float MeadCooldown         = 10f;
-        private const float HealthMeadThreshold  = 0.5f;   // use when HP < 50%
-        private const float StaminaMeadThreshold = 0.25f;  // use when stamina < 25%
+        private static float MeadCooldown         => ModConfig.MeadCooldown.Value;
+        private static float HealthMeadThreshold  => ModConfig.HealthMeadThreshold.Value;
+        private static float StaminaMeadThreshold => ModConfig.StaminaMeadThreshold.Value;
 
         // ZDO keys — one per food slot
-        private static readonly int[] FoodHashes = new int[MaxFoodSlots];
+        private static readonly int[] FoodHashes = new int[MaxFoodSlotsCapacity];
 
         static CompanionFood()
         {
-            for (int i = 0; i < MaxFoodSlots; i++)
+            for (int i = 0; i < MaxFoodSlotsCapacity; i++)
                 FoodHashes[i] = StringExtensionMethods.GetStableHashCode($"HC_Food_{i}");
         }
 

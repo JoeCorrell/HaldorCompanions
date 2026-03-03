@@ -17,29 +17,29 @@ namespace Companions
         internal CombatPhase Phase => _phase;
 
         // ── Tuning ──────────────────────────────────────────────────────────
-        private const float HealthRetreatPct    = 0.30f;
-        private const float StaminaRetreatPct   = 0.15f;
-        private const float HealthRecoverPct    = 0.50f;
-        private const float StaminaRecoverPct   = 0.30f;
-        private const float AttackCooldown      = 0.3f;
-        private const float ConsumeCooldown     = 10f;
-        private const float BowMaxRange         = 30f;
-        private const float BowMinRange         = 10f;    // below this, always melee
-        private const float BowSwitchDistance   = 20f;    // switch TO bow when target > this
-        private const float MeleeSwitchDistance  = 12f;    // switch FROM bow to melee when target < this
-        private const float PowerAttackCooldown = 3f;
-        private const float RetreatDistance     = 12f;
+        private static float HealthRetreatPct    => ModConfig.HealthRetreatPct.Value;
+        private static float StaminaRetreatPct   => ModConfig.StaminaRetreatPct.Value;
+        private static float HealthRecoverPct    => ModConfig.HealthRecoverPct.Value;
+        private static float StaminaRecoverPct   => ModConfig.StaminaRecoverPct.Value;
+        private static float AttackCooldown      => ModConfig.AttackCooldown.Value;
+        private static float ConsumeCooldown     => ModConfig.ConsumeCooldown.Value;
+        private static float BowMaxRange         => ModConfig.BowMaxRange.Value;
+        private static float BowMinRange         => ModConfig.BowMinRange.Value;
+        private static float BowSwitchDistance   => ModConfig.BowSwitchDistance.Value;
+        private static float MeleeSwitchDistance  => ModConfig.MeleeSwitchDistance.Value;
+        private static float PowerAttackCooldown => ModConfig.PowerAttackCooldown.Value;
+        private static float RetreatDistance     => ModConfig.RetreatDistance.Value;
         private const float StuckTimeout        = 8f;     // disengage if stuck this long
         private const float HeartbeatIdleInterval   = 10f;  // log interval when idle (no combat)
         private const float HeartbeatCombatInterval = 2f;   // log interval during active combat
 
         // ── Blocking / parry tuning ────────────────────────────────────────
-        private const float ThreatDetectRange    = 8f;    // detect enemy attacks within this range
-        private const float ProjectileDetectRange = 20f;  // detect incoming arrows/spells within this range
+        private static float ThreatDetectRange    => ModConfig.ThreatDetectRange.Value;
+        private static float ProjectileDetectRange => ModConfig.ProjectileDetectRange.Value;
         private const float ProjectileScanInterval = 0.25f; // scan frequency for projectiles
         private const float BlockGrace           = 0.3f;  // hold block after last threat clears
-        private const float BlockSafetyCap     = 3.0f;  // safety cap: force counter after 3s continuous block
-        private const float CounterWindowDuration = 0.8f; // post-parry attack window (no blocking allowed)
+        private static float BlockSafetyCap     => ModConfig.BlockSafetyCap.Value;
+        private static float CounterWindowDuration => ModConfig.CounterWindowDuration.Value;
 
         // ── Components ──────────────────────────────────────────────────────
         private CompanionAI      _ai;
@@ -65,8 +65,8 @@ namespace Companions
         // Bow draw state (manual — vanilla ChargeStart doesn't work for player bows)
         private float _bowDrawTimer;
         private float _bowFireCooldown;
-        private const float BowDrawTime     = 1.2f;  // seconds to fully draw bow
-        private const float BowFireInterval = 2.5f;  // seconds between shots
+        private static float BowDrawTime     => ModConfig.BowDrawTime.Value;
+        private static float BowFireInterval => ModConfig.BowFireInterval.Value;
 
         // Target abandon tracking — prevents infinite re-engage on fleeing animals
         private int   _abandonedTargetId;
@@ -97,9 +97,9 @@ namespace Companions
         private float _dodgeDuration;
         private Vector3 _dodgeDirection;
         private bool _isDodging;
-        private const float DodgeCooldownTime = 2.5f;
+        private static float DodgeCooldownTime => ModConfig.DodgeCooldown.Value;
         private const float DodgeDurationTime = 0.3f;
-        private const float DodgeStaminaCost  = 15f;
+        private static float DodgeStaminaCost  => ModConfig.DodgeStaminaCost.Value;
 
         // Per-phase periodic logging timers
         private float _rangedLogTimer;    // log bow draw progress
@@ -1071,29 +1071,64 @@ namespace Companions
         {
             _retreatTimer += dt;
 
-            // Smart retreat — blend toward player instead of random direction
-            Vector3 myPos = transform.position;
-            Vector3 targetPos = target.transform.position;
-            Vector3 awayDir = (myPos - targetPos).normalized;
+            float healthPctNow = _character.GetHealthPercentage();
+            float staminaPctNow = _stamina != null ? _stamina.GetStaminaPercentage() : 1f;
+            float distToEnemy = Vector3.Distance(transform.position, target.transform.position);
+            bool staminaIsReason = healthPctNow >= HealthRecoverPct;
+            bool hasShield = HasBlocker();
 
-            var player = Player.m_localPlayer;
-            if (player != null)
+            // Defensive stand: when stamina triggered the retreat, the enemy is
+            // close, and we have a shield — block and back away slowly instead
+            // of running (which just drains more stamina). Face the enemy and
+            // hold shield up while walking backward. This lets stamina regen
+            // and prevents taking hits.
+            if (staminaIsReason && hasShield && distToEnemy < 6f
+                && !_character.InAttack() && stance != CompanionSetup.StanceAggressive)
             {
-                Vector3 toPlayer = (player.transform.position - myPos).normalized;
-                float enemyToPlayer = Vector3.Distance(targetPos, player.transform.position);
-                float dotCheck = Vector3.Dot(toPlayer, awayDir);
+                _ai.LookAtPoint(target.transform.position);
+                ReflectionHelper.TrySetBlocking(_character, true);
+                SuppressAttack = true;
 
-                // Only blend toward player if player isn't behind the enemy
-                // and enemy isn't too close to the player
-                if (dotCheck > -0.5f && enemyToPlayer > 5f)
-                {
-                    float playerWeight = stance == CompanionSetup.StanceDefensive ? 0.85f : 0.7f;
-                    awayDir = (toPlayer * playerWeight + awayDir * (1f - playerWeight)).normalized;
-                }
+                // Back away slowly from the enemy
+                Vector3 awayDir = (transform.position - target.transform.position).normalized;
+                _ai.PushDirection(awayDir, false);
             }
+            else
+            {
+                // Clear any blocking from defensive stand
+                if (SuppressAttack && staminaIsReason)
+                {
+                    ReflectionHelper.TrySetBlocking(_character, false);
+                    SuppressAttack = false;
+                }
 
-            Vector3 fleePoint = myPos + awayDir * RetreatDistance;
-            _ai.MoveToPoint( dt, fleePoint, 2f, true);
+                // Smart retreat — blend toward player instead of random direction
+                Vector3 myPos = transform.position;
+                Vector3 targetPos = target.transform.position;
+                Vector3 awayDir = (myPos - targetPos).normalized;
+
+                var player = Player.m_localPlayer;
+                if (player != null)
+                {
+                    Vector3 toPlayer = (player.transform.position - myPos).normalized;
+                    float enemyToPlayer = Vector3.Distance(targetPos, player.transform.position);
+                    float dotCheck = Vector3.Dot(toPlayer, awayDir);
+
+                    if (dotCheck > -0.5f && enemyToPlayer > 5f)
+                    {
+                        float playerWeight = stance == CompanionSetup.StanceDefensive ? 0.85f : 0.7f;
+                        awayDir = (toPlayer * playerWeight + awayDir * (1f - playerWeight)).normalized;
+                    }
+                }
+
+                Vector3 fleePoint = myPos + awayDir * RetreatDistance;
+
+                // Stamina-aware retreat: walk instead of run when stamina is
+                // the reason for retreating. Running drains 10 stam/s and resets
+                // the regen delay every frame, so stamina never recovers.
+                bool retreatRun = !staminaIsReason && staminaPctNow > 0.1f;
+                _ai.MoveToPoint(dt, fleePoint, 2f, retreatRun);
+            }
 
             // Periodic retreat log
             _retreatLogTimer -= dt;
@@ -1201,7 +1236,8 @@ namespace Companions
             foreach (var item in inv.GetAllItems())
             {
                 if (item?.m_shared == null) continue;
-                if (item.m_shared.m_itemType == ItemDrop.ItemData.ItemType.Ammo)
+                if (item.m_shared.m_itemType == ItemDrop.ItemData.ItemType.Ammo ||
+                    item.m_shared.m_itemType == ItemDrop.ItemData.ItemType.AmmoNonEquipable)
                 {
                     float dmg = item.GetDamage().GetTotalDamage();
                     if (dmg > bestDmg) { bestDmg = dmg; bestAmmo = item; }
@@ -1242,6 +1278,12 @@ namespace Companions
         /// Clean exit from any combat phase back to idle.
         /// Ensures weapons are restored and suppress flags cleared.
         /// </summary>
+        /// <summary>
+        /// Public entry point for forcing combat exit from external systems
+        /// (e.g. hazard recovery when stuck in tar/water).
+        /// </summary>
+        internal void ForceExitCombat() => ExitCombat("forced by external system");
+
         private void ExitCombat(string reason)
         {
             var oldPhase = _phase;
@@ -1357,7 +1399,8 @@ namespace Companions
                 if (item.m_shared.m_useDurability && item.m_durability <= 0f) continue;
                 if (item.m_shared.m_itemType == ItemDrop.ItemData.ItemType.Bow)
                     hasBow = true;
-                if (item.m_shared.m_itemType == ItemDrop.ItemData.ItemType.Ammo)
+                if (item.m_shared.m_itemType == ItemDrop.ItemData.ItemType.Ammo ||
+                    item.m_shared.m_itemType == ItemDrop.ItemData.ItemType.AmmoNonEquipable)
                     hasAmmo = true;
                 if (hasBow && hasAmmo) return true;
             }

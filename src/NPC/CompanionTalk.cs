@@ -20,14 +20,14 @@ namespace Companions
         private float _talkInterval;
         private int   _lastActionMode = -1;
 
-        private const float MinInterval    = 20f;
-        private const float MaxInterval    = 40f;
+        private static float MinInterval    => ModConfig.SpeechMinInterval.Value;
+        private static float MaxInterval    => ModConfig.SpeechMaxInterval.Value;
         private const float SpeechOffset   = 1.8f;
-        private const float CullDistance   = 20f;
-        private const float SpeechTTL      = 5f;
+        private static float CullDistance   => ModConfig.SpeechCullDistance.Value;
+        private static float SpeechTTL      => ModConfig.SpeechDuration.Value;
         private const float RepairThreshold = 0.25f;
-        private const float SayCooldown    = 20f;
-        private float _lastSayTime = -SayCooldown;
+        private static float SayCooldown    => ModConfig.SpeechSayCooldown.Value;
+        private float _lastSayTime = float.NegativeInfinity;
 
         // ── Text pools (loaded from speech.json) ─────────────────────────
         private static string[] ActionLines    => SpeechConfig.Instance.Action;
@@ -115,10 +115,10 @@ namespace Companions
             CompanionsPlugin.Log.LogDebug($"[Talk] \"{text}\"");
 
             bool isMale = _voicePack == "MaleCompanion";
-            bool showText  = isMale ? CompanionsPlugin.MaleShowSpeechText.Value
-                                    : CompanionsPlugin.FemaleShowSpeechText.Value;
-            bool playAudio = isMale ? CompanionsPlugin.MaleEnableVoiceAudio.Value
-                                    : CompanionsPlugin.FemaleEnableVoiceAudio.Value;
+            bool showText  = isMale ? ModConfig.MaleShowSpeechText.Value
+                                    : ModConfig.FemaleShowSpeechText.Value;
+            bool playAudio = isMale ? ModConfig.MaleEnableVoiceAudio.Value
+                                    : ModConfig.FemaleEnableVoiceAudio.Value;
 
             if (showText && Chat.instance != null)
                 Chat.instance.SetNpcText(

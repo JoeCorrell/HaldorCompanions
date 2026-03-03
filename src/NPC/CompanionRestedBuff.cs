@@ -53,7 +53,7 @@ namespace Companions
         // ── Resting warmup ──
         // Sitting by fire requires a warmup period before Rested applies (like vanilla).
         // Sleeping in a bed applies Rested instantly on wakeup.
-        private const float RestingWarmupTime = 20f;   // seconds of sitting before buff applies
+        private static float RestingWarmupTime => ModConfig.RestWarmupTime.Value;
 
         // ── Instance state ──
         private ZNetView  _nview;
@@ -67,6 +67,11 @@ namespace Companions
         // Resting accumulation state (for fire sitting warmup)
         private bool  _isAccumulatingRest;
         private float _restingAccumTimer;
+
+        // Passive resting state (standing near fire in shelter, like vanilla player)
+        private float _passiveRestTimer;         // accumulated time in shelter near fire
+        private float _passiveRestCheckTimer;    // throttle for shelter+fire check (expensive)
+        private bool  _passiveRestConditionsMet; // cached result of last check
 
         // Display-only StatusEffect (not in any SEMan, used by HudPatches)
         internal CompanionRestedSE DisplaySE { get; private set; }
@@ -200,6 +205,9 @@ namespace Companions
                 }
             }
 
+            // ── Passive resting (standing near fire in shelter, like vanilla player) ──
+            UpdatePassiveResting();
+
             // ── Rested buff countdown ──
             if (!_isRested) return;
 
@@ -220,6 +228,51 @@ namespace Companions
 
                 CompanionsPlugin.Log.LogDebug(
                     $"[Rested] Buff expired for \"{GetCompanionName()}\"");
+            }
+        }
+
+        /// <summary>
+        /// Detects when the companion is standing near a heat source (fire, hearth, etc.)
+        /// inside a shelter — same conditions as the vanilla player rested system.
+        /// Accumulates warmup time and applies the Rested buff automatically.
+        /// </summary>
+        private void UpdatePassiveResting()
+        {
+            // Sit/sleep-based warmup takes priority — don't double-accumulate
+            if (_isAccumulatingRest)
+            {
+                _passiveRestTimer = 0f;
+                return;
+            }
+
+            // Throttle the shelter + fire check (every 2s — EffectArea scan is expensive)
+            _passiveRestCheckTimer -= Time.deltaTime;
+            if (_passiveRestCheckTimer <= 0f)
+            {
+                _passiveRestCheckTimer = 2f;
+                _passiveRestConditionsMet = false;
+
+                Vector3 pos = transform.position;
+                if (EffectArea.IsPointInsideArea(pos, EffectArea.Type.Heat))
+                {
+                    Cover.GetCoverForPoint(pos, out float coverPct, out bool underRoof);
+                    _passiveRestConditionsMet = coverPct >= 0.8f && underRoof;
+                }
+            }
+
+            if (_passiveRestConditionsMet)
+            {
+                _passiveRestTimer += Time.deltaTime;
+                if (_passiveRestTimer >= RestingWarmupTime)
+                {
+                    _passiveRestTimer = 0f;
+                    CacheVanillaBonuses();
+                    ApplyRestedBuff();
+                }
+            }
+            else
+            {
+                _passiveRestTimer = 0f;
             }
         }
 

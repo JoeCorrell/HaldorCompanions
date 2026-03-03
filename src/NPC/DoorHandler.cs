@@ -15,14 +15,14 @@ namespace Companions
 
         // ── Tuning ──────────────────────────────────────────────────────────
         private const float ScanInterval      = 0.5f;
-        private const float ScanRadius        = 5.0f;   // stuck-mode scan radius
+        private static float ScanRadius        => ModConfig.DoorScanRadius.Value;
         private const float StuckThreshold    = 1.0f;   // faster stuck detection (was 1.5)
         private const float StuckMoveDist     = 0.2f;   // more sensitive movement check (was 0.3)
         private const float StuckCheckInterval = 0.5f;   // check twice per second (was 1.0)
-        private const float FollowDistMin     = 4.0f;   // engage when 4m+ from target (was 5)
-        private const float InteractDist      = 2.0f;   // interact range
+        private static float FollowDistMin     => ModConfig.DoorFollowDistMin.Value;
+        private static float InteractDist      => ModConfig.DoorInteractDist.Value;
         private const float OpenWaitTime      = 1.2f;   // wait for door animation
-        private const float CloseDistance      = 3.5f;   // close door when this far past it
+        private static float CloseDistance      => ModConfig.DoorCloseDistance.Value;
         private const float PassTimeout       = 8.0f;   // safety timeout in PassingThrough
         private const float ProximityCheck    = 2.5f;   // don't close if player/companion near
         private const float ApproachTimeout   = 10.0f;  // give up approaching if takes too long
@@ -31,7 +31,7 @@ namespace Companions
         // ── Proactive detection tuning ─────────────────────────────────────
         private const float ProactiveCheckInterval = 1.0f;  // measure progress every 1s
         private const float ProactiveStagnationTime = 3.0f; // trigger after 3s of no progress
-        private const float ProactiveScanRadius   = 15.0f;  // wider scan for proactive mode
+        private static float ProactiveScanRadius   => ModConfig.DoorProactiveScanRadius.Value;
         private const float MinProactiveSpeed     = 0.5f;   // must be actively moving
         private const float MinProgressRate       = 0.3f;   // must close 0.3m per check to count
 

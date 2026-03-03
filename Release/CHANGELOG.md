@@ -1,308 +1,308 @@
 # Changelog
 
+## 1.1.2
+
+### New
+- **Point-to-command for smelters and kilns** — point at any smelter or kiln and press the command key to send your companion to tend it
+
+### Bug Fixes
+- Fixed companions only filling the first smelter or kiln when multiple are nearby — they now fill the emptiest one first and spread materials evenly
+- Fixed items disappearing when a companion was interrupted while carrying materials to a smelter — items are now properly tracked in inventory
+- Fixed companions planting seeds on top of wooden floors, walls, and other building pieces instead of on cultivated soil
+
+## 1.1.1
+
+### New Features
+
+#### Autonomous Farming
+Companions can now be set to **Farm** mode via the radial wheel. They will automatically harvest ripe crops, collect the drops, fetch seeds from nearby chests, plant them on cultivated soil in a grid, and deposit harvested crops into output chests.
+
+- Supports all crops including modded ones
+- Only harvests player-planted crops — ignores wild berries, mushrooms, etc.
+- Needs a cultivator in the companion's inventory to plant; without one, they only harvest
+- Alternates between harvesting and planting every 30 seconds so neither task gets neglected
+
+#### Repair Buildings Mode
+A new toggle on the radial wheel. When active, the companion walks around and repairs any damaged building pieces within 50m. Works while following you or while staying home.
+
+#### Restock Mode
+A new toggle on the radial wheel. When active, the companion refuels nearby fireplaces, campfires, and torches that are running low — pulling fuel from its own inventory or nearby chests.
+
+#### In-Game Settings Panel (F8)
+Press F8 to open a settings panel where you can tweak all mod options without editing config files. Also accessible from the "Mod Options" button added to the ESC pause menu.
+
+### AI Improvements
+
+#### Smarter Obstacle Avoidance
+Companions now steer around walls, furniture, smelters, and other obstacles more smoothly when normal pathfinding can't find a route.
+
+#### Half-Wall and Fence Navigation
+Companions can now find their way around half-walls and fences by detecting them and looking for doorways and openings.
+
+#### Movement Mirroring
+Companions match your movement — walking when you walk, crouching when you crouch. They still run to catch up or during combat.
+
+#### Better Stuck Recovery
+When stuck behind obstacles, companions now try sidestepping in multiple directions. After repeated failures, they teleport to you.
+
+#### Proactive Jumping
+Companions automatically jump over small terrain ledges when they detect they're stuck on a step-up.
+
+#### Hazard Awareness
+Companions detect tar pits and deep water and actively try to reach shore. If they can't escape in time, they teleport to safety.
+
+#### Water Avoidance
+Companions check for water ahead and stop walking if their stamina is too low to swim safely.
+
+#### Improved Pathfinding Over Water
+Companions now use a pathfinding type that automatically routes around bodies of water.
+
+#### Stuck Position Memory
+Positions that keep getting the companion stuck are remembered for 30 seconds so they don't keep trying to go there.
+
+#### Combat Flanking
+If a companion gets stuck trying to reach an enemy, it tries approaching from the side instead.
+
+#### Passive Resting
+Companions now get the Rested buff just by standing near a fire inside a shelter — no need to tell them to sit down.
+
+### Radial Menu
+- Radial menu is 15% larger for better readability
+- Added **Repair**, **Restock**, and **Farm** segments to the radial wheel
+
+### Combat
+- Added crossbow bolt support
+- Defensive stance now only fights enemies that are directly attacking the companion or the player
+- Companions walk instead of run when retreating with low stamina, and use their shield to block
+- Companions can still hit enemies that get close during retreat
+- Companions walk to conserve stamina when approaching enemies below 25% stamina
+
+### Smelting
+- Furnaces are now filled emptiest-first so all smelters get materials evenly
+- "Nothing left to smelt" message only shows once per cycle instead of repeating
+- Smelter positions that cause stuck navigation are remembered and skipped
+
+### Harvesting
+- Fixed trees on slopes being missed when the companion swings
+- Drops are now picked up one at a time with a short pause between each for a more natural look
+- Fixed companions getting stuck trying to re-approach a tree at exactly the right distance
+
+### Death
+- A minimap marker now appears at the companion's tombstone when they die, showing their name
+
+### Bug Fixes
+- Fixed minimap marker not clearing after reloading a scene
+- Fixed MaxFoodSlots setting having no effect
+- Fixed new modes (Repair/Restock) being reset back to Follow after loading
+- Fixed restock fuel counter adding up across multiple fireplaces
+- Fixed proactive jumping activating when the companion is just standing near you
+- Fixed text not visible in the F8 settings panel
+- Fixed stamina draining while standing still during combat
+- Fixed Repair Buildings and Restock modes freezing after finding a target
+- Fixed Farm mode not starting immediately when selected — now starts right away
+- Fixed settings panel and radial menu not blocking player movement and camera
+
+### Localization
+- Added translation keys for all new features across all 22 languages
+
 ## 1.0.9
 
 ### Bug Fixes
-- Fixed companions with Follow OFF still teleporting via distance warp — `ApplyFollowMode` default case (modes 7/8/9: Hunt, Farm, Fish) set follow target to the player without checking the Follow toggle, causing the 50m distance warp to fire; now checks Follow toggle in all branches
-- Fixed companions with Follow OFF still distance-warping — added explicit `GetFollow()` check to the distance teleport in `UpdateAI` as a safety net, so even if `m_follow` is set by a stale code path the companion won't warp
-- Fixed StayHome companions wandering indefinitely during combat — companions with StayHome ON and Follow OFF could chase enemies far beyond their home area with no distance limit; added two-layer enforcement: target is dropped when the enemy exceeds 50m from home (soft leash), and companion is teleported back to home if they physically stray past 50m (hard leash)
+- Fixed companions with Follow OFF still teleporting to the player when they get far away
+- Fixed Stay Home companions chasing enemies too far from home — they now stop chasing after 50m and return home
 
 ### Balance
-- Increased homestead task rotation timer from 15s to 60s per task (repair, refuel, sort, smelt) — companions now spend longer on each maintenance task before rotating to the next
+- Homestead task timer increased from 15 to 60 seconds — companions spend more time on each maintenance task before switching
 
-### Death/Respawn State Persistence
-- Fixed AutoPickup toggle lost on death — now saved in `RespawnData` and restored on respawn
-- Fixed Wander toggle lost on death — now saved in `RespawnData` and restored on respawn
-- Fixed Commandable toggle lost on death — now saved in `RespawnData` and restored on respawn
-- Fixed FormationSlot lost on death — now saved in `RespawnData` and restored on respawn
-- Fixed ActionModeSchema lost on death — now saved in `RespawnData` and restored on respawn, preventing legacy mode migration from re-running on respawned companions
+### Death & Respawn
+- Fixed Auto Pickup, Wander, Commandable, Formation Slot, and Action Mode settings being lost when a companion dies and respawns
 
 ## 1.0.8
 
 ### Bug Fixes
-- Fixed companions not collecting their tombstone after UI interaction — opening the companion inventory during tombstone recovery caused `ApplyFollowMode` to override navigation, pulling the companion back to the player instead of the tombstone
-- Fixed tombstone recovery stuck when pathfinding fails — added 10-second warp fallback for tombstones within 10m when NavMesh path cannot be found, so companions teleport directly to the tombstone instead of standing still
-- Fixed tombstone recovery follow target leak — external systems (UI freeze/restore, CompanionSetup follow restoration) could re-set follow target mid-navigation; tombstone nav now forcefully clears follow every frame
-- Fixed orphaned tombstone ID — `OnCompanionDeath` no longer generates a new tombstoneId when the companion has no items, preserving the existing ID so the respawned companion can still find its previous tombstone
-- Fixed companions not respawning with follow target when home position is set — `DoRespawn` now restores follow target and home position independently instead of treating them as mutually exclusive
-- Fixed companion tombstone inventory items lost on zone reload — vanilla `Inventory.Save/Load` does not persist grid dimensions; companion tombstones (8x4) reverted to default Container size (3x2), silently dropping items at out-of-bounds positions. Added ZDO-persisted dimensions (`HC_TombInvW`/`HC_TombInvH`) and a Container.Awake patch to restore them before the first Load cycle
-- Fixed companion tombstone item positions causing invisible slots — items transferred via `MoveInventoryToGrave` retained their original grid positions (e.g., slot 28 in an 8x4 grid) which broke `InventoryGrid.UpdateGui`; items are now repacked to sequential positions after grave transfer
-- Fixed companions not teleporting through portals when Stay Home is set — `StayHome` means "where to return when dismissed", not "never leave"; portal teleport now only checks Follow toggle and action mode, not StayHome flag
-- Fixed companions not distance-teleporting (50m warp) when Stay Home is set — same StayHome misinterpretation; if `m_follow` is actively set, the companion teleports regardless of home position
-- Fixed Hunt, Farm, and Fish modes not restoring follow target — follow restoration in `CompanionSetup.Update()` only covered modes 0-6; changed to `mode != ModeStay` to cover all current and future active modes
-- Fixed portal warp not clearing directed states — companions arriving in a new zone via portal could retain stale cart attach, move target, deposit container, ship boarding, and tombstone recovery states from the old zone
-- Fixed companion inventory grid overlapping food slots — expanding the panel height for food slots caused vanilla `InventoryGrid.UpdateGui` to re-center the grid content within the now-taller area, shifting it downward; the InventoryGrid's bottom edge is now inset to exclude the food slot region
+- Fixed companions not picking up their tombstone after opening their inventory
+- Fixed tombstone recovery getting stuck when the path is blocked — they now teleport to it after 10 seconds
+- Fixed other UI interactions interrupting tombstone recovery
+- Fixed companions not respawning with follow target when they have a home position
+- Fixed tombstone items being lost when leaving and re-entering the area
+- Fixed invisible item slots in companion tombstones
+- Fixed companions not teleporting through portals when Stay Home is set — Stay Home only means "return here when dismissed", not "never leave"
+- Fixed companions not following through distance teleports when Stay Home is set
+- Fixed Hunt, Farm, and Fish modes not restoring follow after task completes
+- Fixed portal travel not clearing stale states from the previous zone
+- Fixed companion inventory grid overlapping food slots
 
-### Directed Commands
-- Added directed tombstone recovery — point at any companion tombstone and press the command key to send the nearest companion to walk over and loot it
-- Added tombstone recovery speech lines ("I'll grab my things.", "Let me get that.", "On my way to pick that up.")
-
-### Logging
-- Upgraded tombstone navigation progress log from Debug to Info level — now shows `dist` and `pathOK` status for easier troubleshooting
+### New
+- Point at a companion tombstone and press the command key to send the nearest companion to loot it
 
 ## 1.0.7
 
 ### Bug Fixes
-- Fixed companion duplication on death — added three-layer defense: `_dead` guard flag in `OnCompanionDeath` prevents re-entry, queue-level deduplication rejects identical owner+name pairs, and scene-level check aborts respawn if a living companion with the same identity already exists
-- Fixed companion teleporting through portals when set to Stay Home — `CompanionAI.TeleportToFollowTarget()` (50m distance warp) now checks `GetStayHome()` before warping, so stay-home companions remain at their home position even when Follow is ON
-- Fixed gamepad radial menu also opening inventory when holding X — moved the gamepad check in `Container.Interact` prefix before all mode-specific logic so gamepad always routes through `HandleGamepadHold()` regardless of RadialMenuKey config
-- Fixed gamepad radial menu joystick control inverted — `GetJoyLeftStickY()`/`GetJoyRightStickY()` already negate raw Y; negating again so Atan2 receives positive=up for correct radial angles
-- Fixed gamepad B button not closing radial menu — changed from `"JoyBack"` (Select/View button) to `"JoyButtonB"` (B/Circle) matching vanilla's cancel convention
-- Fixed hover text showing keyboard binding "E" instead of gamepad button glyph — `GetHoverText()` now explicitly resolves `ZInput.GetBoundKeyString("JoyUse")` when gamepad is active
-- Fixed homestead chest sorting losing items — `AddItem()` return value is now checked before removing from source inventory
-- Fixed smelter output storage losing items — `AddItem()` return value is now checked; failed adds are logged and skipped instead of removing the item
-- Fixed `Container.OnContainerChanged` duplicate subscription — `ZNetScenePatch` now removes existing callback before re-subscribing to prevent double-fire on inventory changes
+- Fixed companion duplication on death
+- Fixed companions teleporting through portals when set to Stay Home
+- Fixed gamepad radial menu opening inventory instead of the radial wheel when holding X
+- Fixed gamepad joystick direction being inverted on the radial menu
+- Fixed B button not closing the radial menu on gamepad
+- Fixed hover text showing "E" instead of the correct gamepad button
+- Fixed homestead chest sorting losing items
+- Fixed smelter output storage losing items
 
 ### Gamepad / Controller
-- Added independent gamepad hold detection — monitors `ZInput.GetButton("JoyUse")` directly while hovering a companion, bypassing the `Container.Interact` prefix chain and vanilla's 0.2s debounce entirely
-- Split radial menu stick control — left stick controls outer ring (action modes), right stick controls inner ring (combat stances)
-- Added gamepad inventory tab switching (RB/LB) — companion grid's `UIGroupHandler` is injected into `InventoryGui.m_uiGroups[0]` when the panel opens, enabling vanilla's `SetActiveGroup()` to cycle between companion and player grids
-- Added D-pad edge navigation — pressing Up at the top of the companion grid switches focus to the player grid with correct column mapping
+- Improved gamepad hold detection for opening the radial menu
+- Left stick controls action modes, right stick controls combat stances
+- Added RB/LB to switch between companion and player inventory tabs
+- Added D-pad navigation between companion and player inventory grids
 
 ### Performance
-- Armor durability patch reuses a static list instead of allocating per-hit
-- Projectile threat scan uses a shared cache refreshed every 0.25s instead of `FindObjectsByType` per frame per companion
-- Door cache uses absolute expiry time instead of per-frame countdown
-- Sprite and texture caches (`CompanionPanel`, `CompanionRadialMenu`) now properly `Destroy()` native assets on teardown to prevent GPU memory leaks
+- Reduced memory allocations in armor durability, projectile scanning, door caching, and UI sprite handling
 
 ## 1.0.6
 
 ### Bug Fixes
-- Fixed Companions tab not appearing in Trader UI when Bounties mod is installed — assembly reference mismatch (`HaldorOverhaul` vs `TraderOverhaul`) caused `Prepare()` to silently disable all trader tab patches
-- Fixed controller radial menu not opening — holding X on gamepad opened inventory instead of radial; `ZInput.GetButton("JoyUse")` is unreliable for continuous polling so gamepad hold detection now tracks `GetButtonUp` as a positive release signal instead
+- Fixed Companions tab not appearing in Trader UI when Bounties mod is installed
+- Fixed controller radial menu not opening when holding X on gamepad
 
 ## 1.0.4
 
-### Features
-- Added UI Reposition Mode (F7) — press F7 while the companion inventory panel is open to drag and reposition it anywhere on screen; position persists across sessions
+### New
+- Press F7 while the companion inventory is open to drag and reposition it anywhere on screen — position saves across sessions
 
 ### Bug Fixes
-- Fixed companion tombstone missing items — stale `m_equipped` flags from ZDO deserialization caused `MoveInventoryToGrave` to skip items not currently in a humanoid equipment slot
-- Fixed companion inventory UI glitching on death — panel now closes immediately before inventory is emptied, preventing empty-grid rendering and vanilla container panel flash
-- Fixed controller radial menu not opening — holding X on gamepad opened inventory instead of radial due to `ZInput.GetButton("JoyUse")` returning false on the deferred frame; added 60ms grace period before accepting button release
+- Fixed companion tombstone missing items
+- Fixed companion inventory UI glitching on death
+- Fixed controller radial menu not opening on gamepad
 
 ## 1.0.3
 
 ### Bug Fixes
-- Fixed translations not loading — Unity 6's JsonUtility cannot deserialize arrays of serializable objects, replaced with regex-based JSON parser
+- Fixed translations not loading
 
 ## 1.0.2
 
 ### Translations
-- Added translation files for all 22 Valheim-supported languages: Chinese, Chinese (Traditional), Czech, Danish, Dutch, Finnish, French, German, Greek, Hungarian, Italian, Japanese, Korean, Norwegian, Polish, Portuguese (Brazilian), Portuguese (European), Russian, Slovak, Spanish, Swedish, Turkish
-- All UI labels, radial menu text, hover text, messages, and speech lines are fully translated
+- Added translations for all 22 Valheim-supported languages
 
 ### Bug Fixes
-- Fixed game freeze on startup caused by infinite recursion in localization initialization
+- Fixed game freeze on startup caused by localization initialization
 
 ## 1.0.0
 
 ### Homestead Mode (Stay Home Automation)
-Companions left at home with Stay Home ON and Follow OFF now autonomously maintain your base. Tasks rotate every 15 seconds in a round-robin cycle: Repair, Refuel, Sort, then Smelt.
+Companions left at home (Stay Home ON, Follow OFF) now automatically maintain your base. They rotate between tasks every 15 seconds:
 
-- **Repair building pieces** — scans for damaged player-built structures within 40m of home, walks to each one, plays hammer swing animation, and fully repairs them
-- **Refuel fires and torches** — detects campfires, hearths, sconces, standing torches, and any refillable Fireplace below 30% fuel capacity, fetches the correct fuel type from nearby chests, and adds fuel one unit at a time
-- **Sort and organize chests** — identifies items split across multiple chests, consolidates smaller stacks into larger ones with proper open/close animations and sound effects
-- **Smelting rotation** — cycles smelting duties alongside other homestead tasks instead of running smelting exclusively
-- All chest interactions are slow and animated: chest opens with creak sound, items transfer one-by-one at 0.6s intervals, chest closes with sound
-- Only activates when Stay Home is ON, Follow is OFF, and the companion has a home position set
+- **Repair** — walks to damaged buildings and repairs them
+- **Refuel** — finds low-fuel campfires and torches and refuels them from nearby chests
+- **Sort chests** — consolidates split item stacks across multiple chests
+- **Smelt** — handles smelting duties alongside other tasks
+
+All chest interactions are animated with open/close sounds.
 
 ### Companion Respawn at Bed
-- Companions now respawn at the last bed they slept in instead of the world spawn point
-- Sleeping in a bed via the directed command sets that bed as the companion's spawn point
-- On death, the companion's home position is preserved and restored on respawn
-- Stay Home state is automatically restored when respawning at a home position
-- Spawn position uses the bed's exact coordinates to prevent spawning on rooftops
+- Companions respawn at the last bed they slept in instead of the world spawn point
+- Home position and Stay Home state are preserved through death
 
 ### Portal and Dungeon Teleportation
-- Companions now teleport with the player through portals and dungeon entrances
-- Companions in Stay Home mode are excluded — only active followers teleport
-- Works via ZDO position update so companions warp correctly even if their zone unloaded
-- Cancels any active rest state (sitting/sleeping) before warping to prevent animation glitches
+- Companions follow you through portals and dungeon entrances
+- Stay Home companions are excluded — only active followers teleport
 
 ### Minimap Markers
-- Companions are now marked on the minimap with a visible icon
-- Markers are only visible to the companion's owner
+- Companions appear on the minimap (only visible to their owner)
 
 ### Skill Leveling
-- Companions level up skills like the player with progressive buff gains
-- Skill improvements affect combat effectiveness and gathering efficiency
+- Companions level up skills over time, improving combat and gathering
 
 ### Rested Buff
-- Companions receive the Rested buff when resting by a fire or sleeping in a bed
-- Being in a Comfortable area (shelter + fire) triggers the buff automatically
+- Companions get the Rested buff from resting near a fire or sleeping in a bed
 
-### Smart Gathering Restrictions
-- Companions won't chop trees if their equipped axe doesn't meet the tree's minimum tool tier requirement
-- Prevents wasting durability on trees the companion can't actually damage
+### Smart Gathering
+- Companions won't try to chop trees if their axe isn't strong enough
 
-### Night Sleep Requirement
-- Companions must be sleeping at night for the game's time-skip to pass
-- Matches vanilla behavior where all players must be in bed to skip the night
+### Night Sleep
+- Companions must be sleeping at night for the time-skip to work (matches vanilla behavior)
 
 ### Drowning
-- Companions slowly drown if their stamina is fully depleted while swimming
-- Encourages feeding companions stamina food before ocean voyages
+- Companions slowly drown if their stamina runs out while swimming
 
-### Ship Boarding AI
-- Point-to-Command on a ship tells companions to board and stay on deck
-- Companions find the boat's ladder, path to it, interact with it, and teleport onto the deck
-- Improved pathing AI for reliable ship boarding from shore
+### Ship Boarding
+- Point at a ship to tell companions to board — they find the ladder and climb on
 
-### Inventory UI Improvements
-- Cloned vanilla container panel for authentic Valheim look (native icons, durability bars, tooltips, stack counts, quality indicators)
-- Companion inventory grid now matches player grid size (8x4)
-- Equipped item indicators match the player inventory style
-- Added Split (Shift+Click) and Drop (Ctrl+Shift) modifiers to companion inventory
-- Editable companion name input with custom background sprite
-- Companion inventory weight display uses vanilla container weight style
-- Food slots displayed at the bottom of the inventory panel
+### Inventory UI
+- Authentic Valheim-style companion inventory panel (8x4 grid)
+- Equipped item indicators, split/drop modifiers, editable name, weight display, food slots
 
-### Radial Menu Improvements
-- Added configurable radial menu keybind (default E) — set to a different key to open the radial independently from interact
-- Improved radial menu hold detection with raw Unity input for better reliability
-- Dual-stick gamepad radial menu selection (whichever stick has greater magnitude)
-- Camera direction lock on radial close to prevent camera jerk from held right stick
-- Enlarged radial menu with two-ring layout: outer ring for action modes, inner ring for combat stances
+### Radial Menu
+- Configurable radial menu key (default E)
+- Dual-stick gamepad support
+- Two-ring layout: outer ring for action modes, inner ring for combat stances
 
 ### Combat
-- Removed backstab damage multiplier from companions — enemies can no longer deal bonus damage by hitting companions from behind
+- Removed backstab damage bonus against companions
 
-### Localization Framework
-- Full localization framework integrated with Valheim's built-in Localization system
-- All UI labels, radial menu text, hover text, messages, and speech lines are translatable
-- Translation files loaded from `Translations/{Language}.json` alongside the DLL
-- English.json auto-generated on first run with all translation keys
-- Speech lines support per-language files via `Translations/speech/{Language}.json`
-- Backward compatible with existing `speech.json` customizations
+### Localization
+- Full translation framework integrated with Valheim's localization system
+- Translation files loaded from `Translations/{Language}.json`
 
-### Other Changes
-- Added voice audio system with gender-specific voice packs and per-gender config for text vs audio
-- Added starter companion that spawns automatically in new worlds
-- Externalized speech lines to `speech.json` for easy customization
-- TraderOverhaul is now a soft dependency — mod works standalone without it
-- Fixed smelter interaction deadlock at edge of use distance
-- Fixed female companion invisible body (bodyfem mesh vertex stride mismatch)
-- Fixed Stay Home + Wander/Gather not working correctly
-- Fixed Eitr Weave and cross-tier items not being repaired
-- Fixed follow target not restored after closing companion UI during harvest
-- Fixed SuppressAttack not clearing when switching from Passive stance
+### Other
+- Voice audio system with gender-specific voice packs
+- Starter companion spawns automatically in new worlds
+- Speech lines customizable via `speech.json`
+- TraderOverhaul is now optional — mod works without it
+- Various bug fixes for smelting, female companion appearance, Stay Home modes, repair, and combat
 
 ## 0.1.1
-- Improved companion inventory UI: cloned vanilla container panel for authentic Valheim look (native icons, durability bars, tooltips, stack counts, quality indicators)
-- Companion inventory grid now matches player grid size (8x4)
-- Equipped item indicators now match the player inventory style
-- Added Split (Shift+Click) and Drop (Ctrl+Shift) modifiers to companion inventory
-- Added configurable radial menu keybind (default E) — set to a different key to open the radial independently from interact
-- Improved radial menu hold detection with raw Unity input for better reliability
-- Added diagnostic logging for radial menu interaction to help troubleshoot reported issues
-- Added editable companion name input with custom background sprite
-- Companion inventory weight display now uses vanilla container weight style
-- Food slots displayed at the bottom of the inventory panel
+- Improved companion inventory UI to match vanilla Valheim style
+- Added configurable radial menu keybind
+- Added editable companion names
+- Added food slot display at bottom of inventory
 
 ## 0.1.0
-- Companions now teleport with the player through portals and dungeon entrances
-- Companions in Stay mode are excluded — only active companions follow through teleports
-- Works via ZDO position update so companions warp correctly even if their zone unloaded during the teleport
-- TraderOverhaul is now a soft dependency — mod works standalone without it
+- Companions now teleport with you through portals and dungeons
+- Stay Home companions don't teleport — only active followers do
+- TraderOverhaul is now optional
 
 ## 0.0.9
-- Companions now teleport with the player through portals and dungeon entrances
-- Companions in Stay mode are excluded — only active companions follow through teleports
-- Works via ZDO position update so companions warp correctly even if their zone unloaded during the teleport
+- Companions now teleport with you through portals and dungeons
 
 ## 0.0.8
-- Added voice audio system: companions play MP3 voice clips alongside or instead of overhead speech text
-- Gender-specific voice packs: separate `Audio/MaleCompanion/` and `Audio/FemaleCompanion/` folders, with automatic MaleCompanion fallback when female clips are missing
-- Per-gender speech config: independent toggles for overhead text and voice audio per gender (male defaults to voice-only, female defaults to text-only)
-- Added starter companion: a free companion automatically spawns when entering a new world for the first time (configurable via `SpawnStarterCompanion` setting)
-- Externalized speech lines to `speech.json` for easy customization without recompiling
-- Added 5-second per-companion speech cooldown to prevent overlapping text and audio
-- Added voice audio categories for all speech events: Action, Combat, Follow, Forage, Gather, Hungry, Idle, Overweight, Repair, Smelt
-- Merged RadialAction speech pool into Action (radial commands now use the same lines as mode changes)
+- Added voice audio system with gender-specific voice packs
+- Added starter companion that spawns in new worlds
+- Speech lines can now be customized via `speech.json`
 
 ## 0.0.7
-- Fixed smelter interaction deadlock: companion got stuck when pathfinding reached closest point but 3D distance exceeded threshold (moveOk=True at 2.6m vs 2.5m UseDistance)
-- SmeltController now accepts pathfinding "arrived" with relaxed distance tolerance for smelter insert and output collection
-- Increased smelter interact offset from 1.2m to 1.3m for better switch-side navigation
+- Fixed companion getting stuck when trying to use smelters at the edge of reach distance
 
 ## 0.0.6
-- Improved controller support: dual-stick radial menu selection (whichever stick has greater magnitude)
-- Added camera direction lock on radial close to prevent camera jerk from held right stick
-- Added custom combat stance icons (Balanced, Aggressive, Defensive, Passive)
-- Increased inner ring stance icon sizes to match outer ring icons
-- Increased smelter interact offset so companions navigate to the correct side of smelters
+- Improved controller support for radial menu
+- Added custom combat stance icons
+- Enlarged radial menu icons
 
 ## 0.0.5
-- Added combat stances: Balanced, Aggressive, Defensive, and Passive selectable from inner radial ring
-- Aggressive stance: extended 50m aggro range, no blocking/dodging, 15%/5% retreat thresholds, halved power attack cooldown, tighter flanking
-- Defensive stance: only engages enemies within 5m or targeting the player, 45%/25% retreat thresholds, faster dodge cooldown, tighter formation
-- Passive stance: suppresses all targeting and combat, companion only follows or idles
-- Enlarged radial menu with two-ring layout: outer ring for action modes, inner ring for combat stances
-- Added procedural fallback icons for all four combat stances
-- Added stance info to periodic debug logs (CompanionAI state dump and CombatController heartbeat)
-- Fixed SuppressAttack not clearing when switching from Passive to another stance without a combat target
+- Added combat stances: Balanced, Aggressive, Defensive, and Passive
+- Two-ring radial menu layout: outer ring for modes, inner ring for stances
 
 ## 0.0.4
-- Added Smelt mode: companions autonomously refill kilns and furnaces with fuel and ore from nearby chests
-- Companions collect smelted output (bars, coal) from furnace ground drops and queued output
-- Companions deposit collected output into nearby chests with available space
-- Smart per-smelter priority: ore first when fuel is adequate, fuel when critically low, kilns before furnaces
-- Inventory-first refilling: companions use fuel/ore already in their inventory before making a chest trip
-- Chest open/close animation and sound effects play when companions take or deposit items
-- Smelter sound effects and feeding animation play when companions insert fuel or ore
-- AI navigates to the correct side of smelters using switch interaction points
-- Increased carry capacity per trip: 20 ore, 40 fuel (coal)
-- Added Smelt segment to radial command wheel with custom icon
-- Added Auto Pickup custom icon to radial command wheel
-- Companions speak contextual lines while smelting ("Fetching fuel.", "Everything's running.", etc.)
-- Updated README with Forage and Smelting Automation documentation
+- Added Smelt mode: companions automatically fuel and fill kilns and furnaces from nearby chests
+- Companions collect smelted output and deposit it in chests
+- Added Smelt and Auto Pickup icons to the radial wheel
 
 ## 0.0.3
-- Added Forage gather mode: companions find and pick berry bushes, mushrooms, flowers, branches, and stones
-- Changed Follow from a mode to an independent toggle (Follow ON overrides Stay Home, works alongside gather modes)
-- Added gather mode deselect: tapping an active gather mode turns it off
-- Replaced procedural radial menu icons with custom PNG textures
-- Added colored circle backgrounds behind each radial menu icon
-- Enlarged radial menu and icons for better visibility
-- Added foraging speech lines ("Found some berries!", "These mushrooms look good.", etc.)
-- Fixed female companion invisible body (bodyfem mesh vertex stride mismatch in VisEquipment)
-- Hidden overhead HUD bars when radial menu is open
-- Suppressed companion speech bubbles when radial menu is open
-- Lightened radial menu background and increased circle sprite resolution
+- Added Forage mode: companions pick berries, mushrooms, flowers, branches, and stones
+- Follow is now an independent toggle that works alongside gather modes
+- Replaced procedural icons with custom PNG textures
 
 ## 0.0.2
-- Fixed Stay Home + Wander not working (companions stood still due to suppressed move interval)
-- Fixed Stay Home + Gather not working (gathering companions now wander to find new resource patches)
-- Fixed companions unable to return home when wander is turned off while far away
-- Fixed infinite re-approach cycle during harvesting causing companions to walk away and stand still
-- Fixed Eitr Weave and other cross-tier items not being repaired (added vanilla worldLevel fallback)
-- Fixed follow target not restored after closing companion UI during active harvest
-- Fixed STUCK detection false positives when companion is intentionally stationary in StayHome mode
-- Improved tree priority: fallen logs and stumps are now always preferred over standing trees (two-pass scan)
-- Added inventory slot hover highlight for mouse and controller
-- Added Command toggle to Dverger radial wheel
-- Added overhead speech when executing radial commands
-- Removed food slot separator line, tightened inventory panel spacing
+- Fixed Stay Home + Wander and Stay Home + Gather not working
+- Fixed various harvesting and repair bugs
+- Improved tree priority — fallen logs preferred over standing trees
+- Added Command toggle to radial wheel
 
 ## 0.0.1
 - Initial beta release
-- Hire NPC companions from Haldor with custom appearance (gender, hair, beard, skin/hair color)
-- CompanionAI: custom BaseAI subclass with follow, combat, sleep/wake, and stuck detection
-- Combat AI: melee engagement with retreat/re-engage, manual bow draw for ranged, defensive parry
-- Harvest system: gather wood, stone, and ore with full state machine (Idle → Moving → Attacking → CollectingDrops)
-- Auto-repair: companions walk to CraftingStations and repair worn gear
-- Food system: 3 food slots with auto-consume, health/stamina regen
-- Carry weight limit (300) with overweight speech and gather-stop
-- Stay Home mode with 50m home leash, works alongside any action mode
-- Auto-deposit: companions in Stay Home + gather mode deposit to nearest chest when overweight
-- Wander toggle for idle roaming
-- Auto-pickup toggle for nearby item collection
-- Door handling: companions open doors when stuck, close them behind
-- Directed commands: point at objects to command companions (repair at station, board ship, move to position, gather resource)
-- Radial command wheel (Hold E) with all action toggles and mode selection
-- Inventory-only interaction panel (Tap E) with 5x6 grid and 3 food slots
-- Overhead health, stamina, and durability bars
-- Context-aware overhead speech (combat, hunger, overweight, repair, gather, idle)
-- Full gamepad/controller support for all UI and commands
-- Companion tab injected into Haldor's TraderUI via Harmony patches
+- Hire companions from Haldor with custom appearance
+- AI with follow, combat, sleep/wake, and stuck detection
+- Harvest wood, stone, and ore
+- Auto-repair gear at crafting stations
+- Food system with 3 slots and auto-consume
+- Stay Home mode, auto-deposit, wander, auto-pickup
+- Door handling, directed commands, radial wheel, inventory panel
+- Full gamepad/controller support

@@ -48,7 +48,7 @@ namespace Companions
 
         // ── Blacklist — tracks unreachable targets to prevent infinite stuck loops ──
         private readonly Dictionary<int, float> _blacklist = new Dictionary<int, float>();
-        private const float BlacklistDuration = 60f;
+        private static float BlacklistDuration => ModConfig.HarvestBlacklistDuration.Value;
 
         private const HarvestState State_Idle           = HarvestState.Idle;
         private const HarvestState State_Moving         = HarvestState.Moving;
@@ -56,9 +56,9 @@ namespace Companions
         private const HarvestState State_CollectingDrops = HarvestState.CollectingDrops;
 
         // ── Config ──────────────────────────────────────────────────────────
-        private const float ScanInterval   = 4f;
-        private const float ScanRadius     = 30f;
-        private const float AttackInterval = 2.5f;
+        private static float ScanInterval   => ModConfig.HarvestScanInterval.Value;
+        private static float ScanRadius     => ModConfig.HarvestScanRadius.Value;
+        private static float AttackInterval => ModConfig.HarvestAttackInterval.Value;
         private const float AttackRetry    = 0.25f;
         private const float MoveTimeout    = 12f;
         private const float ArrivalSlack   = 0.5f;
@@ -66,13 +66,13 @@ namespace Companions
         private const int   TotalAttemptMax = 30;  // abandon after this many total attempts (incl. failures)
 
         // Drop collection config
-        private const float DropScanRadius  = 8f;   // radius around destroy pos to look for drops
+        private static float DropScanRadius  => ModConfig.HarvestDropScanRadius.Value;
         private const float DropPickupRange = 3.0f;  // must be >= BaseAI.Follow() stop distance (~3m)
         private const float DropTimeout     = 10f;   // max time in CollectingDrops before giving up
         private const float DropScanDelay   = 0.5f;  // brief delay after destroy before scanning (drops need time to spawn)
 
         // Weight limit — stop gathering when near max carry weight
-        private const float OverweightThreshold = 298f;
+        private static float OverweightThreshold => ModConfig.HarvestOverweightThreshold.Value;
         private static readonly int s_pickedHash = "picked".GetStableHashCode();
         private float _overweightMsgTimer;
 
@@ -717,7 +717,7 @@ namespace Companions
             }
             else if (_reapproach)
             {
-                moveGoal = range * 0.15f;  // get right on top of target
+                moveGoal = range * 0.5f;   // closer than normal but outside target's collider
                 runToTarget = false;        // walk for tighter stop distance
             }
             else if (IsLowTarget())
@@ -786,11 +786,21 @@ namespace Companions
             if (isForage)
                 arrivalDist = 1.5f;
             else if (_reapproach)
-                arrivalDist = range * 0.35f;  // tighter than re-approach trigger (0.6*range)
+                arrivalDist = range * 0.7f;   // tighter than re-approach trigger (0.85*range)
             else if (isLow)
                 arrivalDist = range;
             else
                 arrivalDist = range + ArrivalSlack;
+            // Safety: if re-approach can't reach the tighter distance after 3s
+            // but the companion IS within normal attack range, stop trying to
+            // get closer and resume attacking — the target's collider likely
+            // prevents getting any nearer.
+            if (_reapproach && _moveTimer > 3f)
+            {
+                float normalArrival = isLow ? range : range + ArrivalSlack;
+                if (distToTarget <= normalArrival || horizDist <= normalArrival)
+                    arrivalDist = normalArrival;
+            }
             if (distToTarget <= arrivalDist || horizDist <= arrivalDist)
             {
                 if (_ai != null) _ai.StopMoving();
@@ -1011,10 +1021,13 @@ namespace Companions
             }
 
             // After several swings without destroy, the weapon probably isn't
-            // connecting — force re-approach to get right on top of the target.
-            // Trigger threshold (0.6*range) must be HIGHER than re-approach
-            // arrival distance (0.35*range) to prevent infinite re-approach cycles.
-            if (attacked && _swingCount > 0 && _swingCount % 5 == 0 && dist > range * 0.6f)
+            // connecting — force re-approach to get closer to the target.
+            // Only trigger when genuinely far from the target (>85% of range),
+            // since trees/rocks often survive many swings — don't interrupt
+            // productive attacking when the companion is already close enough.
+            // Trigger threshold (0.85*range) must be HIGHER than re-approach
+            // arrival distance (0.7*range) to prevent infinite re-approach cycles.
+            if (attacked && _swingCount > 0 && _swingCount % 5 == 0 && dist > range * 0.85f)
             {
                 LogWarn($"Re-approach — {_swingCount} swings without destroy at dist={dist:F1}m " +
                     $"range={range:F1} — moving closer");
@@ -1850,7 +1863,17 @@ namespace Companions
         /// <summary>True for targets lying on the ground (logs, stumps) where horizontal swings whiff.</summary>
         private bool IsLowTarget()
         {
-            return _targetType == "TreeLog" || _targetType == "Stump";
+            if (_targetType == "TreeLog" || _targetType == "Stump")
+                return true;
+            // TreeBase on sloped terrain often sits below the companion —
+            // treat it as low when there's a significant height difference
+            if (_targetType == "TreeBase" && _target != null)
+            {
+                float heightDiff = _target.transform.position.y - transform.position.y;
+                if (heightDiff < -0.3f)
+                    return true;
+            }
+            return false;
         }
 
         /// <summary>Determine the resource type of the target for attack strategy.</summary>

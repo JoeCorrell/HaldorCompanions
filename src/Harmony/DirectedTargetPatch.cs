@@ -144,6 +144,13 @@ namespace Companions
             ModLocalization.Loc("hc_cmd_tombstone_3")
         });
 
+        private static string[] _smeltLines;
+        private static string[] SmeltLines => _smeltLines ?? (_smeltLines = new[] {
+            ModLocalization.Loc("hc_cmd_smelt_1"),
+            ModLocalization.Loc("hc_cmd_smelt_2"),
+            ModLocalization.Loc("hc_cmd_smelt_3")
+        });
+
         /// <summary>Clear all cached speech arrays so they re-resolve on next access (call on language change).</summary>
         internal static void ResetCachedLines()
         {
@@ -164,6 +171,7 @@ namespace Companions
             _boardLines       = null;
             _repairNothingLines = null;
             _tombstoneLines   = null;
+            _smeltLines       = null;
         }
 
         private static void Postfix(Player __instance)
@@ -183,11 +191,11 @@ namespace Companions
 
             bool buttonDown = isGamepad
                 ? ZInput.GetButtonDown("JoyUse")
-                : Input.GetKeyDown(CompanionsPlugin.DirectTargetKey.Value);
+                : Input.GetKeyDown(ModConfig.DirectTargetKey.Value);
 
             bool buttonHeld = isGamepad
                 ? ZInput.GetButton("JoyUse")
-                : Input.GetKey(CompanionsPlugin.DirectTargetKey.Value);
+                : Input.GetKey(ModConfig.DirectTargetKey.Value);
 
             // Suppress gamepad when interact prompt or radial is visible
             if (isGamepad && (buttonDown || buttonHeld))
@@ -331,6 +339,14 @@ namespace Companions
                 if (station != null)
                 {
                     DirectRepair(setups, localId, station);
+                    return;
+                }
+
+                // ── Smelter / Kiln ─────────────────────────────────
+                var smelter = col.GetComponentInParent<Smelter>();
+                if (smelter != null)
+                {
+                    DirectSmelt(setups, localId, smelter);
                     return;
                 }
 
@@ -727,6 +743,39 @@ namespace Companions
                 CompanionsPlugin.Log.LogDebug(
                     $"[Direct] No companions can repair at \"{station.m_name}\"");
             }
+        }
+
+        private static void DirectSmelt(CompanionSetup[] setups, string localId, Smelter smelter)
+        {
+            bool isKiln = smelter.m_maxFuel == 0;
+            string typeName = isKiln ? "kiln" : "smelter";
+            CompanionsPlugin.Log.LogDebug(
+                $"[Direct] DirectSmelt called — {typeName}=\"{smelter.m_name}\" " +
+                $"pos={smelter.transform.position:F1}");
+
+            CompanionTalk firstTalk = null;
+            int directed = 0;
+
+            foreach (var setup in setups)
+            {
+                if (!IsOwned(setup, localId)) continue;
+                if (!setup.GetIsCommandable()) continue;
+
+                CancelExistingActions(setup);
+
+                var nview = setup.GetComponent<ZNetView>();
+                if (nview?.GetZDO() == null) continue;
+
+                // Set action mode to Smelt — SmeltController picks this up on next Update
+                nview.GetZDO().Set(CompanionSetup.ActionModeHash, CompanionSetup.ModeSmelt);
+
+                if (firstTalk == null) firstTalk = setup.GetComponent<CompanionTalk>();
+                directed++;
+            }
+
+            SayRandom(firstTalk, SmeltLines, "Smelt");
+            CompanionsPlugin.Log.LogDebug(
+                $"[Direct] {directed} companion(s) → smelt mode ({typeName})");
         }
 
         private static void DirectBoard(CompanionSetup[] setups, string localId, Ship ship)

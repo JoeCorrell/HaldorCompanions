@@ -38,16 +38,18 @@ namespace Companions
         private static readonly HashSet<VisEquipment> _companionVisEquips = new HashSet<VisEquipment>();
         internal static bool IsCompanionVisEquip(VisEquipment ve) => _companionVisEquips.Contains(ve);
         // DvergerPrefabHash removed — use CompanionTierData.IsDvergerVariant() instead
-        internal const int ModeFollow      = 0;
-        internal const int ModeGatherWood  = 1;
-        internal const int ModeGatherStone = 2;
-        internal const int ModeGatherOre   = 3;
-        internal const int ModeStay        = 4;
-        internal const int ModeForage     = 5;
-        internal const int ModeSmelt      = 6;
-        internal const int ModeHunt       = 7;
-        internal const int ModeFarm       = 8;
-        internal const int ModeFish       = 9;
+        internal const int ModeFollow           = 0;
+        internal const int ModeGatherWood       = 1;
+        internal const int ModeGatherStone      = 2;
+        internal const int ModeGatherOre        = 3;
+        internal const int ModeStay             = 4;
+        internal const int ModeForage           = 5;
+        internal const int ModeSmelt            = 6;
+        internal const int ModeHunt             = 7;
+        internal const int ModeFarm             = 8;
+        internal const int ModeFish             = 9;
+        internal const int ModeRepairBuildings  = 15;
+        internal const int ModeRestock          = 16;
 
         // ── Combat stances ────────────────────────────────────────────────────
         internal const int StanceBalanced   = 0;
@@ -57,7 +59,7 @@ namespace Companions
         internal const int StanceMelee      = 4;
         internal const int StanceRanged     = 5;
 
-        internal const float MaxLeashDistance = 50f;
+        internal static float MaxLeashDistance => ModConfig.MaxLeashDistance.Value;
         private const int ActionModeSchemaVersion = 2;
 
         // ── Reflection ───────────────────────────────────────────────────────
@@ -86,6 +88,7 @@ namespace Companions
 
         // Minimap pin — live-updating, owner-only
         private Minimap.PinData _minimapPin;
+        private Minimap _lastMinimapInstance;
 
         /// <summary>
         /// When true, auto-equip is suppressed (used by CompanionHarvest to keep tools equipped).
@@ -187,6 +190,10 @@ namespace Companions
             // Process equip queue (delayed equipping with animation)
             UpdateEquipQueue(Time.deltaTime);
 
+            // Minimap pin — must run every frame regardless of mode/state
+            // so the pin stays visible during harvest, smelt, rest, etc.
+            UpdateMinimapPin();
+
             // Ensure follow target stays set for follow/gather modes.
             // It can be lost on zone reload, player respawn, or after combat.
             if (_ai != null && _ai.GetFollowTarget() == null && Player.m_localPlayer != null)
@@ -258,13 +265,22 @@ namespace Companions
                 }
             }
 
-            // ── Minimap pin — live position update, owner-only ──
-            UpdateMinimapPin();
+
         }
 
         private void UpdateMinimapPin()
         {
             if (Minimap.instance == null) return;
+
+            // Detect stale pin from Minimap instance change (scene reload, logout/login).
+            // When the Minimap is recreated, it calls ClearPins() which removes all pins
+            // from its internal list. Our _minimapPin reference becomes orphaned — still
+            // non-null but no longer tracked by the Minimap, so it's invisible.
+            if (_lastMinimapInstance != Minimap.instance)
+            {
+                _minimapPin = null;
+                _lastMinimapInstance = Minimap.instance;
+            }
 
             // Only show pin for the local player's companions
             var zdo = _nview?.GetZDO();
@@ -351,7 +367,7 @@ namespace Companions
 
             // Legacy mapping: 2 used to be Stay before gather modes were fully wired.
             if (mode == 2) mode = ModeStay;
-            if (mode < ModeFollow || mode > ModeSmelt) mode = ModeFollow;
+            if (mode < ModeFollow || mode > ModeFish) mode = ModeFollow;
 
             zdo.Set(ActionModeHash, mode);
             zdo.Set(ActionModeSchemaHash, ActionModeSchemaVersion);
@@ -478,8 +494,9 @@ namespace Companions
                 case ModeGatherOre:
                 case ModeForage:
                 case ModeSmelt:
-                    // Don't override follow target if HarvestController or SmeltController
-                    // is actively driving movement — they set their own follow targets.
+                case ModeFarm:
+                    // Don't override follow target if HarvestController, SmeltController,
+                    // or FarmController is actively driving movement.
                     // Skip this guard when force=true (UI close restoration).
                     if (!force)
                     {
@@ -495,6 +512,13 @@ namespace Companions
                         {
                             CompanionsPlugin.Log.LogDebug(
                                 $"[Setup]   → Smelt mode={mode}, smelt active — skipping follow override");
+                            break;
+                        }
+                        var farmCheck = GetComponent<FarmController>();
+                        if (farmCheck != null && farmCheck.IsActive)
+                        {
+                            CompanionsPlugin.Log.LogDebug(
+                                $"[Setup]   → Farm mode={mode}, farm active — skipping follow override");
                             break;
                         }
                     }
@@ -828,6 +852,16 @@ namespace Companions
                 tombZdo.Set(TombstoneIdHash, tombstoneId);
                 tombZdo.Set(TombInvWidthHash, tombInv.GetWidth());
                 tombZdo.Set(TombInvHeightHash, tombInv.GetHeight());
+            }
+
+            // Add death marker to minimap so the player can find the tombstone
+            if (Minimap.instance != null)
+            {
+                string pinName = companionName + " " + ModLocalization.Loc("hc_minimap_grave");
+                Minimap.instance.AddPin(position, Minimap.PinType.Death,
+                    pinName, save: true, isChecked: false, 0L);
+                CompanionsPlugin.Log.LogInfo(
+                    $"[Setup] Added tombstone minimap pin at {position:F1}");
             }
 
             SuppressAutoEquip = false;

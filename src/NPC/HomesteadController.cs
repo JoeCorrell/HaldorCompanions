@@ -62,10 +62,11 @@ namespace Companions
         private float _diagTimer;         // throttle diagnostic logs
 
         // ── Rotation cycling ──────────────────────────────────────────────────
-        private enum TaskSlot { Repair, Refuel, Sort, Smelt }
+        private enum TaskSlot { Repair, Refuel, Sort, Smelt, Farm }
         private TaskSlot _currentSlot;
         private float _slotTimer;              // counts down within current slot
         internal bool IsSmeltTurn => _currentSlot == TaskSlot.Smelt;  // read by SmeltController
+        internal bool IsFarmTurn  => _currentSlot == TaskSlot.Farm;   // read by FarmController
 
         // ── Refuel task ─────────────────────────────────────────────────────
         private Fireplace _targetFireplace;
@@ -90,20 +91,20 @@ namespace Companions
         private readonly List<Container> _nearbyChests = new List<Container>();
 
         // ── Constants ───────────────────────────────────────────────────────
-        private const float ScanInterval     = 5f;
-        private const float ScanBackoff      = 30f;
-        private const float ScanRadius       = 40f;
-        private const float UseDistance      = 2.0f;
+        private static float ScanInterval     => ModConfig.HomesteadScanInterval.Value;
+        private static float ScanBackoff      => ModConfig.HomesteadScanBackoff.Value;
+        private static float ScanRadius       => ModConfig.HomesteadScanRadius.Value;
+        private static float UseDistance      => ModConfig.HomesteadUseDistance.Value;
         private const float FuelAddDelay     = 0.8f;
         private const float RepairDelay      = 1.2f;
         private const float ItemTransferDelay = 0.6f;
         private const float ChestOpenDelay   = 0.8f;
-        private const float FuelThreshold    = 0.5f;  // refuel below 50% capacity
+        private static float FuelThreshold    => ModConfig.HomesteadFuelThreshold.Value;
         private const float MoveTimeout      = 15f;
         private const float StuckCheckPeriod = 1f;
         private const float StuckMinDistance = 0.5f;
-        private const float TaskSlotTime    = 60f;  // seconds per homestead task (repair/refuel/sort)
-        private const float SmeltSlotTime   = 60f;  // seconds for smelting turn
+        private static float TaskSlotTime    => ModConfig.HomesteadTaskSlotTime.Value;
+        private static float SmeltSlotTime   => ModConfig.HomesteadSmeltSlotTime.Value;
 
         // ── Lifecycle ───────────────────────────────────────────────────────
 
@@ -183,7 +184,8 @@ namespace Companions
                     case TaskSlot.Repair: _currentSlot = TaskSlot.Refuel; _slotTimer = TaskSlotTime; break;
                     case TaskSlot.Refuel: _currentSlot = TaskSlot.Sort;   _slotTimer = TaskSlotTime; break;
                     case TaskSlot.Sort:   _currentSlot = TaskSlot.Smelt;  _slotTimer = SmeltSlotTime; break;
-                    case TaskSlot.Smelt:  _currentSlot = TaskSlot.Repair; _slotTimer = TaskSlotTime; break;
+                    case TaskSlot.Smelt:  _currentSlot = TaskSlot.Farm;   _slotTimer = TaskSlotTime; break;
+                    case TaskSlot.Farm:   _currentSlot = TaskSlot.Repair; _slotTimer = TaskSlotTime; break;
                 }
                 // Reset scan state so the new slot scans immediately
                 _scanTimer = 0f;
@@ -191,8 +193,8 @@ namespace Companions
                 Log($"Rotation: switching to {_currentSlot} slot ({_slotTimer}s)");
             }
 
-            // During smelt slot, stay idle and let SmeltController run
-            if (_currentSlot == TaskSlot.Smelt) return;
+            // During smelt/farm slots, stay idle and let their controllers run
+            if (_currentSlot == TaskSlot.Smelt || _currentSlot == TaskSlot.Farm) return;
 
             float dt = Time.deltaTime;
 
@@ -1159,7 +1161,7 @@ namespace Companions
         /// Inventory.GetItem(string) searches m_shared.m_name (localized) by default,
         /// which does NOT match prefab names like "Wood" or "Sap".
         /// </summary>
-        private static ItemDrop.ItemData FindItemByPrefab(Inventory inv, string prefabName)
+        internal static ItemDrop.ItemData FindItemByPrefab(Inventory inv, string prefabName)
         {
             var items = inv.GetAllItems();
             for (int i = 0; i < items.Count; i++)
@@ -1171,7 +1173,7 @@ namespace Companions
         }
 
         /// <summary>Transfer 1 unit of an item from source to dest inventory.</summary>
-        private static bool TransferOne(Inventory source, Inventory dest, ItemDrop.ItemData item)
+        internal static bool TransferOne(Inventory source, Inventory dest, ItemDrop.ItemData item)
         {
             var clone = item.Clone();
             clone.m_stack = 1;
@@ -1181,7 +1183,7 @@ namespace Companions
             return true;
         }
 
-        private static int CountItemInInventory(Inventory inv, string prefabName)
+        internal static int CountItemInInventory(Inventory inv, string prefabName)
         {
             int count = 0;
             var items = inv.GetAllItems();
@@ -1194,7 +1196,7 @@ namespace Companions
             return count;
         }
 
-        private static bool ConsumeOneFromInventory(Inventory inv, string prefabName)
+        internal static bool ConsumeOneFromInventory(Inventory inv, string prefabName)
         {
             var items = inv.GetAllItems();
             for (int i = 0; i < items.Count; i++)
@@ -1210,7 +1212,7 @@ namespace Companions
         }
 
         /// <summary>Find a hammer (build tool) in companion inventory.</summary>
-        private static ItemDrop.ItemData FindHammerInInventory(Inventory inv)
+        internal static ItemDrop.ItemData FindHammerInInventory(Inventory inv)
         {
             var items = inv.GetAllItems();
             for (int i = 0; i < items.Count; i++)

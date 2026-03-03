@@ -35,6 +35,7 @@ namespace Companions
         private float m_sleepDelay = 0.5f;
         private float m_sleepTimer;
         private static readonly int s_sleeping = ZSyncAnimation.GetHash("sleeping");
+        private static readonly int s_crouching = ZSyncAnimation.GetHash("crouching");
 
         // ══════════════════════════════════════════════════════════════════════
         //  Target Management (direct access — no reflection needed)
@@ -154,8 +155,8 @@ namespace Companions
         private float _tombstoneScanTimer;
         private float _tombstoneNavTimeout;
         private float _tombstoneNavStuckTime;
-        private const float TombstoneScanInterval = 5f;
-        private const float TombstoneNavTimeoutMax = 120f;
+        private static float TombstoneScanInterval => ModConfig.TombstoneScanInterval.Value;
+        private static float TombstoneNavTimeoutMax => ModConfig.TombstoneNavTimeout.Value;
         private const float TombstoneLootRange = 3f;
 
         // ══════════════════════════════════════════════════════════════════════
@@ -164,7 +165,7 @@ namespace Companions
 
         private int _autoPickupMask;
         private readonly Collider[] _autoPickupBuffer = new Collider[32];
-        private const float AutoPickupRange = 2f;
+        private static float AutoPickupRange => ModConfig.AutoPickupRange.Value;
         private const float AutoPickupPullSpeed = 15f;
 
         // ══════════════════════════════════════════════════════════════════════
@@ -176,13 +177,20 @@ namespace Companions
         private float _drownDamageTimer;
 
         // ══════════════════════════════════════════════════════════════════════
+        //  Hazard Recovery (tar, water)
+        // ══════════════════════════════════════════════════════════════════════
+
+        private float _hazardRecoveryTimer;
+        private static readonly int s_taredHash = "Tared".GetStableHashCode();
+
+        // ══════════════════════════════════════════════════════════════════════
         //  Constants
         // ══════════════════════════════════════════════════════════════════════
 
-        private const float GiveUpTime = 30f;
-        private const float UpdateTargetIntervalNear = 2f;
-        private const float UpdateTargetIntervalFar = 6f;
-        private const float SelfDefenseRange = 10f;
+        private static float GiveUpTime => ModConfig.GiveUpTime.Value;
+        private static float UpdateTargetIntervalNear => ModConfig.UpdateTargetIntervalNear.Value;
+        private static float UpdateTargetIntervalFar => ModConfig.UpdateTargetIntervalFar.Value;
+        private static float SelfDefenseRange => ModConfig.SelfDefenseRange.Value;
         private const float AlertRange = 9999f;
 
         // ══════════════════════════════════════════════════════════════════════
@@ -193,10 +201,11 @@ namespace Companions
         private float _stuckDetectTimer;
         private Vector3 _lastDebugPos;
         private float _targetLogTimer;
+        private bool _lastPathOk = true;  // track path result transitions for one-shot logging
 
         private const float DebugLogInterval = 3f;
         private const float StuckThreshold = 5f;
-        private const float FollowTeleportDist = 50f;
+        private static float FollowTeleportDist => ModConfig.FollowTeleportDistance.Value;
 
         // ── StayHome patrol enforcement ─────────────────────────────────────
         private float _homePatrolTimer;
@@ -206,8 +215,8 @@ namespace Companions
         // ══════════════════════════════════════════════════════════════════════
 
         private int _formationSlot = -1;
-        private const float FormationOffset = 3f;
-        private const float FormationCatchupDist = 15f;
+        private static float FormationOffset => ModConfig.FormationOffset.Value;
+        private static float FormationCatchupDist => ModConfig.FormationCatchupDist.Value;
 
         // ══════════════════════════════════════════════════════════════════════
         //  Cached Components (avoid GetComponent every frame)
@@ -218,6 +227,7 @@ namespace Companions
         private CombatController _combat;
         private RepairController _repair;
         private SmeltController _smelt;
+        private FarmController _farm;
         private HomesteadController _homestead;
         private DoorHandler _doorHandler;
         private CompanionRest _rest;
@@ -237,6 +247,7 @@ namespace Companions
             _combat = GetComponent<CombatController>();
             _repair = GetComponent<RepairController>();
             _smelt = GetComponent<SmeltController>();
+            _farm = GetComponent<FarmController>();
             _homestead = GetComponent<HomesteadController>();
             _doorHandler = GetComponent<DoorHandler>();
             _rest = GetComponent<CompanionRest>();
@@ -317,8 +328,252 @@ namespace Companions
         //  (eliminates all BaseAI reflection — controllers call these directly)
         // ══════════════════════════════════════════════════════════════════════
 
+        // ══════════════════════════════════════════════════════════════════════
+        //  Context Steering — obstacle-aware movement
+        //
+        //  Casts a fan of rays in a forward hemisphere to build a local awareness
+        //  map of obstacles. Each candidate direction gets a score that balances
+        //  goal-seeking (interest) with obstacle avoidance (danger). The companion
+        //  picks the highest-scoring direction, letting it smoothly steer around
+        //  walls, furniture, and other structures the NavMesh doesn't know about.
+        // ══════════════════════════════════════════════════════════════════════
+
+        private const int   CtxRayCount    = 13;    // rays from -90° to +90° in 15° steps
+        private const float CtxProbeRange  = 4f;    // how far ahead to scan for obstacles
+        private const float CtxDangerWeight = 1.8f; // how strongly obstacles repel
+        private const float CtxMinClearance = 0.4f;  // below this distance, danger = max
+
+        // Fallback stuck detection (when context steering alone can't escape)
+        private float _avoidStuckTimer;
+        private float _avoidCornerTimer;
+        private float _avoidCornerAngle;
+        private Vector3 _avoidLastPos;
+
+        // Two masks for context steering:
+        // _ctxSteerMask:      excludes "piece" — used for NavMesh-arrived fallback where
+        //                     the target IS often a piece (smelter, chest). Including "piece"
+        //                     here causes spinning when approaching structures.
+        // _ctxSteerPieceMask: includes "piece" — used for path-stuck fallback where a
+        //                     half-wall blocks the NavMesh path. The companion needs to see
+        //                     the wall to navigate around it.
+        private static int _ctxSteerMask;
+        private static int _ctxSteerPieceMask;
+
+        // True when MoveToPoint is using context steering fallback (pathfinding failed).
+        // Prevents stuck recovery and proactive jump from fighting the fallback system.
+        private bool _inContextSteerFallback;
+
+        // Frame count when MoveToPoint last returned false (actively navigating).
+        // Stuck recovery only fires when this is recent — prevents false positives
+        // when controllers are in stationary phases (inserting items, repairing, etc.).
+        private int _moveToPointActiveFrame;
+
+        // Path-stuck detection: NavMesh says "still pathing" (MoveTo returns false)
+        // but the companion can't actually move (half-wall blocking the NavMesh path).
+        // After this timer exceeds the threshold, context steer takes over.
+        private float _pathStuckTimer;
+        private const float PathStuckThreshold = 1.5f;
+
+        // Logging throttle — context steer decisions are per-frame, throttle to every 2s
+        private float _ctxLogTimer;
+
+        /// <summary>
+        /// Scans a 180° forward arc with raycasts and returns the best movement
+        /// direction that maximises progress toward the goal while avoiding obstacles.
+        ///
+        /// Open field: all rays clear → moves straight at goal.
+        /// Wall ahead: forward rays blocked → steers to the clearest side.
+        /// Corridor:   side rays blocked, forward clear → walks straight.
+        /// Corner:     forward + one side blocked → steers to the open side.
+        /// Dead end:   all forward rays blocked → picks perpendicular escape.
+        /// </summary>
+        private Vector3 ContextSteer(Vector3 goalDir, string reason = null, int maskOverride = 0)
+        {
+            goalDir.y = 0f;
+            if (goalDir.sqrMagnitude < 0.01f)
+                return transform.forward;
+            goalDir.Normalize();
+
+            Vector3 center = m_character.GetCenterPoint();
+
+            // Lazy-init masks
+            if (_ctxSteerMask == 0)
+            {
+                _ctxSteerMask = LayerMask.GetMask("Default", "static_solid", "Default_small", "terrain", "vehicle");
+                _ctxSteerPieceMask = _ctxSteerMask | LayerMask.GetMask("piece");
+            }
+
+            float bestScore = float.MinValue;
+            float bestAngle = 0f;
+            Vector3 bestDir = goalDir;
+            int dangerousRays = 0;
+            float closestHit = CtxProbeRange;
+
+            for (int i = 0; i < CtxRayCount; i++)
+            {
+                // Spread rays from -90° to +90° relative to goal direction
+                float angle = -90f + i * (180f / (CtxRayCount - 1));
+                Vector3 probeDir = Quaternion.Euler(0f, angle, 0f) * goalDir;
+
+                // How far is the nearest obstacle in this direction?
+                int mask = maskOverride != 0 ? maskOverride : _ctxSteerMask;
+                float hitDist = Physics.Raycast(center, probeDir, out RaycastHit ctxHit, CtxProbeRange, mask)
+                    ? ctxHit.distance : CtxProbeRange;
+
+                // Interest: how aligned with goal (1.0 = perfect, 0 = perpendicular)
+                float interest = Vector3.Dot(probeDir, goalDir);
+
+                // Danger: 0 = far/clear, 1 = at minimum clearance or closer
+                float danger = 0f;
+                if (hitDist < CtxProbeRange)
+                {
+                    float safe = Mathf.Clamp01((hitDist - CtxMinClearance)
+                                               / (CtxProbeRange - CtxMinClearance));
+                    danger = 1f - safe;
+                    dangerousRays++;
+                    if (hitDist < closestHit) closestHit = hitDist;
+                }
+
+                // Squared danger for strong close-range repulsion
+                float score = interest - CtxDangerWeight * danger * danger;
+
+                if (score > bestScore)
+                {
+                    bestScore = score;
+                    bestAngle = angle;
+                    bestDir = probeDir;
+                }
+            }
+
+            // Throttled logging — only log every 2 seconds
+            _ctxLogTimer -= Time.fixedDeltaTime;
+            if (_ctxLogTimer <= 0f)
+            {
+                _ctxLogTimer = 2f;
+                CompanionsPlugin.Log.LogDebug(
+                    $"[AI:CtxSteer] reason={reason ?? "?"} bestAngle={bestAngle:F0}° " +
+                    $"score={bestScore:F2} dangerRays={dangerousRays}/{CtxRayCount} " +
+                    $"closestHit={closestHit:F1}m pos={transform.position:F1}");
+            }
+
+            return bestDir;
+        }
+
         internal bool MoveToPoint(float dt, Vector3 point, float dist, bool run)
-            => MoveTo(dt, point, dist, run);
+        {
+            // Flying creatures use vanilla MoveTo (MoveAndAvoid handles them)
+            if (m_character.m_flying)
+                return MoveTo(dt, point, dist, run);
+
+            _inContextSteerFallback = false;
+
+            float distXZ = Utils.DistanceXZ(point, transform.position);
+
+            // Already close enough — use caller's dist directly (no floor).
+            // Combat passes dist=0 to get right on top of the target; a floor
+            // would cause the companion to stop too early for melee range.
+            if (distXZ < dist)
+            {
+                StopMoving();
+                _avoidCornerTimer = 0f;
+                _avoidStuckTimer = 0f;
+                _pathStuckTimer = 0f;
+                return true;
+            }
+
+            Vector3 goalDir = point - transform.position;
+            goalDir.y = 0f;
+            goalDir.Normalize();
+
+            // Try pathfinded movement
+            bool result = MoveTo(dt, point, dist, run);
+
+            // MoveTo returned "arrived" but we're still far — pathfinding failed.
+            // Navigate with context steering directly toward the goal.
+            if (result && distXZ > dist + 0.5f)
+            {
+                _inContextSteerFallback = true;
+                _moveToPointActiveFrame = Time.frameCount;
+                Vector3 bestDir = ContextSteer(goalDir, "fallback");
+                MoveTowards(bestDir, run);
+                UpdateFallbackStuck(dt, goalDir, run);
+                return false;
+            }
+
+            // Path following is in progress. Check for path-stuck: NavMesh says
+            // "still going" but the companion physically can't move (half-wall
+            // blocking the path). After PathStuckThreshold seconds of near-zero
+            // velocity, switch to context steer to navigate around the obstacle.
+            if (!result)
+            {
+                _moveToPointActiveFrame = Time.frameCount;
+
+                float vel = m_character.GetVelocity().magnitude;
+                if (vel < GroundStuckVelThreshold && !m_character.InAttack())
+                {
+                    _pathStuckTimer += dt;
+                    if (_pathStuckTimer >= PathStuckThreshold)
+                    {
+                        // NavMesh path goes through an obstacle — use context steer
+                        // with "piece" layer so half-walls are detected and avoided.
+                        _inContextSteerFallback = true;
+                        Vector3 bestDir = ContextSteer(goalDir, "pathstuck", _ctxSteerPieceMask);
+                        MoveTowards(bestDir, run);
+                        UpdateFallbackStuck(dt, goalDir, run);
+                        return false;
+                    }
+                }
+                else
+                {
+                    _pathStuckTimer = 0f;
+                }
+
+                _avoidCornerTimer = 0f;
+                _avoidStuckTimer = 0f;
+            }
+            else
+            {
+                _pathStuckTimer = 0f;
+            }
+
+            return result;
+        }
+
+        /// <summary>
+        /// Stuck escape for fallback navigation — if context steering can't make
+        /// progress (e.g. deep corner), back up at a random angle to break free.
+        /// </summary>
+        private void UpdateFallbackStuck(float dt, Vector3 goalDir, bool run)
+        {
+            if (m_character.InAttack()) return;
+
+            _avoidCornerTimer -= dt;
+            if (_avoidCornerTimer > 0f)
+            {
+                // Actively escaping a corner — override direction
+                Vector3 escapeDir = Quaternion.Euler(0f, _avoidCornerAngle, 0f) * -goalDir;
+                MoveTowards(escapeDir, run);
+                return;
+            }
+
+            _avoidStuckTimer += dt;
+            if (_avoidStuckTimer > 1.5f)
+            {
+                if (Vector3.Distance(transform.position, _avoidLastPos) < 0.3f)
+                {
+                    // Haven't moved — trigger corner escape
+                    _avoidCornerTimer = 2f;
+                    _avoidCornerAngle = UnityEngine.Random.Range(-60f, 60f);
+                    _avoidStuckTimer = 0f;
+                    CompanionsPlugin.Log.LogDebug(
+                        $"[AI:CtxSteer] Corner escape — backing up at {_avoidCornerAngle:F0}° " +
+                        $"pos={transform.position:F1}");
+                    return;
+                }
+                _avoidStuckTimer = 0f;
+                _avoidLastPos = transform.position;
+            }
+        }
 
         internal void LookAtPoint(Vector3 point) => LookAt(point);
 
@@ -752,7 +1007,7 @@ namespace Companions
 
                 // Run to tombstone
                 bool run = dist > 10f;
-                MoveTo(dt, tombPos, TombstoneLootRange - 0.5f, run);
+                MoveToPoint(dt, tombPos, TombstoneLootRange - 0.5f, run);
                 return true;
             }
 
@@ -909,6 +1164,25 @@ namespace Companions
                 }
             }
 
+            // Repack inventory grid positions sequentially to eliminate gaps.
+            // Vanilla AddItem uses TopFirst/BottomFirst sorting which places equipment
+            // at row 0 and materials at the bottom row, leaving empty rows in between.
+            // This looks like "glitched slots" to the player. Repacking places all items
+            // in a clean sequential layout: (0,0), (1,0), (2,0), etc.
+            if (moved > 0)
+            {
+                int w = myInv.GetWidth();
+                int idx = 0;
+                foreach (var item in myInv.GetAllItems())
+                {
+                    item.m_gridPos = new Vector2i(idx % w, idx / w);
+                    idx++;
+                }
+                myInv.m_onChanged?.Invoke();
+                CompanionsPlugin.Log.LogDebug(
+                    $"[AI] Repacked {idx} inventory items to sequential positions (width={w})");
+            }
+
             CompanionsPlugin.Log.LogInfo(
                 $"[AI] Tombstone loot complete — recovered {moved}/{totalInTomb} items" +
                 (failed > 0 ? $" ({failed} could not fit)" : "") +
@@ -934,7 +1208,7 @@ namespace Companions
         /// suppress vanilla random movement, but StayHome+Wander and
         /// StayHome+Gather need a normal interval for IdleMovement to work.
         /// </summary>
-        private const float WanderMoveInterval = 5f;
+        private static float WanderMoveInterval => ModConfig.WanderMoveInterval.Value;
         private const float SuppressedMoveInterval = 9999f;
 
         private bool _returningHome;
@@ -1002,7 +1276,7 @@ namespace Companions
                         CompanionsPlugin.Log.LogDebug(
                             $"[AI] Returning home — dist={distFromHome:F1}m");
                     }
-                    MoveTo(dt, _setup.GetHomePosition(), 2f, distFromHome > 10f);
+                    MoveToPoint(dt, _setup.GetHomePosition(), 2f, distFromHome > 10f);
                     return true; // driving movement — skip IdleMovement
                 }
                 _returningHome = false;
@@ -1065,12 +1339,33 @@ namespace Companions
             // Drowning — damage companion when swimming with no stamina
             UpdateDrowning(dt);
 
+            // Hazard recovery — escape tar pits and water
+            if (UpdateHazardRecovery(dt))
+                return true; // survival overrides all other AI
+
+            // Periodic blacklist cleanup
+            CleanupBlacklist();
+
+            // Proactive water avoidance — if on dry ground heading toward water
+            // with insufficient stamina, stop moving and let pathfinding re-route
+            if (UpdateWaterAvoidance(dt))
+                return true;
+
             // Auto-pickup — passively collect nearby items
             AutoPickup(dt);
 
             // Stuck-on-furniture recovery — if stuck on a Bed/Chair collider,
             // nudge off so pathfinding can resume (NavMesh doesn't cover furniture).
             UpdateFurnitureUnstuck(dt);
+
+            // Ground movement stuck recovery — detects when pathfinding fails
+            // and forces the companion to strafe around obstacles.
+            if (UpdateGroundStuckRecovery(dt))
+                return true; // recovery strafe overrides normal AI
+
+            // Proactive jump — detect small terrain step-ups that block movement
+            // and jump to clear them before the full stuck system triggers.
+            UpdateProactiveJump(dt);
 
             // Follow-mode teleport — warp companion near player if too far away.
             // Only teleport if Follow toggle is actually ON (belt-and-suspenders check
@@ -1105,7 +1400,7 @@ namespace Companions
                 }
                 else
                 {
-                    MoveTo(dt, navTarget, 1.5f, true);
+                    MoveToPoint(dt, navTarget, 1.5f, true);
                 }
                 return true;
             }
@@ -1276,7 +1571,7 @@ namespace Companions
                     else
                     {
                         bool runToPoint = distToMove > 10f;
-                        MoveTo(dt, PendingMoveTarget.Value, 1f, runToPoint);
+                        MoveToPoint(dt, PendingMoveTarget.Value, 1f, runToPoint);
                     }
                 }
                 return true;
@@ -1383,7 +1678,7 @@ namespace Companions
                     else
                     {
                         bool runToChest = distToChest > 10f;
-                        MoveTo(dt, chestPos, 1.5f, runToChest);
+                        MoveToPoint(dt, chestPos, 1.5f, runToChest);
                     }
                 }
                 return true;
@@ -1407,11 +1702,26 @@ namespace Companions
                 if (IsAlerted()) SetAlerted(false);
                 SuppressAttack = true;
 
+                // Repair/Restock modes also run in passive stance — dispatch FIRST
+                // so the state machine advances before the controller-active guard
+                var passiveZdo = m_nview?.GetZDO();
+                if (passiveZdo != null)
+                {
+                    int passiveMode = passiveZdo.GetInt(CompanionSetup.ActionModeHash, CompanionSetup.ModeFollow);
+                    if (passiveMode == CompanionSetup.ModeRepairBuildings)
+                        UpdateRepairBuildingsMode(dt);
+                    else if (passiveMode == CompanionSetup.ModeRestock)
+                        UpdateRestockMode(dt);
+                }
+
                 if ((_harvest != null && _harvest.IsActive) ||
                     (_repair != null && _repair.IsActive) ||
                     (_smelt != null && _smelt.IsActive) ||
+                    (_farm != null && _farm.IsActive) ||
                     (_homestead != null && _homestead.IsActive) ||
-                    (_doorHandler != null && _doorHandler.IsActive))
+                    (_doorHandler != null && _doorHandler.IsActive) ||
+                    IsRepairBuildActive ||
+                    IsRestockActive)
                     return true;
 
                 if (m_follow != null)
@@ -1517,6 +1827,20 @@ namespace Companions
             // No combat target — follow or idle
             if (m_targetCreature == null && m_targetStatic == null)
             {
+                // Repair Buildings / Restock modes — dispatch state machine FIRST
+                // so the state machine advances before the controller-active guard
+                // (otherwise IsRepairBuildActive/IsRestockActive early-returns before
+                // the state machine gets its dt tick → companion freezes)
+                var zdo = m_nview?.GetZDO();
+                if (zdo != null)
+                {
+                    int actionMode = zdo.GetInt(CompanionSetup.ActionModeHash, CompanionSetup.ModeFollow);
+                    if (actionMode == CompanionSetup.ModeRepairBuildings)
+                        UpdateRepairBuildingsMode(dt);
+                    else if (actionMode == CompanionSetup.ModeRestock)
+                        UpdateRestockMode(dt);
+                }
+
                 // When a controller is actively moving to a target, it owns
                 // movement exclusively. Letting Follow() or IdleMovement() run
                 // here causes dual-control jitter — Follow's internal stop
@@ -1524,8 +1848,11 @@ namespace Companions
                 if ((_harvest != null && _harvest.IsActive) ||
                     (_repair != null && _repair.IsActive) ||
                     (_smelt != null && _smelt.IsActive) ||
+                    (_farm != null && _farm.IsActive) ||
                     (_homestead != null && _homestead.IsActive) ||
-                    (_doorHandler != null && _doorHandler.IsActive))
+                    (_doorHandler != null && _doorHandler.IsActive) ||
+                    IsRepairBuildActive ||
+                    IsRestockActive)
                     return true;
 
                 if (m_follow != null)
@@ -1538,7 +1865,8 @@ namespace Companions
                 return true;
             }
 
-            // Has target — combat movement + attack
+            // Has target — combat movement + attack (clear sneak/walk overrides)
+            ClearFollowMovementOverrides();
             if (humanoid != null)
                 UpdateCombat(humanoid, dt, stance);
 
@@ -1656,19 +1984,19 @@ namespace Companions
 
                 if (enemy != null)
                 {
-                    // Defensive: only engage enemies within 5m OR targeting the player
+                    // Defensive: only engage enemies targeting the companion or the player
+                    // (pure self-defense + player protection — never initiate aggression)
                     if (stance == CompanionSetup.StanceDefensive)
                     {
-                        float eDist = Vector3.Distance(transform.position, enemy.transform.position);
-                        bool targetsPlayer = false;
+                        bool threatsUs = false;
                         var eAI = enemy.GetBaseAI();
                         if (eAI != null)
                         {
                             var aiTarget = eAI.GetTargetCreature();
-                            if (aiTarget != null && aiTarget.IsPlayer())
-                                targetsPlayer = true;
+                            if (aiTarget != null && (aiTarget == m_character || aiTarget.IsPlayer()))
+                                threatsUs = true;
                         }
-                        if (eDist > 5f && !targetsPlayer)
+                        if (!threatsUs)
                             enemy = null;
                     }
 
@@ -1780,6 +2108,34 @@ namespace Companions
         {
             if (m_targetCreature == null) return;
 
+            // CombatController owns movement during retreat — don't fight it
+            // with approach movement. Only keep the attack check alive so the
+            // companion can still swing if an enemy walks into range.
+            if (_combat != null && _combat.Phase == CombatController.CombatPhase.Retreat)
+            {
+                // Still allow attacks on enemies that wander into melee range
+                var retreatWeapon = humanoid.GetCurrentWeapon();
+                if (retreatWeapon != null)
+                {
+                    float retDist = Vector3.Distance(m_targetCreature.transform.position, transform.position)
+                                    - m_targetCreature.GetRadius();
+                    bool retInRange = retDist < retreatWeapon.m_shared.m_aiAttackRange;
+                    if (retInRange && CanSeeTarget(m_targetCreature) && IsAlerted()
+                        && Time.time >= _attackRetryTime)
+                    {
+                        LookAt(m_targetCreature.GetTopPoint());
+                        if (CanAttackNow(retreatWeapon) && IsLookingAt(m_lastKnownTargetPos,
+                                retreatWeapon.m_shared.m_aiAttackMaxAngle,
+                                retreatWeapon.m_shared.m_aiInvertAngleCheck))
+                        {
+                            if (!DoAttack(m_targetCreature))
+                                _attackRetryTime = Time.time + 0.5f;
+                        }
+                    }
+                }
+                return;
+            }
+
             ItemDrop.ItemData weapon = humanoid.GetCurrentWeapon();
 
             // If holding unarmed weapon or nothing, try to equip a real weapon first
@@ -1856,7 +2212,47 @@ namespace Companions
                         }
                     }
 
-                    MoveTo(dt, moveTarget, 0f, IsAlerted());
+                    // Combat stuck detection: if velocity stays low while trying to
+                    // reach the enemy, the path is blocked. Try flanking offsets to
+                    // find a way around the obstacle, then disengage if all fail.
+                    float combatVel = m_character.GetVelocity().magnitude;
+                    if (combatVel < GroundStuckVelThreshold && !m_character.InAttack())
+                    {
+                        _combatMoveStuckTimer += dt;
+                        if (_combatMoveStuckTimer > 1.5f)
+                        {
+                            _combatMoveStuckTimer = 0f;
+
+                            // Try perpendicular flanking offset (alternating left/right)
+                            Vector3 toEnemy = (m_lastKnownTargetPos - transform.position);
+                            toEnemy.y = 0f;
+                            if (toEnemy.sqrMagnitude > 0.01f)
+                            {
+                                toEnemy.Normalize();
+                                // Alternate left and right on successive stuck detections
+                                float flankSign = (_groundStuckAttempts % 2 == 0) ? 1f : -1f;
+                                Vector3 perpendicular = new Vector3(-toEnemy.z, 0f, toEnemy.x) * flankSign;
+                                moveTarget = transform.position + perpendicular * 4f + toEnemy * 2f;
+
+                                CompanionsPlugin.Log.LogDebug(
+                                    $"[AI:Combat] Stuck moving to enemy — flanking " +
+                                    $"(side={flankSign:F0}) pos={transform.position:F1} " +
+                                    $"target=\"{m_targetCreature?.m_name ?? "?"}\" dist={dist:F1}");
+                            }
+                        }
+                    }
+                    else
+                    {
+                        _combatMoveStuckTimer = 0f;
+                    }
+
+                    // Stamina-aware approach: walk when stamina is low to
+                    // allow regen. Running at 0 stamina is wasteful and leads
+                    // to the retreat-loop (drain > regen → never recover).
+                    bool runToTarget = IsAlerted();
+                    if (_companionStamina != null && _companionStamina.GetStaminaPercentage() < 0.25f)
+                        runToTarget = false;
+                    MoveToPoint(dt, moveTarget, 0f, runToTarget);
                 }
                 else
                 {
@@ -1894,7 +2290,7 @@ namespace Companions
                 {
                     RandomMovement(dt, m_lastKnownTargetPos);
                 }
-                else if (MoveTo(dt, m_lastKnownTargetPos, 0f, IsAlerted()))
+                else if (MoveToPoint(dt, m_lastKnownTargetPos, 0f, IsAlerted()))
                 {
                     m_beenAtLastPos = true;
                 }
@@ -2066,6 +2462,214 @@ namespace Companions
         }
 
         // ══════════════════════════════════════════════════════════════════════
+        //  Hazard Recovery — tar pits and water
+        // ══════════════════════════════════════════════════════════════════════
+
+        /// <summary>
+        /// Proactive hazard recovery. Detects dangerous conditions and moves toward
+        /// solid ground BEFORE the companion dies:
+        ///
+        /// Triggers:
+        /// - In tar (always dangerous)
+        /// - Swimming AND stamina below 30% (drowning risk)
+        /// - Swimming AND health below 50% (taking heavy damage)
+        /// - Swimming for 5+ continuous seconds without a follow target in water
+        ///
+        /// Uses multi-radius land sampling (5m/10m/20m × 12 directions) to find
+        /// the closest shore rather than just the highest nearby point.
+        /// </summary>
+        private bool UpdateHazardRecovery(float dt)
+        {
+            bool inTar = m_character.GetSEMan().HaveStatusEffect(s_taredHash);
+            bool isSwimming = m_character.IsSwimming();
+
+            // Proactive water escape — trigger BEFORE stamina runs out
+            bool waterDanger = false;
+            string waterReason = null;
+            if (isSwimming && _companionStamina != null)
+            {
+                float staminaPct = _companionStamina.MaxStamina > 0f
+                    ? _companionStamina.Stamina / _companionStamina.MaxStamina : 0f;
+                float healthPct = m_character.GetMaxHealth() > 0f
+                    ? m_character.GetHealth() / m_character.GetMaxHealth() : 0f;
+
+                if (_companionStamina.Stamina <= 0f)
+                {
+                    waterDanger = true;
+                    waterReason = "DROWNING(no stamina)";
+                }
+                else if (staminaPct < 0.5f)
+                {
+                    waterDanger = true;
+                    waterReason = $"LOW_STAMINA({staminaPct*100:F0}%)";
+                }
+                else if (healthPct < 0.5f)
+                {
+                    waterDanger = true;
+                    waterReason = $"LOW_HEALTH({healthPct*100:F0}%)";
+                }
+                else if (_continuousSwimTimer > 3f)
+                {
+                    // Swimming too long — check if follow target is also in water
+                    bool followInWater = false;
+                    if (m_follow != null)
+                    {
+                        var followChar = m_follow.GetComponent<Character>();
+                        if (followChar != null && followChar.IsSwimming())
+                            followInWater = true;
+                    }
+                    if (!followInWater)
+                    {
+                        waterDanger = true;
+                        waterReason = $"SWIM_TIMEOUT({_continuousSwimTimer:F1}s)";
+                    }
+                }
+            }
+
+            if (!inTar && !waterDanger)
+            {
+                _hazardRecoveryTimer = 0f;
+                return false;
+            }
+
+            _hazardRecoveryTimer += dt;
+
+            // Log periodically (every 2s)
+            if (_hazardRecoveryTimer < 0.1f || (int)(_hazardRecoveryTimer * 10) % 20 == 0)
+            {
+                string hazard = inTar ? "TAR" : waterReason;
+                CompanionsPlugin.Log.LogDebug(
+                    $"[AI] Hazard recovery — {hazard} — seeking land " +
+                    $"(t={_hazardRecoveryTimer:F1}s swimT={_continuousSwimTimer:F1}s) " +
+                    $"companion=\"{m_character.m_name}\"");
+            }
+
+            // Disengage combat — survival takes priority
+            if (m_targetCreature != null)
+            {
+                ClearTargets();
+                if (_combat != null) _combat.ForceExitCombat();
+            }
+
+            // Multi-radius land sampling: 3 radii × 12 directions = 36 samples.
+            // Pick the CLOSEST valid land (solid ground above water level).
+            Vector3 bestDir = Vector3.zero;
+            float bestDist = float.MaxValue;
+            Vector3 myPos = transform.position;
+            float waterLevel = m_character.GetLiquidLevel();
+
+            float[] radii = { 5f, 10f, 20f };
+            for (int r = 0; r < radii.Length; r++)
+            {
+                float radius = radii[r];
+                for (int i = 0; i < 12; i++)
+                {
+                    float angle = i * 30f;
+                    Vector3 dir = Quaternion.Euler(0f, angle, 0f) * Vector3.forward;
+                    Vector3 samplePos = myPos + dir * radius;
+
+                    if (ZoneSystem.instance != null)
+                    {
+                        float h = ZoneSystem.instance.GetSolidHeight(samplePos);
+                        // Valid land: solid height above water level (or above 30f as absolute minimum)
+                        float minHeight = Mathf.Max(waterLevel, 30f);
+                        if (h > minHeight)
+                        {
+                            float dist = Vector3.Distance(myPos, samplePos);
+                            if (dist < bestDist)
+                            {
+                                bestDist = dist;
+                                bestDir = dir;
+                            }
+                        }
+                    }
+                }
+                // If we found land at this radius, don't check further (prefer closest)
+                if (bestDir != Vector3.zero) break;
+            }
+
+            if (bestDir != Vector3.zero)
+            {
+                MoveTowards(bestDir, true);
+            }
+            else if (m_follow != null)
+            {
+                // Fallback: move toward follow target (player is probably on land)
+                Vector3 toFollow = (m_follow.transform.position - myPos).normalized;
+                MoveTowards(toFollow, true);
+            }
+
+            // Teleport timeout — shorter when actively drowning (taking damage)
+            bool activeDrowning = isSwimming && _companionStamina != null
+                                  && _companionStamina.Stamina <= 0f;
+            float teleportTimeout = activeDrowning ? 6f : 10f;
+
+            if (_hazardRecoveryTimer > teleportTimeout && m_follow != null
+                && _setup != null && _setup.GetFollow())
+            {
+                CompanionsPlugin.Log.LogInfo(
+                    $"[AI] Hazard recovery timeout ({teleportTimeout:F0}s) — " +
+                    $"teleporting to player. companion=\"{m_character.m_name}\"");
+                TeleportToFollowTarget();
+                _hazardRecoveryTimer = 0f;
+                _continuousSwimTimer = 0f;
+            }
+
+            return true; // consumed the AI tick
+        }
+
+        // ══════════════════════════════════════════════════════════════════════
+        //  Proactive Water Avoidance
+        // ══════════════════════════════════════════════════════════════════════
+
+        private float _waterAvoidLogTimer;
+
+        /// <summary>
+        /// Prevents the companion from walking into water when stamina is too low
+        /// to survive swimming. Samples terrain 3m ahead in movement direction —
+        /// if it's below water level and stamina is under 50%, stops movement.
+        /// HumanoidAvoidWater pathfinding handles routing around water normally;
+        /// this is a safety net for edge cases (direct MoveTowards, physics push).
+        /// Returns true if movement was blocked.
+        /// </summary>
+        private bool UpdateWaterAvoidance(float dt)
+        {
+            if (m_character.IsSwimming()) return false; // handled by hazard recovery
+            if (!m_character.IsOnGround()) return false;
+            if (ZoneSystem.instance == null) return false;
+
+            // Only check when actually moving
+            Vector3 vel = m_character.GetVelocity();
+            if (vel.magnitude < 0.3f) return false;
+
+            // Sample terrain 3m ahead in movement direction
+            Vector3 ahead = transform.position + vel.normalized * 3f;
+            float solidH = ZoneSystem.instance.GetSolidHeight(ahead);
+            if (solidH >= 30f) return false; // dry land ahead — 30f is sea level
+
+            // Water ahead — check stamina
+            float staminaPct = _companionStamina != null && _companionStamina.MaxStamina > 0f
+                ? _companionStamina.Stamina / _companionStamina.MaxStamina : 1f;
+
+            if (staminaPct < 0.5f)
+            {
+                StopMoving();
+                _waterAvoidLogTimer -= dt;
+                if (_waterAvoidLogTimer <= 0f)
+                {
+                    _waterAvoidLogTimer = 3f;
+                    CompanionsPlugin.Log.LogDebug(
+                        $"[AI] Water ahead with low stamina ({staminaPct * 100:F0}%) — " +
+                        $"refusing to enter. pos={transform.position:F1} solidH={solidH:F1}");
+                }
+                return true;
+            }
+
+            _waterAvoidLogTimer = 0f;
+            return false;
+        }
+
+        // ══════════════════════════════════════════════════════════════════════
         //  Follow Teleport
         // ══════════════════════════════════════════════════════════════════════
 
@@ -2096,6 +2700,10 @@ namespace Companions
                 body.position = spawnPos;
                 body.linearVelocity = Vector3.zero;
             }
+
+            // Sync position to ZDO so other clients see the teleport
+            if (m_nview?.GetZDO() != null)
+                m_nview.GetZDO().SetPosition(spawnPos);
 
             CompanionsPlugin.Log.LogInfo(
                 $"[AI] Teleported companion to follow target at {spawnPos:F1} " +
@@ -2134,6 +2742,10 @@ namespace Companions
                 body.linearVelocity = Vector3.zero;
             }
 
+            // Sync position to ZDO so other clients see the teleport
+            if (m_nview?.GetZDO() != null)
+                m_nview.GetZDO().SetPosition(spawnPos);
+
             // Disengage from combat
             ClearTargets();
             if (IsAlerted()) SetAlerted(false);
@@ -2160,10 +2772,17 @@ namespace Companions
 
             float distToTarget = Vector3.Distance(transform.position, target.transform.position);
 
-            // Too far away → vanilla follow to catch up first
+            // Detect player's movement state for matching
+            var player = target.GetComponent<Player>();
+            bool playerSneaking = player != null && player.IsCrouching();
+            bool playerWalking  = player != null && player.GetWalk() && !player.IsRunning();
+            bool playerRunning  = player != null && player.IsRunning();
+
+            // Too far away → sprint to catch up, no movement matching
             if (distToTarget > FormationCatchupDist || _formationSlot < 0)
             {
                 Follow(target, dt);
+                ClearFollowMovementOverrides();
                 return;
             }
 
@@ -2171,6 +2790,7 @@ namespace Companions
             if (distToTarget < 5f)
             {
                 Follow(target, dt);
+                ApplyPlayerMovementMatch(playerSneaking, playerWalking, playerRunning);
                 return;
             }
 
@@ -2189,12 +2809,53 @@ namespace Companions
             if (distToSlot < 2f)
             {
                 Follow(target, dt);
+                ApplyPlayerMovementMatch(playerSneaking, playerWalking, playerRunning);
                 return;
             }
 
-            // Move to formation point — only run when far from player
-            bool shouldRun = distToTarget > 10f;
-            MoveTo(dt, formationPos, 1f, shouldRun);
+            // Move to formation point — match player speed when within formation range
+            bool shouldRun;
+            if (playerSneaking || playerWalking)
+                shouldRun = false;
+            else
+                shouldRun = playerRunning || distToTarget > 10f;
+
+            MoveToPoint(dt, formationPos, 1f, shouldRun);
+            ApplyPlayerMovementMatch(playerSneaking, playerWalking, playerRunning);
+        }
+
+        /// <summary>
+        /// Override the companion's walk/crouch state to match the player.
+        /// Called AFTER Follow()/MoveTo() since those set run/moveDir.
+        /// </summary>
+        private void ApplyPlayerMovementMatch(bool sneak, bool walk, bool run)
+        {
+            if (sneak)
+            {
+                m_character.SetRun(false);
+                m_character.SetWalk(true);
+                if (_zanim != null) _zanim.SetBool(s_crouching, true);
+            }
+            else if (walk)
+            {
+                m_character.SetRun(false);
+                m_character.SetWalk(true);
+                if (_zanim != null) _zanim.SetBool(s_crouching, false);
+            }
+            else
+            {
+                m_character.SetWalk(false);
+                if (_zanim != null) _zanim.SetBool(s_crouching, false);
+            }
+        }
+
+        /// <summary>
+        /// Clear walk/crouch overrides when catching up or entering combat.
+        /// </summary>
+        private void ClearFollowMovementOverrides()
+        {
+            m_character.SetWalk(false);
+            if (_zanim != null) _zanim.SetBool(s_crouching, false);
         }
 
         private static Vector3 GetFormationOffset(int slot, Vector3 fwd, Vector3 right)
@@ -2312,7 +2973,7 @@ namespace Companions
             else
             {
                 // Move toward heal target — run if far
-                MoveTo(dt, _healTarget.transform.position, 0f, dist > 10f);
+                MoveToPoint(dt, _healTarget.transform.position, 0f, dist > 10f);
             }
         }
 
@@ -2504,6 +3165,1040 @@ namespace Companions
         }
 
         // ══════════════════════════════════════════════════════════════════════
+        //  Proactive Jump — clear small obstacles without full stuck recovery
+        // ══════════════════════════════════════════════════════════════════════
+
+        private float _proactiveJumpTimer;
+        private const float ProactiveJumpCooldown = 5f;        // min seconds between jumps
+        private const float ProactiveJumpVelThreshold = 0.5f;  // velocity below this + wants to move = try jump
+        private const float ProactiveJumpBlockedTime = 2.0f;   // seconds of low velocity before jumping
+
+        private float _lowVelAccum;                  // accumulates time spent at low velocity
+        private int   _proactiveJumpAttempts;        // consecutive jumps without meaningful progress
+        private Vector3 _proactiveJumpStartPos;      // position when jump attempt counter started
+        private float _proactiveJumpSuppressTimer;   // when > 0, all proactive jumping suppressed
+
+        /// <summary>
+        /// Detects when the companion has low velocity but wants to move (likely
+        /// blocked by a small step or rock) and triggers a jump to clear it.
+        /// Capped at 3 consecutive attempts before entering a 30s suppression period.
+        /// </summary>
+        private void UpdateProactiveJump(float dt)
+        {
+            if (m_character == null) return;
+            if (!m_character.IsOnGround()) return;
+            if (m_character.IsSwimming()) return;
+            if (m_character.InAttack()) return;
+            if (_groundStuckRecoveryTimer > 0f) return; // stuck recovery handles movement
+            if (_inContextSteerFallback) return;         // context steer has its own stuck handling
+
+            _proactiveJumpTimer -= dt;
+            _proactiveJumpSuppressTimer -= dt;
+
+            // Suppressed after too many failed jump attempts
+            if (_proactiveJumpSuppressTimer > 0f)
+            {
+                _lowVelAccum = 0f;
+                return;
+            }
+
+            // Determine if companion wants to move
+            bool wantsToMove = (m_targetCreature != null) ||
+                               (m_targetStatic != null) ||
+                               PendingMoveTarget.HasValue ||
+                               PendingCartAttach != null ||
+                               (_rest != null && _rest.IsNavigating) ||
+                               (_harvest != null && _harvest.IsActive) ||
+                               (_smelt != null && _smelt.IsActive) ||
+                               (_farm != null && _farm.IsActive) ||
+                               (_repair != null && _repair.IsActive) ||
+                               IsRepairBuildActive ||
+                               IsRestockActive ||
+                               _returningHome;
+
+            // Follow mode: only count as "wants to move" if actually far from target
+            if (!wantsToMove && m_follow != null)
+            {
+                float distToFollow = Vector3.Distance(transform.position, m_follow.transform.position);
+                wantsToMove = distToFollow > 5f;
+            }
+
+            if (!wantsToMove)
+            {
+                _lowVelAccum = 0f;
+                return;
+            }
+
+            // Skip if at home patrol point (intentionally stationary)
+            if (_setup != null && _setup.GetStayHome() && _setup.HasHomePosition() && !_setup.GetFollow())
+            {
+                float distHome = Vector3.Distance(transform.position, _setup.GetHomePosition());
+                if (distHome < 4f)
+                {
+                    _lowVelAccum = 0f;
+                    return;
+                }
+            }
+
+            float vel = m_character.GetVelocity().magnitude;
+            if (vel < ProactiveJumpVelThreshold)
+            {
+                _lowVelAccum += dt;
+            }
+            else
+            {
+                _lowVelAccum = 0f;
+                // Moving well — reset jump attempt counter if we've moved far enough
+                if (_proactiveJumpAttempts > 0 &&
+                    Vector3.Distance(transform.position, _proactiveJumpStartPos) > 2f)
+                {
+                    _proactiveJumpAttempts = 0;
+                }
+            }
+
+            // Low velocity for long enough and cooldown expired — jump
+            if (_lowVelAccum >= ProactiveJumpBlockedTime && _proactiveJumpTimer <= 0f)
+            {
+                _proactiveJumpAttempts++;
+
+                // Too many consecutive jumps without progress — suppress for 30s
+                if (_proactiveJumpAttempts >= 3)
+                {
+                    _proactiveJumpSuppressTimer = 30f;
+                    _proactiveJumpAttempts = 0;
+                    _lowVelAccum = 0f;
+                    return;
+                }
+
+                if (_proactiveJumpAttempts == 1)
+                    _proactiveJumpStartPos = transform.position;
+
+                m_character.Jump(false);
+                _proactiveJumpTimer = ProactiveJumpCooldown;
+                _lowVelAccum = 0f;
+            }
+        }
+
+        // ══════════════════════════════════════════════════════════════════════
+        //  Ground Movement Stuck Recovery
+        //  BaseAI.MoveTo() has NO built-in stuck detection (only MoveAndAvoid
+        //  for flying creatures does). When pathfinding fails or the character
+        //  hits an unmapped obstacle, they just stop moving forever. This system
+        //  detects that condition and forces movement recovery.
+        // ══════════════════════════════════════════════════════════════════════
+
+        private float _groundStuckTimer;            // accumulates when vel < threshold and wants to move
+        private float _groundStuckRecoveryTimer;    // when > 0, strafing to escape
+        private float _groundStuckAngle;            // random strafe angle
+        private int   _groundStuckAttempts;         // escalating: 0-2 strafe, 3 jump+strafe, 4+ teleport
+        private Vector3 _lastGroundStuckPos;        // position when first stuck detected (for reset)
+        private float _continuousSwimTimer;         // time spent swimming (for proactive water escape)
+        private float _combatMoveStuckTimer;        // stuck while moving toward combat target
+        private float _groundStuckSuppressTimer;    // when > 0, all stuck recovery suppressed
+
+        private const float GroundStuckThreshold = 2.0f;     // seconds of low velocity before stuck
+        private const float GroundStuckRecoveryTime = 2.5f;  // seconds of strafe per attempt
+        private const float GroundStuckVelThreshold = 0.3f;  // velocity below this = not moving
+        private const float GroundStuckResetDist = 3f;       // must move this far to reset attempts
+        private const int   GroundStuckMaxStrafe = 3;        // strafe attempts before jump+strafe
+        private const int   GroundStuckMaxBeforeTeleport = 5; // attempts before teleporting
+
+        // ── Target blacklist — prevents repeatedly trying unreachable positions ──
+        private readonly Dictionary<Vector3Int, float> _targetBlacklist = new Dictionary<Vector3Int, float>();
+        private const float BlacklistDuration = 30f;    // seconds before blacklist entry expires
+        private const float BlacklistCellSize = 2f;     // grid resolution for position rounding
+        private float _blacklistCleanupTimer;
+
+        private Vector3Int ToBlacklistKey(Vector3 pos)
+            => new Vector3Int(
+                Mathf.FloorToInt(pos.x / BlacklistCellSize),
+                Mathf.FloorToInt(pos.y / BlacklistCellSize),
+                Mathf.FloorToInt(pos.z / BlacklistCellSize));
+
+        /// <summary>
+        /// Marks a world position as unreachable. All controllers should call this
+        /// when they give up on a target due to stuck detection.
+        /// </summary>
+        internal void BlacklistPosition(Vector3 pos)
+        {
+            var key = ToBlacklistKey(pos);
+            _targetBlacklist[key] = Time.time;
+            CompanionsPlugin.Log.LogInfo(
+                $"[AI:Blacklist] Blacklisted position {pos:F1} (cell={key}) for {BlacklistDuration}s");
+        }
+
+        /// <summary>
+        /// Returns true if the given position has been blacklisted as unreachable.
+        /// Controllers should check this before committing to a target.
+        /// </summary>
+        internal bool IsPositionBlacklisted(Vector3 pos)
+        {
+            var key = ToBlacklistKey(pos);
+            if (_targetBlacklist.TryGetValue(key, out float timestamp))
+            {
+                if (Time.time - timestamp < BlacklistDuration) return true;
+                _targetBlacklist.Remove(key);
+            }
+            return false;
+        }
+
+        private void CleanupBlacklist()
+        {
+            _blacklistCleanupTimer += Time.deltaTime;
+            if (_blacklistCleanupTimer < 30f) return;
+            _blacklistCleanupTimer = 0f;
+            if (_targetBlacklist.Count == 0) return;
+
+            float now = Time.time;
+            List<Vector3Int> expired = null;
+            foreach (var kvp in _targetBlacklist)
+            {
+                if (now - kvp.Value >= BlacklistDuration)
+                {
+                    if (expired == null) expired = new List<Vector3Int>();
+                    expired.Add(kvp.Key);
+                }
+            }
+            if (expired != null)
+            {
+                for (int i = 0; i < expired.Count; i++)
+                    _targetBlacklist.Remove(expired[i]);
+                CompanionsPlugin.Log.LogDebug(
+                    $"[AI:Blacklist] Cleanup: removed {expired.Count} expired, " +
+                    $"{_targetBlacklist.Count} remain");
+            }
+        }
+
+        /// <summary>
+        /// Detects when the companion is stuck on ground (low velocity but wants to move)
+        /// and forces recovery by strafing at random angles, then jumping, then teleporting.
+        /// Returns true if recovery movement is active (caller should skip normal AI).
+        /// </summary>
+        private bool UpdateGroundStuckRecovery(float dt)
+        {
+            if (m_character == null) return false;
+
+            // Context steer fallback has its own stuck handling (UpdateFallbackStuck).
+            // Don't fight it with a second movement override — that causes oscillation.
+            if (_inContextSteerFallback)
+            {
+                _groundStuckTimer = 0f;
+                return false;
+            }
+
+            // Only trigger stuck detection when MoveToPoint was actively called recently.
+            // Controllers have stationary phases (inserting items, repairing, opening chests)
+            // where the companion SHOULD be standing still. Without this check, vel=0 during
+            // those phases falsely triggers stuck recovery → spinning/jumping.
+            if (Time.frameCount - _moveToPointActiveFrame > 2)
+            {
+                _groundStuckTimer = 0f;
+                return false;
+            }
+
+            // Suppressed after too many failed attempts (no follow target to teleport to)
+            _groundStuckSuppressTimer -= dt;
+            if (_groundStuckSuppressTimer > 0f)
+            {
+                _groundStuckTimer = 0f;
+                return false;
+            }
+
+            // Track swimming time for proactive water escape
+            if (m_character.IsSwimming())
+                _continuousSwimTimer += dt;
+            else
+                _continuousSwimTimer = 0f;
+
+            // Phase 1: Active recovery — strafing to escape
+            if (_groundStuckRecoveryTimer > 0f)
+            {
+                _groundStuckRecoveryTimer -= dt;
+
+                // Compute strafe direction from stuck angle
+                Vector3 strafeDir = Quaternion.Euler(0f, _groundStuckAngle, 0f) * transform.forward;
+                MoveTowards(strafeDir, true);
+
+                // Jump once at the start of recovery to clear low obstacles (not every frame)
+                if (_groundStuckRecoveryTimer > GroundStuckRecoveryTime - 0.1f
+                    && m_character.IsOnGround() && !m_character.IsSwimming()
+                    && _groundStuckAttempts >= GroundStuckMaxStrafe)
+                    m_character.Jump(false);
+
+                if (_groundStuckRecoveryTimer <= 0f)
+                {
+                    CompanionsPlugin.Log.LogDebug(
+                        $"[AI:Unstuck] Recovery strafe #{_groundStuckAttempts} complete — " +
+                        $"pos={transform.position:F1}");
+                }
+
+                return true; // override normal AI
+            }
+
+            // Phase 2: Detection — check if stuck
+            float vel = m_character.GetVelocity().magnitude;
+            bool inAttack = m_character.InAttack();
+            bool isResting = _rest != null && _rest.IsResting;
+            bool onShip = _isOnShip || _pendingShip != null;
+            bool frozen = FreezeTimer > 0f;
+
+            // Determine if the companion SHOULD be moving
+            bool wantsToMove = (m_follow != null) ||
+                               (m_targetCreature != null) ||
+                               (m_targetStatic != null) ||
+                               PendingMoveTarget.HasValue ||
+                               PendingCartAttach != null ||
+                               (_rest != null && _rest.IsNavigating) ||
+                               (_harvest != null && _harvest.IsActive) ||
+                               (_smelt != null && _smelt.IsActive) ||
+                               (_farm != null && _farm.IsActive) ||
+                               (_repair != null && _repair.IsActive) ||
+                               IsRepairBuildActive ||
+                               IsRestockActive ||
+                               (_doorHandler != null && _doorHandler.IsActive) ||
+                               _returningHome;
+
+            // Don't accumulate stuck time during attacks, rest, ship, freeze, or when stationary by choice
+            if (inAttack || isResting || onShip || frozen || !wantsToMove)
+            {
+                _groundStuckTimer = 0f;
+                return false;
+            }
+
+            // Also skip if companion is at follow distance (close to player, intentionally stopped)
+            if (m_follow != null && m_targetCreature == null)
+            {
+                float distToFollow = Vector3.Distance(transform.position, m_follow.transform.position);
+                if (distToFollow < 5f)
+                {
+                    _groundStuckTimer = 0f;
+                    return false;
+                }
+            }
+
+            // Check if we've moved far enough from last stuck position to reset attempts
+            if (_groundStuckAttempts > 0 &&
+                Vector3.Distance(transform.position, _lastGroundStuckPos) > GroundStuckResetDist)
+            {
+                _groundStuckAttempts = 0;
+            }
+
+            // Accumulate or reset stuck timer
+            if (vel < GroundStuckVelThreshold)
+                _groundStuckTimer += dt;
+            else
+                _groundStuckTimer = 0f;
+
+            // Not stuck yet
+            if (_groundStuckTimer < GroundStuckThreshold)
+                return false;
+
+            // ── Stuck detected! ──
+            _groundStuckTimer = 0f;
+            _groundStuckAttempts++;
+            _lastGroundStuckPos = transform.position;
+
+            // Teleport as last resort (follow mode only)
+            if (_groundStuckAttempts >= GroundStuckMaxBeforeTeleport)
+            {
+                if (m_follow != null)
+                {
+                    CompanionsPlugin.Log.LogWarning(
+                        $"[AI:Unstuck] {_groundStuckAttempts} failed recovery attempts — " +
+                        $"teleporting to follow target. pos={transform.position:F1}");
+                    TeleportToFollowTarget();
+                    _groundStuckAttempts = 0;
+                    return false;
+                }
+
+                // No follow target — can't teleport. Suppress stuck recovery for 30s
+                // to stop the strafe-jump-strafe spin loop. Controllers handle their
+                // own stuck timeouts and will abort if needed.
+                CompanionsPlugin.Log.LogWarning(
+                    $"[AI:Unstuck] {_groundStuckAttempts} failed recovery attempts — " +
+                    $"no follow target, suppressing 30s. pos={transform.position:F1}");
+                _groundStuckSuppressTimer = 30f;
+                _groundStuckAttempts = 0;
+                return false;
+            }
+
+            // Strafe recovery: probe multiple directions with raycasts to find
+            // the best escape route instead of picking a random angle.
+            _groundStuckAngle = FindBestStrafeAngle();
+            _groundStuckRecoveryTimer = GroundStuckRecoveryTime;
+
+            CompanionsPlugin.Log.LogInfo(
+                $"[AI:Unstuck] Ground stuck detected — attempt #{_groundStuckAttempts} " +
+                $"(angle={_groundStuckAngle:F0}° jump={_groundStuckAttempts >= GroundStuckMaxStrafe}) " +
+                $"vel={vel:F2} pos={transform.position:F1} " +
+                $"target=\"{m_targetCreature?.m_name ?? m_follow?.name ?? "?"}\"");
+
+            return true; // start strafing
+        }
+
+        /// <summary>
+        /// Probes 8 directions with raycasts and returns the strafe angle
+        /// with the most clearance. Prefers directions perpendicular to the
+        /// companion→target vector (going AROUND obstacles rather than away).
+        /// Falls back to random ±90° if all directions are equally blocked.
+        /// </summary>
+        private static int _strafeProbeMask;
+
+        private float FindBestStrafeAngle()
+        {
+            if (_strafeProbeMask == 0)
+                _strafeProbeMask = LayerMask.GetMask("Default", "static_solid", "Default_small",
+                    "piece", "terrain", "vehicle");
+
+            Vector3 origin = transform.position + Vector3.up * 0.5f;
+            float probeRange = 8f;
+
+            // Determine target direction for scoring (prefer going around, not away)
+            Vector3 targetDir = transform.forward; // default: use facing direction
+            if (m_targetCreature != null)
+                targetDir = (m_targetCreature.transform.position - transform.position).normalized;
+            else if (m_targetStatic != null)
+                targetDir = (m_targetStatic.transform.position - transform.position).normalized;
+            else if (m_follow != null)
+                targetDir = (m_follow.transform.position - transform.position).normalized;
+            else if (_farm != null && _farm.IsActive)
+                targetDir = transform.forward;
+
+            // Perpendicular to target direction (for "go around" scoring)
+            Vector3 perp = Vector3.Cross(Vector3.up, targetDir).normalized;
+
+            float bestAngle = 90f;
+            float bestScore = -1f;
+
+            // Probe 8 directions: ±45, ±90, ±135, 180, and 0 (forward)
+            float[] angles = { 90f, -90f, 45f, -45f, 135f, -135f, 180f, 0f };
+            for (int i = 0; i < angles.Length; i++)
+            {
+                Vector3 dir = Quaternion.Euler(0f, angles[i], 0f) * transform.forward;
+                float clearance;
+                if (Physics.Raycast(origin, dir, out RaycastHit hit, probeRange, _strafeProbeMask))
+                    clearance = hit.distance;
+                else
+                    clearance = probeRange;
+
+                // Score: clearance distance weighted by direction quality
+                // - Perpendicular to target line = high score (going AROUND)
+                // - Toward target = slight bonus
+                // - Away from target = penalized (waste of time)
+                float perpAlignment = Mathf.Abs(Vector3.Dot(dir, perp));     // 0-1, higher = more perpendicular
+                float targetAlignment = Mathf.Max(0f, Vector3.Dot(dir, targetDir)); // 0-1, higher = toward target
+                float awayPenalty = Mathf.Max(0f, -Vector3.Dot(dir, targetDir));    // 0-1, higher = away from target
+
+                float score = clearance * (0.4f + 0.35f * perpAlignment + 0.25f * targetAlignment - 0.15f * awayPenalty);
+
+                if (score > bestScore)
+                {
+                    bestScore = score;
+                    bestAngle = angles[i];
+                }
+            }
+
+            CompanionsPlugin.Log.LogDebug(
+                $"[AI:Unstuck] Raycast probe — best angle={bestAngle:F0}° " +
+                $"score={bestScore:F1} pos={transform.position:F1}");
+
+            return bestAngle;
+        }
+
+        // ══════════════════════════════════════════════════════════════════════
+        //  Repair Buildings Mode — walk to damaged pieces, equip hammer, repair
+        // ══════════════════════════════════════════════════════════════════════
+
+        private enum RepairBuildPhase { Idle, MovingToTarget, Repairing }
+
+        private RepairBuildPhase _rbPhase;
+        private float _rbScanTimer;
+        private float _rbActionTimer;
+        private WearNTear _rbTargetPiece;
+        private ItemDrop.ItemData _rbPrevRightItem;
+        private bool _rbHammerEquipped;
+        private float _rbStuckTimer;
+        private float _rbStuckCheckTimer;
+        private Vector3 _rbStuckCheckPos;
+
+        private const float RBScanInterval = 10f;
+        private const float RBRadius = 50f;
+        private const float RBUseDistance = 2.5f;
+        private const float RBRepairDelay = 1.2f;
+        private const float RBMoveTimeout = 15f;
+
+        internal bool IsRepairBuildActive => _rbPhase != RepairBuildPhase.Idle;
+
+        private void UpdateRepairBuildingsMode(float dt)
+        {
+            switch (_rbPhase)
+            {
+                case RepairBuildPhase.Idle:
+                    UpdateRBIdle(dt);
+                    break;
+                case RepairBuildPhase.MovingToTarget:
+                    UpdateRBMoving(dt);
+                    break;
+                case RepairBuildPhase.Repairing:
+                    UpdateRBRepairing(dt);
+                    break;
+            }
+        }
+
+        private void UpdateRBIdle(float dt)
+        {
+            _rbScanTimer -= dt;
+            if (_rbScanTimer > 0f) return;
+            _rbScanTimer = RBScanInterval;
+
+            var humanoid = GetComponent<Humanoid>();
+            var inv = humanoid?.GetInventory();
+            if (inv == null) return;
+
+            if (HomesteadController.FindHammerInInventory(inv) == null)
+            {
+                if (_talk != null) _talk.Say(ModLocalization.Loc("hc_speech_repair_no_hammer"), "Repair");
+                return;
+            }
+
+            // Find closest damaged player-built piece
+            var allWNT = WearNTear.GetAllInstances();
+            if (allWNT == null) return;
+
+            Vector3 center = transform.position;
+            WearNTear bestPiece = null;
+            float bestDist = float.MaxValue;
+
+            for (int i = 0; i < allWNT.Count; i++)
+            {
+                var wnt = allWNT[i];
+                if (wnt == null) continue;
+                var piece = wnt.GetComponent<Piece>();
+                if (piece == null || !piece.IsPlacedByPlayer()) continue;
+                float dist = Vector3.Distance(center, wnt.transform.position);
+                if (dist > RBRadius) continue;
+                if (wnt.GetHealthPercentage() >= 1f) continue;
+                if (IsPositionBlacklisted(wnt.transform.position)) continue;
+                if (dist < bestDist)
+                {
+                    bestPiece = wnt;
+                    bestDist = dist;
+                }
+            }
+
+            if (bestPiece == null)
+            {
+                if (_talk != null) _talk.Say(ModLocalization.Loc("hc_speech_repair_nothing"), "Repair");
+                return;
+            }
+
+            _rbTargetPiece = bestPiece;
+            _rbStuckTimer = 0f;
+            _rbStuckCheckTimer = 0f;
+            _rbStuckCheckPos = transform.position;
+            _rbPhase = RepairBuildPhase.MovingToTarget;
+            CompanionsPlugin.Log.LogInfo($"[AI:RepairBuild] Found damaged piece ({bestDist:F1}m)");
+        }
+
+        private void UpdateRBMoving(float dt)
+        {
+            if (_rbTargetPiece == null) { AbortRepairBuild("target destroyed"); return; }
+
+            float dist = Vector3.Distance(transform.position, _rbTargetPiece.transform.position);
+
+            if (dist <= RBUseDistance)
+            {
+                StopMoving();
+                LookAt(_rbTargetPiece.transform.position);
+
+                // Equip hammer
+                var humanoid = GetComponent<Humanoid>();
+                var inv = humanoid?.GetInventory();
+                _rbHammerEquipped = false;
+                if (inv != null)
+                {
+                    var hammer = HomesteadController.FindHammerInInventory(inv);
+                    if (hammer != null)
+                    {
+                        _rbPrevRightItem = (ItemDrop.ItemData)CompanionSetup._rightItemField?.GetValue(humanoid);
+                        if (_rbPrevRightItem != null && _rbPrevRightItem != hammer)
+                            humanoid.UnequipItem(_rbPrevRightItem, false);
+                        humanoid.EquipItem(hammer, true);
+                        _rbHammerEquipped = true;
+                    }
+                }
+
+                _rbActionTimer = RBRepairDelay;
+                _rbPhase = RepairBuildPhase.Repairing;
+                return;
+            }
+
+            MoveToPoint(dt, _rbTargetPiece.transform.position, RBUseDistance, dist > 8f);
+
+            // Stuck detection
+            _rbStuckCheckTimer += dt;
+            if (_rbStuckCheckTimer >= 1f)
+            {
+                float moved = Vector3.Distance(transform.position, _rbStuckCheckPos);
+                if (moved < 0.5f)
+                    _rbStuckTimer += _rbStuckCheckTimer;
+                else
+                    _rbStuckTimer = 0f;
+                _rbStuckCheckPos = transform.position;
+                _rbStuckCheckTimer = 0f;
+            }
+            if (_rbStuckTimer > RBMoveTimeout)
+            {
+                BlacklistPosition(_rbTargetPiece.transform.position);
+                AbortRepairBuild("stuck");
+            }
+        }
+
+        private void UpdateRBRepairing(float dt)
+        {
+            if (_rbTargetPiece == null) { AbortRepairBuild("target destroyed"); return; }
+
+            float dist = Vector3.Distance(transform.position, _rbTargetPiece.transform.position);
+            if (dist > RBUseDistance * 2f) { AbortRepairBuild("drifted"); return; }
+
+            LookAt(_rbTargetPiece.transform.position);
+
+            _rbActionTimer -= dt;
+            if (_rbActionTimer > 0f) return;
+            _rbActionTimer = RBRepairDelay;
+
+            // Play hammer swing animation
+            var humanoid = GetComponent<Humanoid>();
+            var zanim = GetComponent<ZSyncAnimation>();
+            var rightItem = (ItemDrop.ItemData)CompanionSetup._rightItemField?.GetValue(humanoid);
+            if (zanim != null)
+            {
+                string anim = rightItem?.m_shared?.m_attack?.m_attackAnimation;
+                zanim.SetTrigger(!string.IsNullOrEmpty(anim) ? anim : "swing_pickaxe");
+            }
+
+            _rbTargetPiece.Repair();
+
+            var piece = _rbTargetPiece.GetComponent<Piece>();
+            if (piece?.m_placeEffect != null)
+                piece.m_placeEffect.Create(piece.transform.position, piece.transform.rotation);
+
+            if (_rbTargetPiece.GetHealthPercentage() >= 1f)
+            {
+                if (_talk != null) _talk.Say(ModLocalization.Loc("hc_speech_repair_buildings_done"), "Repair");
+                RestoreRBWeapon();
+                _rbTargetPiece = null;
+                _rbPhase = RepairBuildPhase.Idle;
+                _rbScanTimer = 2f; // quick rescan for next
+            }
+        }
+
+        private void RestoreRBWeapon()
+        {
+            if (!_rbHammerEquipped) return;
+            _rbHammerEquipped = false;
+
+            var humanoid = GetComponent<Humanoid>();
+            var rightItem = (ItemDrop.ItemData)CompanionSetup._rightItemField?.GetValue(humanoid);
+            if (rightItem?.m_shared?.m_buildPieces != null)
+                humanoid.UnequipItem(rightItem, false);
+
+            if (_rbPrevRightItem != null)
+            {
+                var inv = humanoid?.GetInventory();
+                if (inv != null && inv.ContainsItem(_rbPrevRightItem))
+                    humanoid.EquipItem(_rbPrevRightItem, true);
+                else
+                    GetComponent<CompanionSetup>()?.SyncEquipmentToInventory();
+            }
+            else
+            {
+                GetComponent<CompanionSetup>()?.SyncEquipmentToInventory();
+            }
+            _rbPrevRightItem = null;
+        }
+
+        private void AbortRepairBuild(string reason)
+        {
+            CompanionsPlugin.Log.LogInfo($"[AI:RepairBuild] Abort: {reason}");
+            RestoreRBWeapon();
+            _rbTargetPiece = null;
+            _rbPhase = RepairBuildPhase.Idle;
+            _rbScanTimer = RBScanInterval;
+        }
+
+        internal void ResetRepairBuildState()
+        {
+            if (_rbPhase != RepairBuildPhase.Idle)
+                AbortRepairBuild("mode changed");
+        }
+
+        // ══════════════════════════════════════════════════════════════════════
+        //  Restock Mode — walk to chests for fuel, then walk to fireplaces
+        // ══════════════════════════════════════════════════════════════════════
+
+        private enum RestockPhase { Idle, MovingToChest, TakingFuel, MovingToFire, Refueling }
+
+        private RestockPhase _rsPhase;
+        private float _rsScanTimer;
+        private float _rsActionTimer;
+        private Fireplace _rsTargetFire;
+        private Container _rsSupplyChest;
+        private string _rsFuelPrefab;
+        private int _rsFuelToAdd;
+        private bool _rsChestOpened;
+        private float _rsStuckTimer;
+        private float _rsStuckCheckTimer;
+        private Vector3 _rsStuckCheckPos;
+
+        private const float RSScanInterval = 10f;
+        private const float RSRadius = 50f;
+        private const float RSUseDistance = 2.5f;
+        private const float RSFuelThreshold = 0.8f;
+        private const float RSFuelAddDelay = 0.8f;
+        private const float RSChestOpenDelay = 0.8f;
+        private const float RSItemTransferDelay = 0.6f;
+        private const float RSMoveTimeout = 15f;
+
+        internal bool IsRestockActive => _rsPhase != RestockPhase.Idle;
+
+        private void UpdateRestockMode(float dt)
+        {
+            switch (_rsPhase)
+            {
+                case RestockPhase.Idle:
+                    UpdateRSIdle(dt);
+                    break;
+                case RestockPhase.MovingToChest:
+                    UpdateRSMovingToChest(dt);
+                    break;
+                case RestockPhase.TakingFuel:
+                    UpdateRSTakingFuel(dt);
+                    break;
+                case RestockPhase.MovingToFire:
+                    UpdateRSMovingToFire(dt);
+                    break;
+                case RestockPhase.Refueling:
+                    UpdateRSRefueling(dt);
+                    break;
+            }
+        }
+
+        private void UpdateRSIdle(float dt)
+        {
+            _rsScanTimer -= dt;
+            if (_rsScanTimer > 0f) return;
+            _rsScanTimer = RSScanInterval;
+
+            var humanoid = GetComponent<Humanoid>();
+            var inv = humanoid?.GetInventory();
+            if (inv == null) return;
+
+            // Find closest low-fuel fireplace
+            Vector3 center = transform.position;
+            var tempPieces = new System.Collections.Generic.List<Piece>();
+            Piece.GetAllPiecesInRadius(center, RSRadius, tempPieces);
+
+            Fireplace bestFire = null;
+            float bestDist = float.MaxValue;
+
+            for (int i = 0; i < tempPieces.Count; i++)
+            {
+                var fp = tempPieces[i].GetComponent<Fireplace>();
+                if (fp == null) continue;
+                if (!fp.m_canRefill || fp.m_infiniteFuel || fp.m_fuelItem == null) continue;
+
+                var fpNview = fp.GetComponent<ZNetView>();
+                if (fpNview == null || fpNview.GetZDO() == null) continue;
+
+                float currentFuel = fpNview.GetZDO().GetFloat(ZDOVars.s_fuel);
+                float maxFuel = fp.m_maxFuel;
+                if (maxFuel <= 0f) continue;
+                if (currentFuel / maxFuel >= RSFuelThreshold) continue;
+                if (IsPositionBlacklisted(fp.transform.position)) continue;
+
+                float dist = Vector3.Distance(center, fp.transform.position);
+                if (dist < bestDist)
+                {
+                    bestFire = fp;
+                    bestDist = dist;
+                }
+            }
+
+            if (bestFire == null)
+            {
+                if (_talk != null) _talk.Say(ModLocalization.Loc("hc_speech_restock_nothing"), "Action");
+                return;
+            }
+
+            _rsTargetFire = bestFire;
+            _rsFuelPrefab = bestFire.m_fuelItem.gameObject.name;
+
+            var fireNview = bestFire.GetComponent<ZNetView>();
+            float fuel = fireNview.GetZDO().GetFloat(ZDOVars.s_fuel);
+            _rsFuelToAdd = Mathf.Max(1, (int)(bestFire.m_maxFuel - fuel));
+
+            // Check if we already have fuel in inventory
+            int carried = HomesteadController.CountItemInInventory(inv, _rsFuelPrefab);
+
+            if (carried > 0)
+            {
+                // Go straight to fire
+                _rsFuelToAdd = Mathf.Min(_rsFuelToAdd, carried);
+                ResetRSStuck();
+                _rsPhase = RestockPhase.MovingToFire;
+                CompanionsPlugin.Log.LogInfo($"[AI:Restock] Carrying {carried}x fuel — heading to fire");
+                return;
+            }
+
+            // Find a chest with fuel
+            var chestPieces = new System.Collections.Generic.List<Piece>();
+            Piece.GetAllPiecesInRadius(center, RSRadius, chestPieces);
+
+            Container bestChest = null;
+            float bestChestDist = float.MaxValue;
+
+            for (int c = 0; c < chestPieces.Count; c++)
+            {
+                var container = chestPieces[c].GetComponent<Container>();
+                if (container == null) continue;
+                if (container.gameObject == gameObject) continue;
+                if (container.IsInUse()) continue;
+                var chestInv = container.GetInventory();
+                if (chestInv == null) continue;
+                if (HomesteadController.FindItemByPrefab(chestInv, _rsFuelPrefab) == null) continue;
+                if (IsPositionBlacklisted(container.transform.position)) continue;
+
+                float cDist = Vector3.Distance(center, container.transform.position);
+                if (cDist < bestChestDist)
+                {
+                    bestChest = container;
+                    bestChestDist = cDist;
+                }
+            }
+
+            if (bestChest == null)
+            {
+                CompanionsPlugin.Log.LogInfo($"[AI:Restock] No chest with \"{_rsFuelPrefab}\" — skipping");
+                _rsTargetFire = null;
+                return;
+            }
+
+            _rsSupplyChest = bestChest;
+            ResetRSStuck();
+            _rsPhase = RestockPhase.MovingToChest;
+            if (_talk != null) _talk.Say(ModLocalization.Loc("hc_speech_homestead_refuel"), "Action");
+            CompanionsPlugin.Log.LogInfo($"[AI:Restock] Fetching fuel from chest ({bestChestDist:F1}m)");
+        }
+
+        private void UpdateRSMovingToChest(float dt)
+        {
+            if (_rsSupplyChest == null) { AbortRestock("chest destroyed"); return; }
+
+            float dist = Vector3.Distance(transform.position, _rsSupplyChest.transform.position);
+
+            if (dist <= RSUseDistance)
+            {
+                StopMoving();
+                LookAt(_rsSupplyChest.transform.position);
+                _rsChestOpened = false;
+                _rsPhase = RestockPhase.TakingFuel;
+                return;
+            }
+
+            MoveToPoint(dt, _rsSupplyChest.transform.position, RSUseDistance, dist > 8f);
+            UpdateRSStuck(dt, "chest", dist);
+        }
+
+        private void UpdateRSTakingFuel(float dt)
+        {
+            if (_rsSupplyChest == null) { AbortRestock("chest destroyed"); return; }
+
+            // Step 1: Open chest
+            if (!_rsChestOpened)
+            {
+                _rsSupplyChest.SetInUse(true);
+                _rsChestOpened = true;
+                _rsActionTimer = RSChestOpenDelay;
+                var zanim = GetComponent<ZSyncAnimation>();
+                if (zanim != null) zanim.SetTrigger("interact");
+                return;
+            }
+
+            _rsActionTimer -= dt;
+            if (_rsActionTimer > 0f) return;
+            _rsActionTimer = RSItemTransferDelay;
+
+            var chestInv = _rsSupplyChest.GetInventory();
+            var humanoid = GetComponent<Humanoid>();
+            var companionInv = humanoid?.GetInventory();
+            if (chestInv == null || companionInv == null)
+            {
+                CloseRSChest();
+                AbortRestock("inventory null");
+                return;
+            }
+
+            // Take one fuel item per tick
+            var item = HomesteadController.FindItemByPrefab(chestInv, _rsFuelPrefab);
+            if (item == null || _rsFuelToAdd <= 0)
+            {
+                CloseRSChest();
+                int carried = HomesteadController.CountItemInInventory(companionInv, _rsFuelPrefab);
+                if (carried == 0) { AbortRestock("no fuel taken"); return; }
+
+                _rsFuelToAdd = Mathf.Min(_rsFuelToAdd, carried);
+                ResetRSStuck();
+                _rsPhase = RestockPhase.MovingToFire;
+                return;
+            }
+
+            if (HomesteadController.TransferOne(chestInv, companionInv, item))
+            {
+                _rsFuelToAdd--;
+            }
+            else
+            {
+                // Inventory full
+                CloseRSChest();
+                int carried = HomesteadController.CountItemInInventory(companionInv, _rsFuelPrefab);
+                if (carried > 0)
+                {
+                    _rsFuelToAdd = carried;
+                    ResetRSStuck();
+                    _rsPhase = RestockPhase.MovingToFire;
+                }
+                else
+                {
+                    AbortRestock("inventory full");
+                }
+            }
+        }
+
+        private void UpdateRSMovingToFire(float dt)
+        {
+            if (_rsTargetFire == null) { AbortRestock("fire destroyed"); return; }
+
+            float dist = Vector3.Distance(transform.position, _rsTargetFire.transform.position);
+
+            if (dist <= RSUseDistance)
+            {
+                StopMoving();
+                LookAt(_rsTargetFire.transform.position);
+                _rsActionTimer = RSFuelAddDelay;
+                _rsPhase = RestockPhase.Refueling;
+                return;
+            }
+
+            MoveToPoint(dt, _rsTargetFire.transform.position, RSUseDistance, dist > 8f);
+            UpdateRSStuck(dt, "fire", dist);
+        }
+
+        private void UpdateRSRefueling(float dt)
+        {
+            if (_rsTargetFire == null) { AbortRestock("fire destroyed"); return; }
+
+            float dist = Vector3.Distance(transform.position, _rsTargetFire.transform.position);
+            if (dist > RSUseDistance * 2f) { AbortRestock("drifted"); return; }
+
+            LookAt(_rsTargetFire.transform.position);
+
+            _rsActionTimer -= dt;
+            if (_rsActionTimer > 0f) return;
+            _rsActionTimer = RSFuelAddDelay;
+
+            var fpNview = _rsTargetFire.GetComponent<ZNetView>();
+            if (fpNview == null || fpNview.GetZDO() == null) { AbortRestock("fire nview lost"); return; }
+
+            float currentFuel = fpNview.GetZDO().GetFloat(ZDOVars.s_fuel);
+            if (currentFuel >= _rsTargetFire.m_maxFuel)
+            {
+                FinishRestock();
+                return;
+            }
+
+            var humanoid = GetComponent<Humanoid>();
+            var inv = humanoid?.GetInventory();
+            if (inv == null || !HomesteadController.ConsumeOneFromInventory(inv, _rsFuelPrefab))
+            {
+                FinishRestock();
+                return;
+            }
+
+            var zanim = GetComponent<ZSyncAnimation>();
+            if (zanim != null) zanim.SetTrigger("interact");
+            fpNview.InvokeRPC("RPC_AddFuel");
+            _rsFuelToAdd--;
+
+            if (_rsFuelToAdd <= 0)
+                FinishRestock();
+        }
+
+        private void FinishRestock()
+        {
+            if (_talk != null) _talk.Say(ModLocalization.Loc("hc_speech_restock_done"), "Action");
+            _rsTargetFire = null;
+            _rsSupplyChest = null;
+            _rsFuelPrefab = null;
+            _rsPhase = RestockPhase.Idle;
+            _rsScanTimer = 2f; // quick rescan
+        }
+
+        private void AbortRestock(string reason)
+        {
+            CompanionsPlugin.Log.LogInfo($"[AI:Restock] Abort: {reason}");
+            CloseRSChest();
+            _rsTargetFire = null;
+            _rsSupplyChest = null;
+            _rsFuelPrefab = null;
+            _rsPhase = RestockPhase.Idle;
+            _rsScanTimer = RSScanInterval;
+        }
+
+        private void CloseRSChest()
+        {
+            if (_rsChestOpened && _rsSupplyChest != null)
+                _rsSupplyChest.SetInUse(false);
+            _rsChestOpened = false;
+        }
+
+        private void ResetRSStuck()
+        {
+            _rsStuckTimer = 0f;
+            _rsStuckCheckTimer = 0f;
+            _rsStuckCheckPos = transform.position;
+        }
+
+        private void UpdateRSStuck(float dt, string target, float dist)
+        {
+            _rsStuckCheckTimer += dt;
+            if (_rsStuckCheckTimer >= 1f)
+            {
+                float moved = Vector3.Distance(transform.position, _rsStuckCheckPos);
+                if (moved < 0.5f)
+                    _rsStuckTimer += _rsStuckCheckTimer;
+                else
+                    _rsStuckTimer = 0f;
+                _rsStuckCheckPos = transform.position;
+                _rsStuckCheckTimer = 0f;
+            }
+            if (_rsStuckTimer > RSMoveTimeout)
+            {
+                Vector3 targetPos = target == "chest"
+                    ? (_rsSupplyChest != null ? _rsSupplyChest.transform.position : transform.position)
+                    : (_rsTargetFire != null ? _rsTargetFire.transform.position : transform.position);
+                BlacklistPosition(targetPos);
+                AbortRestock($"stuck moving to {target} ({dist:F1}m)");
+            }
+        }
+
+        internal void ResetRestockState()
+        {
+            if (_rsPhase != RestockPhase.Idle)
+                AbortRestock("mode changed");
+        }
+
+        // ══════════════════════════════════════════════════════════════════════
         //  Debug Logging (replaces TargetPatches.UpdateAI_DebugLog)
         // ══════════════════════════════════════════════════════════════════════
 
@@ -2524,6 +4219,7 @@ namespace Companions
             // Use IsSmeltMode (ZDO assignment) rather than IsActive (processing phase)
             // to suppress stuck detection during idle gaps between scan cycles.
             bool smelting = _smelt != null && (_smelt.IsActive || _smelt.IsSmeltMode());
+            bool farming = _farm != null && (_farm.IsActive || _farm.IsFarmMode());
             bool homesteading = _homestead != null && _homestead.IsActive;
             bool handlingDoor = _doorHandler != null && _doorHandler.IsActive;
 
@@ -2531,17 +4227,35 @@ namespace Companions
             // at home — don't flag as stuck. Also suppress during return-home.
             // Follow OFF + StayHome OFF: companion is idle with no movement target.
             bool stayingHome = _setup != null && _setup.GetStayHome()
-                && !_setup.GetWander() && !harvesting && !smelting;
+                && !_setup.GetWander() && !harvesting && !smelting && !farming;
             bool followOffIdle = _setup != null && !_setup.GetFollow()
-                && !_setup.GetStayHome() && !harvesting && !smelting;
+                && !_setup.GetStayHome() && !harvesting && !smelting && !farming;
             bool intentionallyStationary = stayingHome || _returningHome || followOffIdle;
 
             if (moved < 0.1f && !inAttack && !atFollowDist && !harvesting
-                && !repairing && !smelting && !homesteading && !handlingDoor && !intentionallyStationary)
+                && !repairing && !smelting && !farming && !homesteading && !handlingDoor && !intentionallyStationary)
                 _stuckDetectTimer += dt;
             else
                 _stuckDetectTimer = 0f;
 
+            // ── One-shot: path result transition logging ──
+            bool pathOk = FoundPath();
+            if (pathOk != _lastPathOk)
+            {
+                if (!pathOk)
+                    CompanionsPlugin.Log.LogWarning(
+                        $"[AI:Path] Path LOST — pos={transform.position:F1} " +
+                        $"target=\"{m_targetCreature?.m_name ?? "null"}\" " +
+                        $"follow=\"{follow?.name ?? "null"}\"({distToFollow:F1}) " +
+                        $"phase={GetAIPhase()}");
+                else
+                    CompanionsPlugin.Log.LogInfo(
+                        $"[AI:Path] Path FOUND — pos={transform.position:F1} " +
+                        $"phase={GetAIPhase()}");
+                _lastPathOk = pathOk;
+            }
+
+            // ── Stuck warning (detailed diagnostic) ──
             if (_stuckDetectTimer > StuckThreshold)
             {
                 _debugLogTimer -= dt;
@@ -2552,10 +4266,8 @@ namespace Companions
                         ? Vector3.Distance(transform.position, m_targetCreature.transform.position)
                         : -1f;
 
-                    // Diagnostic: check why movement is failing
                     bool onGround = m_character != null && m_character.IsOnGround();
                     bool canMove = m_character != null && m_character.CanMove();
-                    bool pathResult = FoundPath();
 
                     bool stayHome = _setup != null && _setup.GetStayHome();
                     bool hasHome = _setup != null && _setup.HasHomePosition();
@@ -2564,12 +4276,16 @@ namespace Companions
                     if (GetPatrolPoint(out patrolPt)) hasPatrol = true;
 
                     CompanionsPlugin.Log.LogWarning(
-                        $"[CompanionAI] STUCK {_stuckDetectTimer:F1}s — " +
+                        $"[AI:STUCK] {_stuckDetectTimer:F1}s — " +
+                        $"phase={GetAIPhase()} " +
                         $"target=\"{m_targetCreature?.m_name ?? "null"}\" targetDist={distToTarget:F1} " +
                         $"follow=\"{follow?.name ?? "null"}\" followDist={distToFollow:F1} " +
                         $"inAttack={inAttack} isAlerted={IsAlerted()} " +
                         $"charging={IsCharging()} pos={transform.position:F1} " +
-                        $"onGround={onGround} canMove={canMove} pathOK={pathResult} " +
+                        $"onGround={onGround} canMove={canMove} pathOK={pathOk} " +
+                        $"swimming={m_character?.IsSwimming() ?? false} swimTimer={_continuousSwimTimer:F1} " +
+                        $"groundStuck={_groundStuckTimer:F1} stuckAttempts={_groundStuckAttempts} " +
+                        $"stuckRecovery={_groundStuckRecoveryTimer:F1} " +
                         $"stayHome={stayHome} hasHome={hasHome} " +
                         $"patrol={hasPatrol} patrolPt={patrolPt:F1} " +
                         $"wanderRange={m_randomMoveRange:F0}");
@@ -2577,12 +4293,15 @@ namespace Companions
                 return;
             }
 
-            // Periodic state dump
+            // ── Periodic state dump ──
+            // Faster interval when ground stuck timer is accumulating (actively struggling)
+            float logInterval = _groundStuckTimer > 0.5f ? 1f : DebugLogInterval;
             _debugLogTimer -= dt;
             if (_debugLogTimer <= 0f)
             {
-                _debugLogTimer = DebugLogInterval;
+                _debugLogTimer = logInterval;
 
+                float vel = m_character?.GetVelocity().magnitude ?? 0f;
                 float distToTarget = m_targetCreature != null
                     ? Vector3.Distance(transform.position, m_targetCreature.transform.position) : -1f;
                 var weapon = (m_character as Humanoid)?.GetCurrentWeapon();
@@ -2601,14 +4320,42 @@ namespace Companions
                 }
 
                 CompanionsPlugin.Log.LogDebug(
-                    $"[CompanionAI] target=\"{m_targetCreature?.m_name ?? "null"}\"({distToTarget:F1}) " +
+                    $"[AI:State] phase={GetAIPhase()} " +
+                    $"target=\"{m_targetCreature?.m_name ?? "null"}\"({distToTarget:F1}) " +
                     $"follow=\"{follow?.name ?? "null"}\"({distToFollow:F1}) " +
                     $"weapon=\"{weapon?.m_shared?.m_name ?? "null"}\" " +
                     $"combat={combat?.Phase} stance={stanceName} " +
+                    $"vel={vel:F1} moved={moved:F2} pathOK={pathOk} " +
+                    $"onGround={m_character?.IsOnGround() ?? false} " +
+                    $"swimming={m_character?.IsSwimming() ?? false} swimTimer={_continuousSwimTimer:F1} " +
+                    $"groundStuck={_groundStuckTimer:F1} stuckAttempts={_groundStuckAttempts} " +
+                    $"combatStuck={_combatMoveStuckTimer:F1} " +
                     $"alerted={IsAlerted()} suppress={SuppressAttack} " +
-                    $"vel={m_character?.GetVelocity().magnitude ?? 0f:F1} " +
-                    $"moved={moved:F2}");
+                    $"pos={transform.position:F1}");
             }
+        }
+
+        /// <summary>
+        /// Identifies the current AI phase for logging — what the companion is currently doing.
+        /// </summary>
+        private string GetAIPhase()
+        {
+            if (_groundStuckRecoveryTimer > 0f) return "StuckRecovery";
+            if (m_targetCreature != null || m_targetStatic != null) return "Combat";
+            if (_harvest != null && _harvest.IsActive) return "Harvest";
+            if (_smelt != null && _smelt.IsActive) return "Smelt";
+            if (_farm != null && _farm.IsActive) return "Farm";
+            if (_repair != null && _repair.IsActive) return "Repair";
+            if (IsRepairBuildActive) return $"RepairBuild:{_rbPhase}";
+            if (IsRestockActive) return $"Restock:{_rsPhase}";
+            if (_homestead != null && _homestead.IsActive) return "Homestead";
+            if (_doorHandler != null && _doorHandler.IsActive) return "Door";
+            if (_rest != null && _rest.IsResting) return "Resting";
+            if (_rest != null && _rest.IsNavigating) return "RestNav";
+            if (_returningHome) return "ReturnHome";
+            if (m_follow != null) return "Follow";
+            if (_setup != null && _setup.GetStayHome()) return "StayHome";
+            return "Idle";
         }
     }
 }

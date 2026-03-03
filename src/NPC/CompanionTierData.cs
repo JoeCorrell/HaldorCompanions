@@ -16,8 +16,8 @@ namespace Companions
 
     public static class CompanionTierData
     {
-        public const int   Price          = 2000;
-        public const float MaxCarryWeight = 300f;
+        public static int   Price          => ModConfig.CompanionPrice.Value;
+        public static float MaxCarryWeight => ModConfig.MaxCarryWeight.Value;
 
         public static readonly CompanionTierDef Companion = new CompanionTierDef
         {

@@ -52,7 +52,7 @@ namespace Companions
 
         /// <summary>True when RadialMenuKey is the same as the vanilla Use key (E).</summary>
         private static bool IsRadialKeyUse =>
-            CompanionsPlugin.RadialMenuKey.Value == KeyCode.E;
+            ModConfig.RadialMenuKey.Value == KeyCode.E;
 
         private void Awake()
         {
@@ -87,7 +87,7 @@ namespace Companions
         /// </summary>
         private void HandleSeparateKeyRadial()
         {
-            if (!Input.GetKeyDown(CompanionsPlugin.RadialMenuKey.Value)) return;
+            if (!Input.GetKeyDown(ModConfig.RadialMenuKey.Value)) return;
 
             var player = Player.m_localPlayer;
             if (player == null) return;
@@ -112,7 +112,7 @@ namespace Companions
             }
 
             CompanionsPlugin.Log.LogInfo(
-                $"[Interact] Separate key ({CompanionsPlugin.RadialMenuKey.Value}) — opening radial");
+                $"[Interact] Separate key ({ModConfig.RadialMenuKey.Value}) — opening radial");
             CompanionRadialMenu.EnsureInstance();
             if (CompanionRadialMenu.Instance != null && !CompanionRadialMenu.Instance.IsVisible)
                 CompanionRadialMenu.Instance.Show(setup);
@@ -248,7 +248,7 @@ namespace Companions
             if (_pendingIsGamepad)
                 useHeld = !_gamepadReleaseDetected;
             else
-                useHeld = Input.GetKey(CompanionsPlugin.RadialMenuKey.Value);
+                useHeld = Input.GetKey(ModConfig.RadialMenuKey.Value);
 
             // Log once when we start processing a pending tap
             if (!_loggedPendingStart)
@@ -257,7 +257,7 @@ namespace Companions
                 CompanionsPlugin.Log.LogInfo(
                     $"[Interact] Update — processing pending tap: " +
                     $"useHeld={useHeld} gamepad={_pendingIsGamepad} " +
-                    $"key={CompanionsPlugin.RadialMenuKey.Value} " +
+                    $"key={ModConfig.RadialMenuKey.Value} " +
                     $"elapsed={elapsed:F3}s");
             }
 
@@ -345,7 +345,7 @@ namespace Companions
             if (ZInput.IsGamepadActive())
                 radialBtn = useBtn; // On gamepad, radial uses same button (hold)
             else
-                radialBtn = CompanionsPlugin.RadialMenuKey.Value.ToString();
+                radialBtn = ModConfig.RadialMenuKey.Value.ToString();
 
             return $"{name}\n" +
                 $"[<color=yellow><b>{useBtn}</b></color>] {inv}\n" +
@@ -465,7 +465,7 @@ namespace Companions
 
                     CompanionsPlugin.Log.LogInfo(
                         $"[Interact] Prefix — tap deferred, " +
-                        $"InputKey={Input.GetKey(CompanionsPlugin.RadialMenuKey.Value)} " +
+                        $"InputKey={Input.GetKey(ModConfig.RadialMenuKey.Value)} " +
                         $"time={Time.time:F3}");
                 }
                 else

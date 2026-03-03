@@ -17,17 +17,10 @@ namespace Companions
     {
         public const string PluginGUID = "com.profmags.companions";
         public const string PluginName = "Offline Companions";
-        public const string PluginVersion = "1.0.9";
+        public const string PluginVersion = "1.1.2";
 
         private static Harmony _harmony;
         internal static ManualLogSource Log;
-        internal static ConfigEntry<KeyCode> DirectTargetKey;
-        internal static ConfigEntry<KeyCode> RadialMenuKey;
-        internal static ConfigEntry<bool> MaleShowSpeechText;
-        internal static ConfigEntry<bool> MaleEnableVoiceAudio;
-        internal static ConfigEntry<bool> FemaleShowSpeechText;
-        internal static ConfigEntry<bool> FemaleEnableVoiceAudio;
-        internal static ConfigEntry<bool> SpawnStarterCompanion;
         private bool _fontFixWarned;
 
         private void Awake()
@@ -35,28 +28,7 @@ namespace Companions
             Log = Logger;
             Log.LogInfo($"{PluginName} v{PluginVersion} loading...");
 
-            DirectTargetKey = Config.Bind("Controls", "DirectTargetKey", KeyCode.Z,
-                "Press while looking at an enemy to direct companions to focus-fire that target.");
-
-            RadialMenuKey = Config.Bind("Controls", "RadialMenuKey", KeyCode.E,
-                "Key to hold while hovering a companion to open the radial command menu. " +
-                "Default is E (same as interact — tap E for inventory, hold E for radial). " +
-                "Set to a different key to open the radial independently from the interact key.");
-
-            MaleShowSpeechText = Config.Bind("Speech", "MaleShowOverheadText", false,
-                "Show overhead speech text for male companions.");
-
-            MaleEnableVoiceAudio = Config.Bind("Speech", "MaleEnableVoiceAudio", true,
-                "Play voice audio clips for male companions.");
-
-            FemaleShowSpeechText = Config.Bind("Speech", "FemaleShowOverheadText", true,
-                "Show overhead speech text for female companions.");
-
-            FemaleEnableVoiceAudio = Config.Bind("Speech", "FemaleEnableVoiceAudio", false,
-                "Play voice audio clips for female companions.");
-
-            SpawnStarterCompanion = Config.Bind("General", "SpawnStarterCompanion", true,
-                "Spawn a free companion when entering a new world for the first time.");
+            ModConfig.Init(Config);
 
             _harmony = new Harmony(PluginGUID);
             try
@@ -77,6 +49,7 @@ namespace Companions
             SceneManager.sceneLoaded += OnSceneLoaded;
             Game.m_playerInitialSpawn += CompanionManager.SpawnStarterCompanion;
             gameObject.AddComponent<CompanionVoice>();
+            ConfigPanel.Create();
         }
 
         private void Update()

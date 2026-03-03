@@ -301,6 +301,10 @@ namespace Companions
             // Smelting/refilling kilns and furnaces
             go.AddComponent<SmeltController>();
 
+            // Farming (harvest crops, plant seeds, manage chests)
+            go.AddComponent<FarmController>();
+            CompanionsPlugin.Log.LogInfo($"[CompanionPrefabs]   + FarmController ({def.PrefabName})");
+
             // Autonomous base maintenance (refuel fires, repair buildings, sort chests)
             go.AddComponent<HomesteadController>();
         }
@@ -330,12 +334,12 @@ namespace Companions
             c.m_boss    = false;
             c.m_health  = def.Health;
 
-            c.m_walkSpeed            = def.WalkSpeed;
-            c.m_runSpeed             = def.RunSpeed;
+            c.m_walkSpeed            = ModConfig.WalkSpeed.Value;
+            c.m_runSpeed             = ModConfig.RunSpeed.Value;
             c.m_speed                = 5f;  // jog speed — matches player default
             c.m_crouchSpeed          = 2f;
-            c.m_turnSpeed            = 300f;
-            c.m_runTurnSpeed         = 300f;
+            c.m_turnSpeed            = ModConfig.TurnSpeed.Value;
+            c.m_runTurnSpeed         = ModConfig.TurnSpeed.Value;
             c.m_acceleration         = 1f;  // faster acceleration (was 0.6)
             c.m_jumpForce            = 8f;
             c.m_jumpForceForward     = 2f;
@@ -343,7 +347,7 @@ namespace Companions
 
             c.m_canSwim          = true;
             c.m_swimDepth        = 1f;
-            c.m_swimSpeed        = 2f;
+            c.m_swimSpeed        = ModConfig.SwimSpeed.Value;
             c.m_swimTurnSpeed    = 100f;
             c.m_swimAcceleration = 0.05f;
 
@@ -372,8 +376,8 @@ namespace Companions
             CompanionsPlugin.Log.LogInfo("[CompanionPrefabs] Setting up CompanionAI...");
 
             // BaseAI perception
-            ai.m_viewRange            = 30f;
-            ai.m_viewAngle            = 90f;
+            ai.m_viewRange            = ModConfig.ViewRange.Value;
+            ai.m_viewAngle            = ModConfig.ViewAngle.Value;
             ai.m_hearRange            = 9999f;
             ai.m_mistVision           = true;
             ai.m_alertedEffects       = new EffectList();
@@ -381,10 +385,11 @@ namespace Companions
             ai.m_idleSoundInterval    = 10f;
             ai.m_idleSoundChance      = 0f;
 
-            // Pathfinding — m_moveMinAngle=10 lets companion start moving while
+            // Pathfinding — HumanoidAvoidWater uses a separate navmesh that
+            // excludes water areas, routing the companion around water instead of
+            // through it. m_moveMinAngle=10 lets companion start moving while
             // still turning (was 90f which froze movement until fully rotated).
-            // m_jumpInterval=0 matches vanilla — no creature auto-jumps.
-            ai.m_pathAgentType        = Pathfinding.AgentType.Humanoid;
+            ai.m_pathAgentType        = Pathfinding.AgentType.HumanoidAvoidWater;
             ai.m_moveMinAngle         = 10f;
             ai.m_smoothMovement       = true;
             ai.m_serpentMovement      = false;
@@ -394,11 +399,11 @@ namespace Companions
             ai.m_randomMoveRange      = 0f;
             ai.m_avoidFire            = false;
             ai.m_afraidOfFire         = false;
-            ai.m_avoidWater           = true;   // vanilla default — humanoids avoid water
+            ai.m_avoidWater           = true;   // BaseAI soft preference — avoids water when idle/patrolling
             ai.m_aggravatable         = false;
 
             CompanionsPlugin.Log.LogInfo(
-                $"[CompanionPrefabs] CompanionAI configured: pathAgent=Humanoid " +
+                $"[CompanionPrefabs] CompanionAI configured: pathAgent=HumanoidAvoidWater " +
                 $"moveMinAngle={ai.m_moveMinAngle} smoothMove={ai.m_smoothMovement} " +
                 $"viewRange={ai.m_viewRange} hearRange={ai.m_hearRange} " +
                 $"randomMoveInterval={ai.m_randomMoveInterval} " +

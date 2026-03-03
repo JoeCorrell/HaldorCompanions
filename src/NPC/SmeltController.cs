@@ -56,6 +56,7 @@ namespace Companions
         private Vector3     _stuckCheckPos;
         private float       _monitorTimer;
         private bool        _wasMonitoring;   // suppress repeated "All stocked" log
+        private bool        _allDoneNotified; // suppress repeated "All done" log/speech
         private float       _insertTimer;
 
         // Current task tracking
@@ -71,18 +72,20 @@ namespace Companions
         private readonly List<Smelter>   _nearbySmelters  = new List<Smelter>();
         private readonly List<Container> _nearbyChests    = new List<Container>();
         private readonly List<Piece>     _tempPieces      = new List<Piece>();
+        private readonly List<Smelter>   _tempFurnaces    = new List<Smelter>();
+        private readonly List<Smelter>   _tempKilns       = new List<Smelter>();
 
         // ── Config ──────────────────────────────────────────────────────────
-        private const float ScanInterval       = 3f;
-        private const float ScanRadius         = 25f;
-        private const float UseDistance        = 2.5f;
+        private static float ScanInterval       => ModConfig.SmeltScanInterval.Value;
+        private static float ScanRadius         => ModConfig.SmeltScanRadius.Value;
+        private static float UseDistance        => ModConfig.SmeltUseDistance.Value;
         private const float MoveTimeout        = 15f;
         private const float StuckCheckPeriod   = 1f;
         private const float StuckMinDistance    = 0.5f;
         private const float MonitorInterval    = 3f;
         private const float InsertDelay        = 0.3f;
-        private const int   MaxCarryOre        = 20;   // take up to 20 ore per trip
-        private const int   MaxCarryFuel       = 40;   // take up to 40 fuel (coal) per trip
+        private static int   MaxCarryOre        => ModConfig.SmeltMaxCarryOre.Value;
+        private static int   MaxCarryFuel       => ModConfig.SmeltMaxCarryFuel.Value;
 
         // ── Reflection ─────────────────────────────────────────────────────
         private static readonly FieldInfo s_addedOreTime = typeof(Smelter)
@@ -249,20 +252,73 @@ namespace Companions
             //   - Both near full → skip
 
             // Pass 1: Kilns that need input (m_maxFuel == 0)
+            // Sorted by fill level so the emptiest kiln gets priority, matching furnace
+            // behaviour. Without sorting the first kiln in scan order would monopolise
+            // all available materials, starving other kilns.
+            _tempKilns.Clear();
             foreach (var smelter in _nearbySmelters)
             {
                 if (smelter == null) continue;
                 if (smelter.m_maxFuel > 0) continue; // skip furnaces in kiln pass
+                _tempKilns.Add(smelter);
+            }
+            _tempKilns.Sort((a, b) =>
+            {
+                var za = a.GetComponent<ZNetView>();
+                var zb = b.GetComponent<ZNetView>();
+                float fillA = (za?.GetZDO() != null)
+                    ? (float)za.GetZDO().GetInt(ZDOVars.s_queued) / Mathf.Max(1, a.m_maxOre)
+                    : 1f;
+                float fillB = (zb?.GetZDO() != null)
+                    ? (float)zb.GetZDO().GetInt(ZDOVars.s_queued) / Mathf.Max(1, b.m_maxOre)
+                    : 1f;
+                return fillA.CompareTo(fillB); // least filled first
+            });
+
+            foreach (var smelter in _tempKilns)
+            {
+                // Skip kilns that are already well-stocked (> half capacity) — furnaces
+                // get priority so the companion doesn't endlessly top off a running kiln
+                // while a furnace sits empty waiting for fuel or ore.
+                var knview = smelter.GetComponent<ZNetView>();
+                if (knview != null && knview.GetZDO() != null && smelter.m_maxOre > 0)
+                {
+                    int queued = knview.GetZDO().GetInt(ZDOVars.s_queued);
+                    if (queued > smelter.m_maxOre / 2)
+                    {
+                        LogDebug($"  Kiln \"{smelter.m_name}\" well-stocked ({queued}/{smelter.m_maxOre}) — deferring to furnaces");
+                        continue;
+                    }
+                }
 
                 if (TryPlanRefill(smelter)) return;
             }
 
-            // Pass 2: Furnaces — smart per-smelter priority
+            // Pass 2: Furnaces — sort by fill level so emptiest furnaces get priority.
+            // Without sorting, the first furnace in scan order would always be serviced,
+            // starving later furnaces (e.g. blast furnace next to a regular smelter).
+            _tempFurnaces.Clear();
             foreach (var smelter in _nearbySmelters)
             {
                 if (smelter == null) continue;
                 if (smelter.m_maxFuel == 0) continue; // skip kilns
+                _tempFurnaces.Add(smelter);
+            }
+            _tempFurnaces.Sort((a, b) =>
+            {
+                var za = a.GetComponent<ZNetView>();
+                var zb = b.GetComponent<ZNetView>();
+                float fillA = (za?.GetZDO() != null)
+                    ? (float)za.GetZDO().GetInt(ZDOVars.s_queued) / Mathf.Max(1, a.m_maxOre)
+                    : 1f;
+                float fillB = (zb?.GetZDO() != null)
+                    ? (float)zb.GetZDO().GetInt(ZDOVars.s_queued) / Mathf.Max(1, b.m_maxOre)
+                    : 1f;
+                return fillA.CompareTo(fillB); // least filled first
+            });
 
+            foreach (var smelter in _tempFurnaces)
+            {
                 var snview = smelter.GetComponent<ZNetView>();
                 if (snview == null || snview.GetZDO() == null) continue;
 
@@ -323,9 +379,18 @@ namespace Companions
             }
             else
             {
-                Log("All smelters idle and fully stocked — done");
-                if (_talk != null) _talk.Say(ModLocalization.Loc("hc_speech_smelt_done"), "Smelt");
-                Finish();
+                // All smelters are idle and fully stocked.  Notify once, then
+                // back off to a long interval so we don't spam speech/logs
+                // and don't interrupt following every 3 seconds.
+                if (!_allDoneNotified)
+                {
+                    _allDoneNotified = true;
+                    Log("All smelters idle and fully stocked — done");
+                    if (_talk != null) _talk.Say(ModLocalization.Loc("hc_speech_smelt_done"), "Smelt");
+                    RestoreFollow();
+                }
+                _phase = SmeltPhase.Idle;
+                _scanTimer = 30f; // long backoff — re-check in case player adds materials
             }
         }
 
@@ -411,7 +476,13 @@ namespace Companions
                     continue;
 
                 int toTake = Mathf.Min(item.m_stack, _carryingAmount - taken);
-                if (!companionInv.HaveEmptySlot() && companionInv.GetItem(item.m_shared.m_name) == null)
+
+                // Actually transfer items into companion inventory so they aren't
+                // lost if we're interrupted (combat, UI, stuck) before inserting.
+                // Leftover items persist and are delivered to the next smelter.
+                var clone = item.Clone();
+                clone.m_stack = toTake;
+                if (!companionInv.AddItem(clone))
                 {
                     Log($"  No inventory space — stopping at {taken} items");
                     break;
@@ -517,8 +588,7 @@ namespace Companions
                 float fuel = snview.GetZDO().GetFloat(ZDOVars.s_fuel);
                 if (fuel > (float)(_targetSmelter.m_maxFuel - 1))
                 {
-                    Log("Smelter fuel is full");
-                    _carryingAmount = 0; // discard remainder tracking
+                    Log($"Smelter fuel is full — {_carryingAmount} leftover in inventory for next smelter");
                     _phase = SmeltPhase.Scanning;
                     return;
                 }
@@ -536,8 +606,7 @@ namespace Companions
                 int queued = snview.GetZDO().GetInt(ZDOVars.s_queued);
                 if (queued >= _targetSmelter.m_maxOre)
                 {
-                    Log("Smelter ore queue is full");
-                    _carryingAmount = 0;
+                    Log($"Smelter ore queue is full — {_carryingAmount} leftover in inventory for next smelter");
                     _phase = SmeltPhase.Scanning;
                     return;
                 }
@@ -894,6 +963,7 @@ namespace Companions
             foreach (var chest in _nearbyChests)
             {
                 if (chest == null) continue;
+                if (_ai != null && _ai.IsPositionBlacklisted(chest.transform.position)) continue;
                 var inv = chest.GetInventory();
                 if (inv == null) continue;
 
@@ -982,6 +1052,7 @@ namespace Companions
                 foreach (var chest in _nearbyChests)
                 {
                     if (chest == null) continue;
+                    if (_ai != null && _ai.IsPositionBlacklisted(chest.transform.position)) continue;
                     var inv = chest.GetInventory();
                     if (inv == null) continue;
 
@@ -1025,6 +1096,7 @@ namespace Companions
             foreach (var chest in _nearbyChests)
             {
                 if (chest == null) continue;
+                if (_ai != null && _ai.IsPositionBlacklisted(chest.transform.position)) continue;
                 var inv = chest.GetInventory();
                 if (inv == null) continue;
                 if (inv.GetEmptySlots() <= 0) continue;
@@ -1200,6 +1272,7 @@ namespace Companions
             _carryingAmount = 0;
             _collectTriggered = false;
             _wasMonitoring = false;
+            _allDoneNotified = false;
             _phase = SmeltPhase.Idle;
             _scanTimer = ScanInterval;
             RestoreFollow();
@@ -1216,6 +1289,7 @@ namespace Companions
             _carryingAmount = 0;
             _collectTriggered = false;
             _wasMonitoring = false;
+            _allDoneNotified = false;
             _phase = SmeltPhase.Idle;
             _scanTimer = ScanInterval;
             RestoreFollow();
@@ -1255,6 +1329,10 @@ namespace Companions
 
             if (_stuckTimer > MoveTimeout)
             {
+                // Blacklist the target position so we don't keep trying
+                Vector3 pos = GetCurrentTargetPosition();
+                if (pos != Vector3.zero && _ai != null)
+                    _ai.BlacklistPosition(pos);
                 Abort($"stuck moving to {targetName}");
             }
         }
@@ -1266,6 +1344,7 @@ namespace Companions
         private void ClearFollowForMovement()
         {
             _wasMonitoring = false;
+            _allDoneNotified = false; // reset so speech fires again after next work cycle
             if (_ai != null)
             {
                 _ai.SetFollowTarget(null);
@@ -1323,6 +1402,22 @@ namespace Companions
         {
             string name = _character?.m_name ?? "?";
             CompanionsPlugin.Log.LogDebug($"[Smelt|{name}] {msg}");
+        }
+
+        private Vector3 GetCurrentTargetPosition()
+        {
+            switch (_phase)
+            {
+                case SmeltPhase.MovingToChest:
+                    return _targetChest != null ? _targetChest.transform.position : Vector3.zero;
+                case SmeltPhase.MovingToSmelter:
+                case SmeltPhase.CollectingOutput:
+                    return _targetSmelter != null ? _targetSmelter.transform.position : Vector3.zero;
+                case SmeltPhase.MovingToOutputChest:
+                    return _outputChest != null ? _outputChest.transform.position : Vector3.zero;
+                default:
+                    return Vector3.zero;
+            }
         }
     }
 }

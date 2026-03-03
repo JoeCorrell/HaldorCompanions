@@ -298,7 +298,7 @@ namespace Companions
         /// </summary>
         public static void SpawnStarterCompanion()
         {
-            if (!CompanionsPlugin.SpawnStarterCompanion.Value)
+            if (!ModConfig.SpawnStarterCompanion.Value)
             {
                 CompanionsPlugin.Log.LogDebug("[CompanionManager] Starter companion disabled in config");
                 return;

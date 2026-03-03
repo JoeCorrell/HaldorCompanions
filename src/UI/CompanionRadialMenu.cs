@@ -36,6 +36,8 @@ namespace Companions
         private const int ActionWander      = 12;
         private const int ActionAutoPickup  = 13;
         private const int ActionCommand     = 14;
+        private const int ActionRepair      = 15;   // toggle mode: periodic building repair in 50m
+        private const int ActionRestock     = 16;   // toggle mode: periodic campfire/light restock in 50m
         // Must match CompanionSetup.ModeHunt/ModeFarm/ModeFish — SetActionMode()
         // passes ActionId directly as the ZDO mode value.
         private const int ActionHunt        = 7;
@@ -51,10 +53,10 @@ namespace Companions
         private static readonly Color ActiveDot        = new Color(0.40f, 0.85f, 0.40f, 1f);
         private static readonly Color InactiveDot      = new Color(0.5f, 0.5f, 0.5f, 0.5f);
 
-        private const float RingRadius     = 210f;
-        private const float SegSize        = 100f;
-        private const float HighlightSize  = 96f;
-        private const float IconSize       = 76f;
+        private const float RingRadius     = 270f;
+        private const float SegSize        = 115f;
+        private const float HighlightSize  = 90f;
+        private const float IconSize       = 87f;
         private const float DeadZonePx     = 30f;
         private const float DeadZoneStick  = 0.3f;
 
@@ -66,10 +68,10 @@ namespace Companions
         private const int ActionStanceMelee      = 24;
         private const int ActionStanceRanged     = 25;
 
-        private const float InnerRingRadius    = 80f;
-        private const float InnerSegSize       = 72f;
-        private const float InnerIconSize      = 54f;
-        private const float InnerHighlightSize = 68f;
+        private const float InnerRingRadius    = 92f;
+        private const float InnerSegSize       = 83f;
+        private const float InnerIconSize      = 62f;
+        private const float InnerHighlightSize = 64f;
 
         // ── Animation ──────────────────────────────────────────────────────
         private enum AnimState { Closed, Opening, Open, Closing }
@@ -755,6 +757,8 @@ namespace Companions
                 case ActionHunt:
                 case ActionFarm:
                 case ActionFish:
+                case ActionRepair:
+                case ActionRestock:
                     SetActionMode(outerSeg.ActionId);
                     break;
                 case ActionStayHome:
@@ -772,6 +776,7 @@ namespace Companions
                 case ActionCommand:
                     ToggleCommandable();
                     break;
+                // ActionRepair and ActionRestock are now handled above as toggle modes
             }
 
             // Overhead speech on any action
@@ -795,6 +800,18 @@ namespace Companions
             // Notify SmeltController of mode change
             var smelt = _companion.GetComponent<SmeltController>();
             smelt?.NotifyActionModeChanged();
+
+            // Notify FarmController of mode change
+            var farm = _companion.GetComponent<FarmController>();
+            farm?.NotifyActionModeChanged();
+
+            // Reset repair/restock state machines on mode change
+            var ai = _companion.GetComponent<CompanionAI>();
+            if (ai != null)
+            {
+                ai.ResetRepairBuildState();
+                ai.ResetRestockState();
+            }
 
         }
 
@@ -852,6 +869,242 @@ namespace Companions
         {
             bool current = _companion.GetIsCommandable();
             _companion.SetIsCommandable(!current);
+        }
+
+        // ── One-shot: Repair all building pieces within 50m ──────────────
+
+        private const float RepairRadius = 50f;
+
+        private void DoRepairBuildings()
+        {
+            if (_companion == null) return;
+
+            // Require hammer in inventory
+            var inv = _companion.GetComponent<Humanoid>()?.GetInventory();
+            if (inv == null) return;
+
+            bool hasHammer = false;
+            var items = inv.GetAllItems();
+            for (int i = 0; i < items.Count; i++)
+            {
+                if (items[i]?.m_shared?.m_buildPieces != null)
+                {
+                    hasHammer = true;
+                    break;
+                }
+            }
+
+            if (!hasHammer)
+            {
+                CompanionsPlugin.Log.LogInfo("[Radial] Repair: no hammer in inventory");
+                if (_companionTalk != null)
+                    _companionTalk.Say(ModLocalization.Loc("hc_speech_repair_no_hammer"), "Action");
+                return;
+            }
+
+            // Find and repair all damaged player-placed pieces
+            Vector3 center = _companion.transform.position;
+            var allWNT = WearNTear.GetAllInstances();
+            int repaired = 0;
+
+            for (int i = 0; i < allWNT.Count; i++)
+            {
+                var wnt = allWNT[i];
+                if (wnt == null) continue;
+
+                var piece = wnt.GetComponent<Piece>();
+                if (piece == null || !piece.IsPlacedByPlayer()) continue;
+
+                float dist = Vector3.Distance(center, wnt.transform.position);
+                if (dist > RepairRadius) continue;
+
+                float hp = wnt.GetHealthPercentage();
+                if (hp >= 1f) continue;
+
+                if (wnt.Repair())
+                {
+                    repaired++;
+                    // Play repair VFX on each piece
+                    if (piece.m_placeEffect != null)
+                        piece.m_placeEffect.Create(piece.transform.position, piece.transform.rotation);
+                }
+            }
+
+            CompanionsPlugin.Log.LogInfo($"[Radial] Repair: fixed {repaired} building pieces within {RepairRadius}m");
+
+            if (repaired > 0)
+            {
+                // Play hammer swing animation
+                var zanim = _companion.GetComponent<ZSyncAnimation>();
+                if (zanim != null)
+                    zanim.SetTrigger("swing_pickaxe");
+
+                if (_companionTalk != null)
+                    _companionTalk.Say(ModLocalization.Loc("hc_speech_repair_done"), "Repair");
+            }
+            else
+            {
+                if (_companionTalk != null)
+                    _companionTalk.Say(ModLocalization.Loc("hc_speech_repair_nothing"), "Action");
+            }
+        }
+
+        // ── One-shot: Restock campfires / light sources within 50m ───────
+
+        private const float RestockRadius = 50f;
+        private const float FuelThreshold = 0.5f;
+
+        private void DoRestock()
+        {
+            if (_companion == null) return;
+
+            var inv = _companion.GetComponent<Humanoid>()?.GetInventory();
+            if (inv == null) return;
+
+            Vector3 center = _companion.transform.position;
+            var tempPieces = new System.Collections.Generic.List<Piece>();
+            Piece.GetAllPiecesInRadius(center, RestockRadius, tempPieces);
+
+            int restocked = 0;
+            int totalFuelAdded = 0;
+
+            for (int i = 0; i < tempPieces.Count; i++)
+            {
+                var fp = tempPieces[i].GetComponent<Fireplace>();
+                if (fp == null) continue;
+                if (!fp.m_canRefill || fp.m_infiniteFuel) continue;
+                if (fp.m_fuelItem == null) continue;
+
+                var fpNview = fp.GetComponent<ZNetView>();
+                if (fpNview == null || fpNview.GetZDO() == null) continue;
+
+                float currentFuel = fpNview.GetZDO().GetFloat(ZDOVars.s_fuel);
+                float maxFuel = fp.m_maxFuel;
+                if (maxFuel <= 0f) continue;
+
+                float ratio = currentFuel / maxFuel;
+                if (ratio >= FuelThreshold) continue;
+
+                // Find fuel item name
+                string fuelPrefab = fp.m_fuelItem.gameObject.name;
+                int fuelNeeded = Mathf.Max(1, (int)(maxFuel - currentFuel));
+
+                // Check inventory and nearby chests for fuel
+                int fuelAvailable = CountItemInInventory(inv, fuelPrefab);
+
+                // Also check nearby chests
+                var containers = new System.Collections.Generic.List<Container>();
+                FindNearbyContainers(center, 20f, containers);
+                for (int c = 0; c < containers.Count && fuelAvailable < fuelNeeded; c++)
+                {
+                    var chestInv = containers[c].GetInventory();
+                    if (chestInv == null) continue;
+
+                    int inChest = CountItemInInventory(chestInv, fuelPrefab);
+                    int toTake = Mathf.Min(inChest, fuelNeeded - fuelAvailable);
+                    if (toTake > 0)
+                    {
+                        // Transfer fuel from chest to companion inventory
+                        for (int t = 0; t < toTake; t++)
+                            ConsumeOneFromInventory(chestInv, fuelPrefab);
+                        var prefab = ObjectDB.instance?.GetItemPrefab(fuelPrefab);
+                        if (prefab != null)
+                        {
+                            var itemDrop = prefab.GetComponent<ItemDrop>();
+                            if (itemDrop != null)
+                                inv.AddItem(prefab, toTake);
+                        }
+                        fuelAvailable += toTake;
+                    }
+                }
+
+                int toAdd = Mathf.Min(fuelNeeded, fuelAvailable);
+                if (toAdd <= 0) continue;
+
+                // Add fuel to fireplace, consuming from inventory
+                bool addedAny = false;
+                for (int f = 0; f < toAdd; f++)
+                {
+                    if (!ConsumeOneFromInventory(inv, fuelPrefab))
+                        break;
+                    fpNview.InvokeRPC("RPC_AddFuel");
+                    totalFuelAdded++;
+                    addedAny = true;
+                }
+
+                if (addedAny)
+                {
+                    restocked++;
+                    CompanionsPlugin.Log.LogDebug(
+                        $"[Radial] Restock: added fuel to \"{fp.m_name}\" " +
+                        $"({currentFuel:F0}→{currentFuel + toAdd:F0}/{maxFuel:F0})");
+                }
+            }
+
+            CompanionsPlugin.Log.LogInfo(
+                $"[Radial] Restock: refueled {restocked} fires, {totalFuelAdded} total fuel added");
+
+            if (restocked > 0)
+            {
+                var zanim = _companion.GetComponent<ZSyncAnimation>();
+                if (zanim != null)
+                    zanim.SetTrigger("interact");
+
+                if (_companionTalk != null)
+                    _companionTalk.Say(ModLocalization.Loc("hc_speech_restock_done"), "Action");
+            }
+            else
+            {
+                if (_companionTalk != null)
+                    _companionTalk.Say(ModLocalization.Loc("hc_speech_restock_nothing"), "Action");
+            }
+        }
+
+        private static int CountItemInInventory(Inventory inv, string prefabName)
+        {
+            int count = 0;
+            var items = inv.GetAllItems();
+            for (int i = 0; i < items.Count; i++)
+            {
+                string name = items[i].m_dropPrefab?.name ?? items[i].m_shared?.m_name;
+                if (name == prefabName)
+                    count += items[i].m_stack;
+            }
+            return count;
+        }
+
+        private static bool ConsumeOneFromInventory(Inventory inv, string prefabName)
+        {
+            var items = inv.GetAllItems();
+            for (int i = 0; i < items.Count; i++)
+            {
+                string name = items[i].m_dropPrefab?.name ?? items[i].m_shared?.m_name;
+                if (name == prefabName)
+                {
+                    inv.RemoveItem(items[i], 1);
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private static void FindNearbyContainers(Vector3 center, float radius, System.Collections.Generic.List<Container> results)
+        {
+            results.Clear();
+            var tempPieces = new System.Collections.Generic.List<Piece>();
+            Piece.GetAllPiecesInRadius(center, radius, tempPieces);
+            for (int i = 0; i < tempPieces.Count; i++)
+            {
+                var piece = tempPieces[i];
+                if (piece == null) continue;
+                var c = piece.GetComponentInChildren<Container>();
+                if (c == null) continue;
+                if (c.GetInventory() == null) continue;
+                // Skip companion inventories (they have Character component)
+                if (c.GetComponent<Character>() != null) continue;
+                if (c.IsInUse()) continue;
+                results.Add(c);
+            }
         }
 
         private void ToggleFollow()
@@ -984,6 +1237,18 @@ namespace Companions
                 IconColor = new Color(0.80f, 0.35f, 0.35f)
             });
 
+            // Utility modes — persistent periodic actions
+            _segments.Add(new Segment {
+                Label = ModLocalization.Loc("hc_radial_repair"), ActionId = ActionRepair,
+                IsMode = true, IsActive = currentMode == CompanionSetup.ModeRepairBuildings,
+                IconColor = new Color(0.70f, 0.55f, 0.30f)
+            });
+            _segments.Add(new Segment {
+                Label = ModLocalization.Loc("hc_radial_restock"), ActionId = ActionRestock,
+                IsMode = true, IsActive = currentMode == CompanionSetup.ModeRestock,
+                IconColor = new Color(0.90f, 0.55f, 0.20f)
+            });
+
             // ── Inner ring: combat stances ──
             _innerSegments.Clear();
             if (!_isDverger)
@@ -1050,7 +1315,7 @@ namespace Companions
             rootRT.anchorMin = new Vector2(0.5f, 0.5f);
             rootRT.anchorMax = new Vector2(0.5f, 0.5f);
             rootRT.pivot = new Vector2(0.5f, 0.5f);
-            rootRT.sizeDelta = new Vector2(560f, 560f);
+            rootRT.sizeDelta = new Vector2(700f, 700f);
 
             // Outer ring background — donut with transparent centre hole
             _bgCircle = new GameObject("BgDonut", typeof(RectTransform), typeof(Image),
@@ -1060,7 +1325,7 @@ namespace Companions
             bgRT.anchorMin = new Vector2(0.5f, 0.5f);
             bgRT.anchorMax = new Vector2(0.5f, 0.5f);
             bgRT.pivot = new Vector2(0.5f, 0.5f);
-            bgRT.sizeDelta = new Vector2(540f, 540f);
+            bgRT.sizeDelta = new Vector2(680f, 680f);
             var bgImg = _bgCircle.GetComponent<Image>();
             bgImg.sprite = GetDonutSprite();
             bgImg.color = BgColor;
@@ -1076,7 +1341,7 @@ namespace Companions
             innerBgRT.anchorMin = new Vector2(0.5f, 0.5f);
             innerBgRT.anchorMax = new Vector2(0.5f, 0.5f);
             innerBgRT.pivot = new Vector2(0.5f, 0.5f);
-            innerBgRT.sizeDelta = new Vector2(240f, 240f);
+            innerBgRT.sizeDelta = new Vector2(276f, 276f);  // +15%
             var innerBgImg = _innerBgCircle.GetComponent<Image>();
             innerBgImg.sprite = GetCircleSprite();
             innerBgImg.color = BgColor;
@@ -1407,6 +1672,8 @@ namespace Companions
                 case ActionWander:      return "Wander";
                 case ActionAutoPickup:  return "AutoPickup";
                 case ActionCommand:          return "Command";
+                case ActionRepair:           return "Repair";
+                case ActionRestock:          return "Restock";
                 case ActionHunt:             return "Hunt";
                 case ActionFarm:             return "Farm";
                 case ActionFish:             return "Fish";
@@ -1545,6 +1812,27 @@ namespace Companions
                     DrawLine(pixels, size, c + 14, c - 4, c + 14, c + 10, w, 4f);
                     // Barb
                     DrawLine(pixels, size, c + 14, c + 10, c + 8, c + 4, w, 3f);
+                    break;
+
+                case ActionRepair:
+                    // Hammer — handle + head
+                    DrawLine(pixels, size, c - 10, c + 24, c + 8, c - 4, w, 5f); // handle
+                    DrawLine(pixels, size, c - 2, c - 10, c + 18, c - 10, w, 6f);  // head horizontal
+                    DrawLine(pixels, size, c - 2, c - 18, c - 2, c - 2, w, 6f);   // head left face
+                    DrawLine(pixels, size, c + 18, c - 18, c + 18, c - 2, w, 6f); // head right face
+                    DrawLine(pixels, size, c - 2, c - 18, c + 18, c - 18, w, 6f); // head top
+                    break;
+
+                case ActionRestock:
+                    // Flame — campfire flame shape
+                    DrawLine(pixels, size, c, c - 28, c - 4, c - 14, w, 4f);     // left flame
+                    DrawLine(pixels, size, c, c - 28, c + 4, c - 14, w, 4f);     // right flame
+                    DrawArc(pixels, size, c, c - 10, 8f, 180f, 360f, w, 4f);     // flame base
+                    // Logs underneath
+                    DrawLine(pixels, size, c - 16, c + 8, c + 16, c + 8, w, 5f);
+                    DrawLine(pixels, size, c - 12, c + 16, c + 12, c + 16, w, 5f);
+                    // Inner flame
+                    DrawLine(pixels, size, c, c - 22, c, c - 12, w, 3f);
                     break;
             }
 

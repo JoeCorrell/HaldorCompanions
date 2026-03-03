@@ -33,12 +33,12 @@ namespace Companions
         private float   _navTimeout;
 
         private const float CheckInterval = 1f;
-        private const float HealRate      = 2f;     // hp per second while resting
+        private static float HealRate      => ModConfig.RestHealRate.Value;
         private const float HealInterval  = 0.5f;
-        private const float PlayerRange   = 5f;
-        private const float FireRange     = 5f;
+        private static float PlayerRange   => ModConfig.RestPlayerRange.Value;
+        private static float FireRange     => ModConfig.RestFireRange.Value;
         private const float DirectedMaxDist    = 50f;  // stop directed rest if player is this far
-        private const float DirectedSitTimeout = 300f;  // 5 min timeout for directed sit
+        private static float DirectedSitTimeout => ModConfig.RestDirectedTimeout.Value;
         private const int FireScanBufferSize = 48;
 
         private readonly Collider[] _fireScanBuffer = new Collider[FireScanBufferSize];
@@ -493,7 +493,11 @@ namespace Companions
             CompanionsPlugin.Log.LogDebug(
                 $"[Rest] StartSitting anim — HasPlayerAnims={HasPlayerAnims} " +
                 $"canWearArmor={_setup?.CanWearArmor()} zanim={_zanim != null}");
-            if (_zanim != null && HasPlayerAnims) _zanim.SetTrigger("emote_sit");
+            if (_zanim != null && HasPlayerAnims)
+            {
+                _zanim.SetTrigger("emote_sit");
+                _zanim.SetBool("emote_sit", true);
+            }
 
             // Enable resting regen bonus
             if (_stamina != null) _stamina.IsResting = true;

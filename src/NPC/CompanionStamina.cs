@@ -36,10 +36,10 @@ namespace Companions
         /// <summary>Set by CompanionAIPatches.Follow_Patch when companion is running.</summary>
         public bool IsRunning { get; set; }
 
-        private const float RegenRate    = 6f;    // per second when idle
-        private const float RunDrainRate = 10f;   // stamina/sec while running
-        private const float SwimDrainRate = 10f;  // stamina/sec while swimming
-        private const float RegenDelay   = 1f;    // seconds after stamina use before regen starts
+        private static float RegenRate    => ModConfig.StaminaRegenRate.Value;
+        private static float RunDrainRate => ModConfig.StaminaRunDrain.Value;
+        private static float SwimDrainRate => ModConfig.StaminaSwimDrain.Value;
+        private static float RegenDelay   => ModConfig.StaminaRegenDelay.Value;
         private const float SaveInterval = 5f;
 
         private ZNetView      _nview;
@@ -106,22 +106,16 @@ namespace Companions
             if (Stamina > max)
                 Stamina = max;
 
-            bool isMoving = _character != null && _character.GetMoveDir().sqrMagnitude > 0.04f;
-            float speed = _character != null ? _character.GetVelocity().magnitude : 0f;
-            bool hasMoveSpeed = speed > 0.25f;
-            bool isSwimming = _character != null && _character.IsSwimming() && hasMoveSpeed;
-            bool runStateActive = IsRunning &&
-                                  _character != null &&
-                                  isMoving &&
-                                  hasMoveSpeed &&
-                                  !isSwimming;
-            bool isRunning = runStateActive &&
-                             speed > (_character.m_walkSpeed * 1.05f);
+            // Use Character.IsRunning() + velocity check. IsRunning() checks m_run +
+            // m_moveDir, but during combat oscillation (dual MoveToPoint calls, context
+            // steer jitter) the flag can flicker true even while the companion is
+            // effectively stationary. Require actual velocity to prevent phantom drain.
+            float velocity = _character != null ? _character.GetVelocity().magnitude : 0f;
+            bool isSwimming = _character != null && _character.IsSwimming() && velocity > 0.25f;
+            bool isRunning = _character != null && _character.IsRunning() && !isSwimming
+                             && velocity > 0.5f;
 
-            // Follow patch owns this flag; clear it when movement state no longer matches.
-            if (!runStateActive) IsRunning = false;
-
-            // Drain only for active movement states that should consume stamina.
+            // Drain for running or swimming.
             if ((isRunning || isSwimming) && Stamina > 0f)
             {
                 float drainRate = isSwimming ? SwimDrainRate : RunDrainRate;
