@@ -571,8 +571,9 @@ namespace Companions
 
             if (_carryingAmount <= 0)
             {
-                Log("All items inserted — returning to scan");
-                _phase = SmeltPhase.Scanning;
+                Log("All items inserted — checking for next smelter with same material");
+                if (!TryNextSmelterWithSameItem())
+                    _phase = SmeltPhase.Scanning;
                 return;
             }
 
@@ -588,8 +589,9 @@ namespace Companions
                 float fuel = snview.GetZDO().GetFloat(ZDOVars.s_fuel);
                 if (fuel > (float)(_targetSmelter.m_maxFuel - 1))
                 {
-                    Log($"Smelter fuel is full — {_carryingAmount} leftover in inventory for next smelter");
-                    _phase = SmeltPhase.Scanning;
+                    Log($"Smelter fuel is full — {_carryingAmount} leftover, trying next smelter");
+                    if (!TryNextSmelterWithSameItem())
+                        _phase = SmeltPhase.Scanning;
                     return;
                 }
                 snview.InvokeRPC("RPC_AddFuel");
@@ -606,8 +608,9 @@ namespace Companions
                 int queued = snview.GetZDO().GetInt(ZDOVars.s_queued);
                 if (queued >= _targetSmelter.m_maxOre)
                 {
-                    Log($"Smelter ore queue is full — {_carryingAmount} leftover in inventory for next smelter");
-                    _phase = SmeltPhase.Scanning;
+                    Log($"Smelter ore queue is full — {_carryingAmount} leftover, trying next smelter");
+                    if (!TryNextSmelterWithSameItem())
+                        _phase = SmeltPhase.Scanning;
                     return;
                 }
                 snview.InvokeRPC("RPC_AddOre", _carryingItemPrefab);
@@ -822,6 +825,71 @@ namespace Companions
             _phase = SmeltPhase.Scanning;
         }
 
+        // ── Multi-smelter direct routing ───────────────────────────────────
+
+        /// <summary>
+        /// After inserting into one smelter, check if another nearby smelter
+        /// needs the same material and route there directly — no chest trip.
+        /// Returns true if a new target was set and movement has started.
+        /// </summary>
+        private bool TryNextSmelterWithSameItem()
+        {
+            if (string.IsNullOrEmpty(_carryingItemPrefab)) return false;
+
+            var companionInv = _humanoid?.GetInventory();
+            if (companionInv == null) return false;
+            int have = CountItemByPrefab(companionInv, _carryingItemPrefab);
+            if (have <= 0) return false;
+
+            foreach (var smelter in _nearbySmelters)
+            {
+                if (smelter == null || smelter == _targetSmelter) continue;
+                if (_ai != null && _ai.IsPositionBlacklisted(smelter.transform.position)) continue;
+
+                var snview = smelter.GetComponent<ZNetView>();
+                if (snview == null || snview.GetZDO() == null) continue;
+
+                int roomNeeded;
+                bool accepts = false;
+
+                if (_carryingIsFuel)
+                {
+                    if (smelter.m_fuelItem == null ||
+                        smelter.m_fuelItem.gameObject.name != _carryingItemPrefab) continue;
+                    float fuel = snview.GetZDO().GetFloat(ZDOVars.s_fuel);
+                    roomNeeded = smelter.m_maxFuel - (int)fuel;
+                    if (roomNeeded > 0) accepts = true;
+                }
+                else
+                {
+                    int queued = snview.GetZDO().GetInt(ZDOVars.s_queued);
+                    roomNeeded = smelter.m_maxOre - queued;
+                    if (roomNeeded > 0)
+                    {
+                        foreach (var conv in smelter.m_conversion)
+                        {
+                            if (conv?.m_from == null) continue;
+                            if (conv.m_from.gameObject.name != _carryingItemPrefab) continue;
+                            accepts = true;
+                            break;
+                        }
+                    }
+                }
+
+                if (!accepts) continue;
+
+                _targetSmelter = smelter;
+                _carryingAmount = Mathf.Min(have, Mathf.Max(0, roomNeeded));
+                ClearFollowForMovement();
+                ResetStuck();
+                _phase = SmeltPhase.MovingToSmelter;
+                Log($"Direct: routing to \"{smelter.m_name}\" with {_carryingAmount}x {_carryingItemPrefab} (no chest trip)");
+                return true;
+            }
+
+            return false;
+        }
+
         // ── Public API ─────────────────────────────────────────────────────
 
         /// <summary>Called when action mode changes away from smelt.</summary>
@@ -981,7 +1049,30 @@ namespace Companions
 
             if (bestChest == null) return false;
 
-            int toTake = Mathf.Min(needed, bestCount, MaxCarryFuel);
+            // Sum fuel need across ALL furnaces that use the same fuel type.
+            int totalFuelNeeded = needed;
+            foreach (var other in _nearbySmelters)
+            {
+                if (other == null || other == smelter || other.m_fuelItem == null) continue;
+                if (other.m_fuelItem.gameObject.name != fuelPrefab) continue;
+                var onview = other.GetComponent<ZNetView>();
+                if (onview?.GetZDO() != null)
+                {
+                    float otherFuel = onview.GetZDO().GetFloat(ZDOVars.s_fuel);
+                    totalFuelNeeded += Mathf.Max(0, other.m_maxFuel - (int)otherFuel);
+                }
+            }
+
+            // Cap by weight — fuel (coal/wood) is light but still contributes.
+            var fuelCompInv = _humanoid?.GetInventory();
+            float fuelCurrWeight = fuelCompInv?.GetTotalWeight() ?? 0f;
+            float fuelWeightCap = Mathf.Max(0f, CompanionTierData.MaxCarryWeight - fuelCurrWeight);
+            var sampleFuel = bestChest.GetInventory()?.GetAllItems()
+                .Find(i => i.m_dropPrefab != null && i.m_dropPrefab.name == fuelPrefab);
+            float fuelItemWeight = sampleFuel?.m_shared?.m_weight ?? 1f;
+            int canCarryFuelByWeight = fuelItemWeight > 0f ? Mathf.FloorToInt(fuelWeightCap / fuelItemWeight) : MaxCarryFuel;
+
+            int toTake = Mathf.Min(totalFuelNeeded, bestCount, Mathf.Max(1, canCarryFuelByWeight));
             _targetSmelter = smelter;
             _targetChest = bestChest;
             _carryingItemPrefab = fuelPrefab;
@@ -991,8 +1082,8 @@ namespace Companions
             ResetStuck();
             _phase = SmeltPhase.MovingToChest;
 
-            Log($"Plan: take {toTake}x fuel \"{fuelName}\" from chest " +
-                $"(dist={bestDist:F1}m) → \"{smelter.m_name}\" (fuel={fuel:F0}/{smelter.m_maxFuel})");
+            Log($"Plan: take {toTake}x fuel \"{fuelName}\" (totalNeeded={totalFuelNeeded} weightCap={canCarryFuelByWeight}) " +
+                $"from chest (dist={bestDist:F1}m) → \"{smelter.m_name}\" (fuel={fuel:F0}/{smelter.m_maxFuel})");
             if (_talk != null) _talk.Say(ModLocalization.Loc("hc_speech_smelt_fuel"), "Smelt");
             return true;
         }
@@ -1072,7 +1163,32 @@ namespace Companions
 
             if (bestChest == null || bestPrefab == null) return false;
 
-            int toTake = Mathf.Min(needed, bestCount, MaxCarryOre);
+            // Sum ore need across ALL smelters that accept this prefab so we can
+            // load enough for everyone in a single chest trip.
+            int totalNeeded = needed;
+            foreach (var other in _nearbySmelters)
+            {
+                if (other == null || other == smelter) continue;
+                foreach (var conv in other.m_conversion)
+                {
+                    if (conv?.m_from == null || conv.m_from.gameObject.name != bestPrefab) continue;
+                    var onview = other.GetComponent<ZNetView>();
+                    if (onview?.GetZDO() != null)
+                        totalNeeded += Mathf.Max(0, other.m_maxOre - onview.GetZDO().GetInt(ZDOVars.s_queued));
+                    break;
+                }
+            }
+
+            // Cap by weight: don't exceed carry limit (298 default).
+            var batchCompInv = _humanoid?.GetInventory();
+            float currentWeight = batchCompInv?.GetTotalWeight() ?? 0f;
+            float weightCapacity = Mathf.Max(0f, CompanionTierData.MaxCarryWeight - currentWeight);
+            var sampleOre = bestChest.GetInventory()?.GetAllItems()
+                .Find(i => i.m_dropPrefab != null && i.m_dropPrefab.name == bestPrefab);
+            float oreWeight = sampleOre?.m_shared?.m_weight ?? 1f;
+            int canCarryByWeight = oreWeight > 0f ? Mathf.FloorToInt(weightCapacity / oreWeight) : MaxCarryOre;
+
+            int toTake = Mathf.Min(totalNeeded, bestCount, Mathf.Max(1, canCarryByWeight));
             _targetSmelter = smelter;
             _targetChest = bestChest;
             _carryingItemPrefab = bestPrefab;
@@ -1082,8 +1198,8 @@ namespace Companions
             ResetStuck();
             _phase = SmeltPhase.MovingToChest;
 
-            Log($"Plan: take {toTake}x ore \"{bestPrefab}\" from chest " +
-                $"(dist={bestDist:F1}m) → \"{smelter.m_name}\" (queued={queued}/{smelter.m_maxOre})");
+            Log($"Plan: take {toTake}x ore \"{bestPrefab}\" (totalNeeded={totalNeeded} weightCap={canCarryByWeight}) " +
+                $"from chest (dist={bestDist:F1}m) → \"{smelter.m_name}\" (queued={queued}/{smelter.m_maxOre})");
             if (_talk != null) _talk.Say(ModLocalization.Loc("hc_speech_smelt_materials"), "Smelt");
             return true;
         }

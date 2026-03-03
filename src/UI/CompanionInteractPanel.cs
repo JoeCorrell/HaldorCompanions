@@ -4,6 +4,7 @@ using System.Reflection;
 using HarmonyLib;
 using TMPro;
 using UnityEngine;
+using UnityEngine.EventSystems;
 using UnityEngine.UI;
 
 namespace Companions
@@ -104,9 +105,14 @@ namespace Companions
         // Equipment panel (visible only when ExtraSlots mod is installed)
         private GameObject _equipPanel;
         private Image[]    _equipSlotIcons;
+        private Image[]    _equipSlotBgs;
+        private RectTransform[] _equipSlotRoots;
+        private Color[]    _equipSlotBaseColors;
         private string[]   _equipSlotIds;
         private int        _equipSlotCount;
         private float      _equipTileSize = 64f;
+        private bool       _gamepadEquipPanelActive;
+        private int        _gamepadEquipSelected = -1;
 
         // Weight & armor display (on the cloned container panel)
         private TMP_Text _weightText;
@@ -209,10 +215,11 @@ namespace Companions
             // Instead, fix the equipped indicators that vanilla renders incorrectly
             // (it passes null player, disabling all equipped icons), then update our
             // custom weight/armor and food slot displays.
+            // Refresh slot bindings first so grid suppression uses current slot occupancy.
+            RefreshEquipmentPanel();
             FixEquippedIndicators();
             UpdateWeightAndArmor();
             RefreshFoodSlots(GetStorageInventory());
-            RefreshEquipmentPanel();
         }
 
         // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
@@ -864,7 +871,7 @@ namespace Companions
 
         private const float EquipTileSize = 70f;
         private const float EquipTileGap  = 6f;
-        private const float EquipPadding  = 10f;
+        private const float EquipPadding  = 1.5f;
         private const float EquipPanelGap = 100f;
 
         private static readonly string[] LegacyEquipSlotIds =
@@ -886,10 +893,11 @@ namespace Companions
 
             _equipSlotCount = slotDefs.Count;
             _equipSlotIcons = new Image[_equipSlotCount];
+            _equipSlotBgs = new Image[_equipSlotCount];
+            _equipSlotRoots = new RectTransform[_equipSlotCount];
+            _equipSlotBaseColors = new Color[_equipSlotCount];
             _equipSlotIds = new string[_equipSlotCount];
             _equipTileSize = GetEffectiveEquipTileSize();
-
-            TMP_FontAsset font = GetFont();
 
             float minX = float.MaxValue;
             float maxX = float.MinValue;
@@ -927,7 +935,7 @@ namespace Companions
                 float x = EquipPadding + (slot.Position.x - minX);
                 float y = -EquipPadding - (maxY - slot.Position.y);
                 string label = string.IsNullOrEmpty(slot.Name) ? slot.Id : slot.Name;
-                CreateEquipSlot(i, x, y, label, slot.Id, font);
+                CreateEquipSlot(i, x, y, label, slot.Id);
             }
         }
 
@@ -937,10 +945,11 @@ namespace Companions
             int extraCount = ExtraSlotsCompat.ExtraUtilitySlotCount;
             _equipSlotCount = LegacyEquipSlotIds.Length + extraCount;
             _equipSlotIcons = new Image[_equipSlotCount];
+            _equipSlotBgs = new Image[_equipSlotCount];
+            _equipSlotRoots = new RectTransform[_equipSlotCount];
+            _equipSlotBaseColors = new Color[_equipSlotCount];
             _equipSlotIds = new string[_equipSlotCount];
             _equipTileSize = GetEffectiveEquipTileSize();
-
-            TMP_FontAsset font = GetFont();
 
             int cols = 2 + (extraCount > 0 ? (int)Math.Ceiling(extraCount / 3.0) : 0);
             int rows = 3;
@@ -986,7 +995,7 @@ namespace Companions
                     ? LegacyEquipSlotIds[i]
                     : $"Utility {i - LegacyEquipSlotIds.Length + 2}";
 
-                CreateEquipSlot(i, x, y, label, slotId, font);
+                CreateEquipSlot(i, x, y, label, slotId);
             }
         }
 
@@ -1048,8 +1057,8 @@ namespace Companions
                 }
             }
 
-            // ExtraSlots uses 70 spacing; vanilla slot visuals are typically ~64px.
-            return 64f;
+            // ExtraSlots uses a 70px tile baseline.
+            return 70f;
         }
 
         private static void ApplyEquipSlotBackgroundStyle(Image slotImg)
@@ -1074,11 +1083,15 @@ namespace Companions
             slotImg.color = new Color(0f, 0f, 0f, 0.5625f);
         }
 
-        private void CreateEquipSlot(int index, float x, float y,
-            string label, string slotId, TMP_FontAsset font)
+        private void CreateEquipSlot(int index, float x, float y, string label, string slotId)
         {
             // Slot container
-            var slotGO = new GameObject($"EquipSlot_{label}", typeof(RectTransform), typeof(Image));
+            var slotGO = new GameObject(
+                $"EquipSlot_{label}",
+                typeof(RectTransform),
+                typeof(Image),
+                typeof(Button),
+                typeof(EquipSlotClickHandler));
             slotGO.transform.SetParent(_equipPanel.transform, false);
 
             var slotRT = slotGO.GetComponent<RectTransform>();
@@ -1090,53 +1103,50 @@ namespace Companions
 
             var slotImg = slotGO.GetComponent<Image>();
             ApplyEquipSlotBackgroundStyle(slotImg);
-            slotImg.raycastTarget = false;
+            slotImg.raycastTarget = true;
+            if (_equipSlotBgs != null && index >= 0 && index < _equipSlotBgs.Length)
+            {
+                _equipSlotBgs[index] = slotImg;
+                _equipSlotBaseColors[index] = slotImg.color;
+            }
+            if (_equipSlotRoots != null && index >= 0 && index < _equipSlotRoots.Length)
+                _equipSlotRoots[index] = slotRT;
 
-            // Item icon â€” centered with padding
+            var slotButton = slotGO.GetComponent<Button>();
+            slotButton.targetGraphic = slotImg;
+            slotButton.transition = Selectable.Transition.None;
+
+            var clickHandler = slotGO.GetComponent<EquipSlotClickHandler>();
+            clickHandler.Init(this, slotId);
+
+            // Item icon
             var iconGO = new GameObject("Icon", typeof(RectTransform), typeof(Image));
             iconGO.transform.SetParent(slotGO.transform, false);
             var iconRT = iconGO.GetComponent<RectTransform>();
-            float labelH = Mathf.Clamp(_equipTileSize * 0.18f, 9f, 14f);
             iconRT.anchorMin = Vector2.zero;
             iconRT.anchorMax = Vector2.one;
-            iconRT.offsetMin = new Vector2(4f, labelH + 1f);
-            iconRT.offsetMax = new Vector2(-4f, -4f);
+            iconRT.offsetMin = new Vector2(2f, 2f);
+            iconRT.offsetMax = new Vector2(-2f, -2f);
             _equipSlotIcons[index] = iconGO.GetComponent<Image>();
             if (_equipSlotIds != null && index >= 0 && index < _equipSlotIds.Length)
                 _equipSlotIds[index] = slotId;
             _equipSlotIcons[index].preserveAspect = true;
             _equipSlotIcons[index].raycastTarget  = false;
             _equipSlotIcons[index].enabled        = false;
-
-            // Slot label at bottom
-            var labelGO = new GameObject("Label", typeof(RectTransform));
-            labelGO.transform.SetParent(slotGO.transform, false);
-            var labelTmp = labelGO.AddComponent<TextMeshProUGUI>();
-            if (font != null) labelTmp.font = font;
-            labelTmp.text          = label;
-            labelTmp.fontSize      = 9f;
-            labelTmp.color         = new Color(0.8f, 0.8f, 0.6f, 0.8f);
-            labelTmp.alignment     = TextAlignmentOptions.Bottom;
-            labelTmp.fontStyle     = FontStyles.Normal;
-            labelTmp.raycastTarget = false;
-            labelTmp.enableAutoSizing = true;
-            labelTmp.fontSizeMin   = 6f;
-            labelTmp.fontSizeMax   = 9f;
-            var labelRT = labelGO.GetComponent<RectTransform>();
-            labelRT.anchorMin = new Vector2(0f, 0f);
-            labelRT.anchorMax = new Vector2(1f, 0f);
-            labelRT.pivot     = new Vector2(0.5f, 0f);
-            labelRT.sizeDelta = new Vector2(0f, labelH);
-            labelRT.anchoredPosition = new Vector2(0f, 1f);
         }
 
         private void RefreshEquipmentPanel()
         {
             if (_equipSlotIcons == null || _equipSlotIds == null || _companion == null) return;
 
+            _slotItemsInPanel.Clear();
             int count = Mathf.Min(_equipSlotIcons.Length, _equipSlotIds.Length);
             for (int i = 0; i < count; i++)
-                SetEquipIcon(i, _equipSlotIds[i], _companion.GetItemForExtraSlotsSlot(_equipSlotIds[i]));
+            {
+                var item = _companion.GetItemForExtraSlotsSlot(_equipSlotIds[i]);
+                if (item != null) _slotItemsInPanel.Add(item);
+                SetEquipIcon(i, _equipSlotIds[i], item);
+            }
         }
 
         private void SetEquipIcon(int index, string slotId, ItemDrop.ItemData item)
@@ -1147,13 +1157,173 @@ namespace Companions
             {
                 icon.sprite  = item.GetIcon();
                 icon.color   = Color.white;
+                icon.rectTransform.localScale = Vector3.one;
                 icon.enabled = true;
             }
             else
             {
                 icon.sprite = ExtraSlotsCompat.GetSlotHintSprite(slotId);
-                icon.color = new Color(0.6f, 0.6f, 0.6f, 0.9f);
+                if (slotId.StartsWith("Quick", StringComparison.OrdinalIgnoreCase))
+                {
+                    icon.color = new Color(0.5f, 0.5f, 0.5f, 0.4f);
+                    icon.rectTransform.localScale = Vector3.one * 0.6f;
+                }
+                else if (slotId.StartsWith("Ammo", StringComparison.OrdinalIgnoreCase))
+                {
+                    icon.color = new Color(0.5f, 0.5f, 0.5f, 0.9f);
+                    icon.rectTransform.localScale = Vector3.one * 0.8f;
+                }
+                else if (slotId.StartsWith("Misc", StringComparison.OrdinalIgnoreCase))
+                {
+                    icon.color = new Color(0.5f, 0.5f, 0.5f, 0.25f);
+                    icon.rectTransform.localScale = Vector3.one * 0.8f;
+                }
+                else
+                {
+                    icon.color = new Color(0.6f, 0.6f, 0.6f, 0.9f);
+                    icon.rectTransform.localScale = Vector3.one;
+                }
                 icon.enabled = icon.sprite != null;
+            }
+        }
+
+        private void OnEquipSlotPointerClick(string slotId, PointerEventData.InputButton button)
+        {
+            if (button == PointerEventData.InputButton.Right)
+            {
+                OnEquipSlotRightClick(slotId);
+                return;
+            }
+
+            if (button != PointerEventData.InputButton.Left) return;
+            OnEquipSlotLeftClick(slotId);
+        }
+
+        private void OnEquipSlotLeftClick(string slotId)
+        {
+            if (InventoryGui.instance == null || _companion == null) return;
+            var inv = GetStorageInventory();
+            if (inv == null) return;
+
+            var dragItem = _dragItemField?.GetValue(InventoryGui.instance) as ItemDrop.ItemData;
+            var dragInv  = _dragInventoryField?.GetValue(InventoryGui.instance) as Inventory;
+            int dragAmt  = (_dragAmountField != null)
+                ? (int)_dragAmountField.GetValue(InventoryGui.instance) : 1;
+
+            // While dragging: drop/equip directly into the clicked slot.
+            if (dragItem != null && dragInv != null)
+            {
+                try
+                {
+                    if (!dragInv.ContainsItem(dragItem))
+                    { ClearDrag(); return; }
+                }
+                catch (NullReferenceException) { ClearDrag(); return; }
+
+                if (!_companion.CanItemFitExtraSlotsSlot(slotId, dragItem))
+                    return;
+
+                if (!PrepareDraggedItemForCompanionSlot(inv, dragInv, ref dragItem, dragAmt))
+                    return;
+
+                if (_companion.TrySetItemForExtraSlotsSlot(slotId, dragItem))
+                {
+                    ClearDrag();
+                    OnCompanionInventoryMutated();
+                    RefreshEquipmentPanel();
+                }
+                return;
+            }
+
+            // Not dragging: click an occupied slot to pick it up into drag.
+            var slotItem = _companion.GetItemForExtraSlotsSlot(slotId);
+            if (slotItem == null) return;
+
+            if (!_companion.TrySetItemForExtraSlotsSlot(slotId, null))
+                return;
+
+            _setupDragItem?.Invoke(InventoryGui.instance, new object[] { slotItem, inv, slotItem.m_stack });
+            RefreshEquipmentPanel();
+        }
+
+        private void OnEquipSlotRightClick(string slotId)
+        {
+            if (_companion == null) return;
+            var slotItem = _companion.GetItemForExtraSlotsSlot(slotId);
+            if (slotItem == null) return;
+
+            if (_companion.TrySetItemForExtraSlotsSlot(slotId, null))
+            {
+                OnCompanionInventoryMutated();
+                RefreshEquipmentPanel();
+            }
+        }
+
+        private bool PrepareDraggedItemForCompanionSlot(
+            Inventory companionInv,
+            Inventory dragInv,
+            ref ItemDrop.ItemData dragItem,
+            int dragAmount)
+        {
+            if (companionInv == null || dragInv == null || dragItem == null) return false;
+
+            // Already in companion inventory.
+            if (dragInv == companionInv)
+                return companionInv.ContainsItem(dragItem);
+
+            // Unequip from player before moving into companion inventory if needed.
+            var player = Player.m_localPlayer;
+            if (player != null && dragInv == player.GetInventory() && player.IsItemEquiped(dragItem))
+            {
+                player.RemoveEquipAction(dragItem);
+                player.UnequipItem(dragItem, false);
+            }
+
+            int sx = dragItem.m_gridPos.x;
+            int sy = dragItem.m_gridPos.y;
+            if (!companionInv.MoveItemToThis(dragInv, dragItem, dragAmount, sx, sy))
+                return false;
+
+            // MoveItemToThis may create a new instance for split/move cases.
+            if (!companionInv.ContainsItem(dragItem))
+            {
+                dragItem = FindMovedItemReference(companionInv, dragItem);
+                if (dragItem == null) return false;
+            }
+
+            return true;
+        }
+
+        private static ItemDrop.ItemData FindMovedItemReference(Inventory inv, ItemDrop.ItemData source)
+        {
+            if (inv == null || source?.m_shared == null) return null;
+
+            foreach (var item in inv.GetAllItems())
+            {
+                if (item?.m_shared == null) continue;
+                if (!ReferenceEquals(item.m_shared, source.m_shared)) continue;
+                if (item.m_quality != source.m_quality) continue;
+                return item;
+            }
+
+            return null;
+        }
+
+        private sealed class EquipSlotClickHandler : MonoBehaviour, IPointerClickHandler
+        {
+            private CompanionInteractPanel _owner;
+            private string _slotId;
+
+            internal void Init(CompanionInteractPanel owner, string slotId)
+            {
+                _owner = owner;
+                _slotId = slotId;
+            }
+
+            public void OnPointerClick(PointerEventData eventData)
+            {
+                if (_owner == null || string.IsNullOrEmpty(_slotId) || eventData == null) return;
+                _owner.OnEquipSlotPointerClick(_slotId, eventData.button);
             }
         }
 
@@ -1537,10 +1707,19 @@ namespace Companions
             {
                 var pos = (Vector2i)_elemPosField.GetValue(elem);
                 var equipImg = _elemEquipedField.GetValue(elem) as Image;
-                if (equipImg == null) continue;
-
                 var item = inv.GetItemAt(pos.x, pos.y);
-                equipImg.enabled = item != null && item.m_equipped;
+                bool inSlotPanel = item != null && _slotItemsInPanel.Contains(item);
+
+                // Hide items that are represented by the side slot panel so they are not mirrored.
+                if (_elemGoField != null)
+                {
+                    var go = _elemGoField.GetValue(elem) as GameObject;
+                    if (go != null) go.SetActive(!inSlotPanel);
+                }
+                if (inSlotPanel) continue;
+
+                if (equipImg != null)
+                    equipImg.enabled = item != null && item.m_equipped;
 
                 // Also fix queued indicator
                 if (_elemQueuedField != null)
