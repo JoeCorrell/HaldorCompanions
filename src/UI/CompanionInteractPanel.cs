@@ -106,6 +106,7 @@ namespace Companions
         private Image[]    _equipSlotIcons;
         private string[]   _equipSlotIds;
         private int        _equipSlotCount;
+        private float      _equipTileSize = 64f;
 
         // Weight & armor display (on the cloned container panel)
         private TMP_Text _weightText;
@@ -886,6 +887,7 @@ namespace Companions
             _equipSlotCount = slotDefs.Count;
             _equipSlotIcons = new Image[_equipSlotCount];
             _equipSlotIds = new string[_equipSlotCount];
+            _equipTileSize = GetEffectiveEquipTileSize();
 
             TMP_FontAsset font = GetFont();
 
@@ -902,8 +904,8 @@ namespace Companions
                 if (p.y > maxY) maxY = p.y;
             }
 
-            float panelW = (maxX - minX) + EquipTileSize + EquipPadding * 2f;
-            float panelH = (maxY - minY) + EquipTileSize + EquipPadding * 2f;
+            float panelW = (maxX - minX) + _equipTileSize + EquipPadding * 2f;
+            float panelH = (maxY - minY) + _equipTileSize + EquipPadding * 2f;
 
             _equipPanel = new GameObject("HC_EquipPanel", typeof(RectTransform));
             _equipPanel.transform.SetParent(_root.transform, false);
@@ -936,13 +938,14 @@ namespace Companions
             _equipSlotCount = LegacyEquipSlotIds.Length + extraCount;
             _equipSlotIcons = new Image[_equipSlotCount];
             _equipSlotIds = new string[_equipSlotCount];
+            _equipTileSize = GetEffectiveEquipTileSize();
 
             TMP_FontAsset font = GetFont();
 
             int cols = 2 + (extraCount > 0 ? (int)Math.Ceiling(extraCount / 3.0) : 0);
             int rows = 3;
-            float panelW = cols * EquipTileSize + (cols - 1) * EquipTileGap + EquipPadding * 2f;
-            float panelH = rows * EquipTileSize + (rows - 1) * EquipTileGap + EquipPadding * 2f;
+            float panelW = cols * _equipTileSize + (cols - 1) * EquipTileGap + EquipPadding * 2f;
+            float panelH = rows * _equipTileSize + (rows - 1) * EquipTileGap + EquipPadding * 2f;
 
             _equipPanel = new GameObject("HC_EquipPanel", typeof(RectTransform));
             _equipPanel.transform.SetParent(_root.transform, false);
@@ -974,8 +977,8 @@ namespace Companions
                     row = extraIdx % 3;
                 }
 
-                float x = EquipPadding + col * (EquipTileSize + EquipTileGap);
-                float y = -EquipPadding - row * (EquipTileSize + EquipTileGap);
+                float x = EquipPadding + col * (_equipTileSize + EquipTileGap);
+                float y = -EquipPadding - row * (_equipTileSize + EquipTileGap);
                 string slotId = i < LegacyEquipSlotIds.Length
                     ? LegacyEquipSlotIds[i]
                     : $"ExtraUtility{i - LegacyEquipSlotIds.Length + 1}";
@@ -1028,6 +1031,49 @@ namespace Companions
             }
         }
 
+        private float GetEffectiveEquipTileSize()
+        {
+            var gui = InventoryGui.instance;
+            if (gui != null && gui.m_playerGrid != null &&
+                gui.m_playerGrid.m_gridRoot != null &&
+                gui.m_playerGrid.m_gridRoot.childCount > 0)
+            {
+                var firstChild = gui.m_playerGrid.m_gridRoot.GetChild(0);
+                var rt = firstChild != null ? firstChild.GetComponent<RectTransform>() : null;
+                if (rt != null)
+                {
+                    float size = rt.rect.width;
+                    if (size <= 0f) size = rt.sizeDelta.x;
+                    if (size > 0f) return size;
+                }
+            }
+
+            // ExtraSlots uses 70 spacing; vanilla slot visuals are typically ~64px.
+            return 64f;
+        }
+
+        private static void ApplyEquipSlotBackgroundStyle(Image slotImg)
+        {
+            var gui = InventoryGui.instance;
+            if (gui != null && gui.m_playerGrid != null &&
+                gui.m_playerGrid.m_gridRoot != null &&
+                gui.m_playerGrid.m_gridRoot.childCount > 0)
+            {
+                var firstChild = gui.m_playerGrid.m_gridRoot.GetChild(0);
+                var src = firstChild != null ? firstChild.GetComponent<Image>() : null;
+                if (src != null)
+                {
+                    slotImg.sprite = src.sprite;
+                    slotImg.type = src.type;
+                    slotImg.preserveAspect = src.preserveAspect;
+                    slotImg.color = src.color;
+                    return;
+                }
+            }
+
+            slotImg.color = new Color(0f, 0f, 0f, 0.5625f);
+        }
+
         private void CreateEquipSlot(int index, float x, float y,
             string label, string slotId, TMP_FontAsset font)
         {
@@ -1039,20 +1085,21 @@ namespace Companions
             slotRT.anchorMin = new Vector2(0f, 1f);
             slotRT.anchorMax = new Vector2(0f, 1f);
             slotRT.pivot     = new Vector2(0f, 1f);
-            slotRT.sizeDelta = new Vector2(EquipTileSize, EquipTileSize);
+            slotRT.sizeDelta = new Vector2(_equipTileSize, _equipTileSize);
             slotRT.anchoredPosition = new Vector2(x, y);
 
             var slotImg = slotGO.GetComponent<Image>();
-            slotImg.color = new Color(0f, 0f, 0f, 0.5625f);
+            ApplyEquipSlotBackgroundStyle(slotImg);
             slotImg.raycastTarget = false;
 
             // Item icon â€” centered with padding
             var iconGO = new GameObject("Icon", typeof(RectTransform), typeof(Image));
             iconGO.transform.SetParent(slotGO.transform, false);
             var iconRT = iconGO.GetComponent<RectTransform>();
+            float labelH = Mathf.Clamp(_equipTileSize * 0.18f, 9f, 14f);
             iconRT.anchorMin = Vector2.zero;
             iconRT.anchorMax = Vector2.one;
-            iconRT.offsetMin = new Vector2(4f, 14f);
+            iconRT.offsetMin = new Vector2(4f, labelH + 1f);
             iconRT.offsetMax = new Vector2(-4f, -4f);
             _equipSlotIcons[index] = iconGO.GetComponent<Image>();
             if (_equipSlotIds != null && index >= 0 && index < _equipSlotIds.Length)
@@ -1079,7 +1126,7 @@ namespace Companions
             labelRT.anchorMin = new Vector2(0f, 0f);
             labelRT.anchorMax = new Vector2(1f, 0f);
             labelRT.pivot     = new Vector2(0.5f, 0f);
-            labelRT.sizeDelta = new Vector2(0f, 12f);
+            labelRT.sizeDelta = new Vector2(0f, labelH);
             labelRT.anchoredPosition = new Vector2(0f, 1f);
         }
 
@@ -1089,21 +1136,24 @@ namespace Companions
 
             int count = Mathf.Min(_equipSlotIcons.Length, _equipSlotIds.Length);
             for (int i = 0; i < count; i++)
-                SetEquipIcon(i, _companion.GetItemForExtraSlotsSlot(_equipSlotIds[i]));
+                SetEquipIcon(i, _equipSlotIds[i], _companion.GetItemForExtraSlotsSlot(_equipSlotIds[i]));
         }
 
-        private void SetEquipIcon(int index, ItemDrop.ItemData item)
+        private void SetEquipIcon(int index, string slotId, ItemDrop.ItemData item)
         {
             if (index < 0 || index >= _equipSlotIcons.Length) return;
             var icon = _equipSlotIcons[index];
             if (item != null)
             {
                 icon.sprite  = item.GetIcon();
+                icon.color   = Color.white;
                 icon.enabled = true;
             }
             else
             {
-                icon.enabled = false;
+                icon.sprite = ExtraSlotsCompat.GetSlotHintSprite(slotId);
+                icon.color = new Color(0.6f, 0.6f, 0.6f, 0.9f);
+                icon.enabled = icon.sprite != null;
             }
         }
 

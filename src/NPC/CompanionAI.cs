@@ -199,6 +199,11 @@ namespace Companions
         private const float CircleDuration = 2f;           // seconds spent circling per cycle
         private const float CircleDistance = 4.5f;           // radius of circle around target (beyond melee stop range)
         private float _circleTimer;
+        private Vector3 _circleTargetPos;    // circle phase: target point (re-picked each phase)
+
+        // Formation follow hysteresis: once in formation, stay until FormationCatchupDist;
+        // once in catchup, stay until distToTarget drops below FormationCatchupDist-2f.
+        private bool _wasInFormation;
 
         // ══════════════════════════════════════════════════════════════════════
         //  Debug Logging
@@ -550,7 +555,8 @@ namespace Companions
 
                 _avoidCornerTimer = 0f;
                 _avoidStuckTimer = 0f;
-                _ctxSmoothedDir = Vector3.zero; // reset smoothing when normal pathing resumes
+                // Don't reset _ctxSmoothedDir here — if context steer reactivates next frame
+                // it will lerp from the last known direction instead of snapping to a new one.
             }
             else
             {
@@ -1755,9 +1761,11 @@ namespace Companions
                 return true;
             }
 
-            // Clear SuppressAttack if we just left Passive stance
-            // (Passive sets it true; CombatController only clears it during active combat)
-            if (SuppressAttack && m_targetCreature == null)
+            // Clear SuppressAttack unconditionally when not in Passive stance.
+            // Passive sets it true; if the player switches to any other stance while
+            // enemies are nearby (m_targetCreature != null), it must still be cleared
+            // so the companion can engage immediately.
+            if (SuppressAttack)
                 SuppressAttack = false;
 
             // Humanoid ref needed by heal check and combat below
@@ -2305,11 +2313,20 @@ namespace Companions
                         !m_character.InAttack();
                     if (inCirclePhase)
                     {
-                        // Circle phase: move to a new position around the target.
-                        // Attacks are suppressed during this phase (matches vanilla
-                        // MonsterAI where circling returns early before attack checks).
-                        RandomMovementArroundPoint(dt, m_targetCreature.transform.position,
-                            CircleDistance, true);
+                        // Circle phase: move to a position around the target.
+                        // Pick a fresh point when the phase starts (timer just crossed CircleInterval).
+                        // Uses MoveToPoint (with context steer fallback) rather than
+                        // RandomMovementArroundPoint which has a 9999s internal timer — meaning
+                        // it would circle the same fixed point for the entire fight regardless of
+                        // where the target moves.
+                        if (_circleTimer <= CircleInterval + dt * 2f)
+                        {
+                            float angle = UnityEngine.Random.Range(0f, 360f);
+                            Vector3 circleOffset = Quaternion.Euler(0f, angle, 0f) * Vector3.forward * CircleDistance;
+                            _circleTargetPos = m_targetCreature.transform.position + circleOffset;
+                        }
+                        MoveToPoint(dt, _circleTargetPos, 0.5f, false);
+                        LookAt(m_targetCreature.transform.position);
                     }
                     else
                     {
@@ -2606,6 +2623,7 @@ namespace Companions
             if (m_targetCreature != null)
             {
                 ClearTargets();
+                DirectedTargetLockTimer = 0f; // prevent UpdateTarget re-acquiring the cleared target
                 if (_combat != null) _combat.ForceExitCombat();
             }
 
@@ -2759,6 +2777,10 @@ namespace Companions
                 body.linearVelocity = Vector3.zero;
             }
 
+            // Reset context steer state — after a teleport the old direction is invalid.
+            _ctxSmoothedDir = Vector3.zero;
+            _pathStuckTimer = 0f;
+
             // Sync position to ZDO so other clients see the teleport
             if (m_nview?.GetZDO() != null)
                 m_nview.GetZDO().SetPosition(spawnPos);
@@ -2836,13 +2858,19 @@ namespace Companions
             bool playerWalking  = player != null && player.GetWalk() && !player.IsRunning();
             bool playerRunning  = player != null && player.IsRunning();
 
-            // Too far away → sprint to catch up, no movement matching
-            if (distToTarget > FormationCatchupDist || _formationSlot < 0)
+            // Too far away → sprint to catch up, no movement matching.
+            // Hysteresis: once in catchup mode stay until distToTarget < FormationCatchupDist-2f;
+            // once in formation mode stay until distToTarget > FormationCatchupDist.
+            // Without this the companion oscillates every frame at the boundary threshold.
+            float catchupEnterDist = _wasInFormation ? FormationCatchupDist : FormationCatchupDist - 2f;
+            if (distToTarget > catchupEnterDist || _formationSlot < 0)
             {
+                _wasInFormation = false;
                 Follow(target, dt);
                 ClearFollowMovementOverrides();
                 return;
             }
+            _wasInFormation = true;
 
             // Close to target → vanilla follow (stops at ~3m, no formation jitter)
             if (distToTarget < 5f)
@@ -3436,6 +3464,16 @@ namespace Companions
         {
             if (m_character == null) return false;
 
+            // Track swimming time for proactive water escape.
+            // Must be ABOVE the early-exit guards so the timer always reflects reality.
+            // If this were below any guard, the timer could go stale: companion swims for 2s,
+            // context steer fires (guard exits early), companion steps out of water — but timer
+            // stays at 2s. Next time they touch water the timer starts from 2s → false SWIM_TIMEOUT.
+            if (m_character.IsSwimming())
+                _continuousSwimTimer += dt;
+            else
+                _continuousSwimTimer = 0f;
+
             // Context steer fallback has its own stuck handling (UpdateFallbackStuck).
             // Don't fight it with a second movement override — that causes oscillation.
             if (_inContextSteerFallback)
@@ -3461,12 +3499,6 @@ namespace Companions
                 _groundStuckTimer = 0f;
                 return false;
             }
-
-            // Track swimming time for proactive water escape
-            if (m_character.IsSwimming())
-                _continuousSwimTimer += dt;
-            else
-                _continuousSwimTimer = 0f;
 
             // Phase 1: Active recovery — strafing to escape
             if (_groundStuckRecoveryTimer > 0f)
