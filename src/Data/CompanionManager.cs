@@ -90,6 +90,14 @@ namespace Companions
             public string AppearanceSerialized;
             public string OwnerId;
             public int CombatStance;
+            public int ActionMode;
+            public int ActionModeSchema;
+            public bool Follow;
+            public bool StayHome;
+            public bool AutoPickup;
+            public bool Wander;
+            public bool IsCommandable;
+            public int FormationSlot;
             public long TombstoneId;
             public string SkillsSerialized;
             public float Timer;
@@ -214,20 +222,19 @@ namespace Companions
             zdo.Set(CompanionSetup.NameHash, data.Name);
             zdo.Set(CompanionSetup.CombatStanceHash, data.CombatStance);
             zdo.Set(CompanionSetup.TombstoneIdHash, data.TombstoneId);
+            // Restore companion settings from before death
+            zdo.Set(CompanionSetup.FollowHash, data.Follow);
+            zdo.Set(CompanionSetup.ActionModeHash, data.ActionMode);
+            zdo.Set(CompanionSetup.ActionModeSchemaHash, data.ActionModeSchema);
+            zdo.Set(CompanionSetup.StayHomeHash, data.StayHome);
+            zdo.Set(CompanionSetup.AutoPickupHash, data.AutoPickup);
+            zdo.Set(CompanionSetup.WanderHash, data.Wander);
+            zdo.Set(CompanionSetup.IsCommandableHash, data.IsCommandable ? 1 : 0);
+            zdo.Set(CompanionSetup.FormationSlotHash, data.FormationSlot);
             if (data.HasHomePos)
             {
-                // Respawning at home — restore StayHome state
-                zdo.Set(CompanionSetup.FollowHash, false);
-                zdo.Set(CompanionSetup.ActionModeHash, CompanionSetup.ModeFollow);
-                zdo.Set(CompanionSetup.StayHomeHash, true);
                 zdo.Set(CompanionSetup.HomePosHash, data.HomePos);
                 zdo.Set(CompanionSetup.HomePosSetHash, true);
-            }
-            else
-            {
-                zdo.Set(CompanionSetup.FollowHash, true);
-                zdo.Set(CompanionSetup.ActionModeHash, CompanionSetup.ModeFollow);
-                zdo.Set(CompanionSetup.StayHomeHash, false);
             }
             if (!string.IsNullOrEmpty(data.SkillsSerialized))
                 zdo.Set(CompanionSkills.SkillsHash, data.SkillsSerialized);
@@ -243,17 +250,17 @@ namespace Companions
             if (character != null && !string.IsNullOrEmpty(data.Name))
                 character.m_name = data.Name;
 
-            // Set follow target — only follow player if not staying home
+            // Restore home position and follow target from pre-death state
             var ai = go.GetComponent<CompanionAI>();
-            if (data.HasHomePos)
-            {
-                if (ai != null)
-                    ai.SetPatrolPointAt(data.HomePos);
-            }
-            else if (Player.m_localPlayer != null)
-            {
+            if (data.HasHomePos && ai != null)
+                ai.SetPatrolPointAt(data.HomePos);
+
+            // Restore follow target — Follow and HasHomePos are NOT mutually exclusive.
+            // A companion can have a home position AND be in follow mode (follows player,
+            // returns home when told to stay). Without this, companions with a home pos
+            // spawn stuck with no follow target and get killed repeatedly.
+            if (data.Follow && Player.m_localPlayer != null)
                 ai?.SetFollowTarget(Player.m_localPlayer.gameObject);
-            }
 
             // Grace period — prevent immediate tombstone recovery and movement
             // so the companion doesn't loot its own grave before the player can see it

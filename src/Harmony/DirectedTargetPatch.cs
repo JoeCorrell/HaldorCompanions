@@ -15,6 +15,7 @@ namespace Companions
     ///   Door             → open
     ///   Fireplace        → sit nearby
     ///   Bed              → go to bed
+    ///   TombStone        → recover tombstone items
     ///   Container        → deposit resources
     ///   Harvestable      → harvest (TreeBase, TreeLog, MineRock, MineRock5, Destructible)
     ///   Nothing          → cancel all directed commands
@@ -136,6 +137,13 @@ namespace Companions
             ModLocalization.Loc("hc_cmd_board_3")
         });
 
+        private static string[] _tombstoneLines;
+        private static string[] TombstoneLines => _tombstoneLines ?? (_tombstoneLines = new[] {
+            ModLocalization.Loc("hc_cmd_tombstone_1"),
+            ModLocalization.Loc("hc_cmd_tombstone_2"),
+            ModLocalization.Loc("hc_cmd_tombstone_3")
+        });
+
         /// <summary>Clear all cached speech arrays so they re-resolve on next access (call on language change).</summary>
         internal static void ResetCachedLines()
         {
@@ -155,6 +163,7 @@ namespace Companions
             _repairLines      = null;
             _boardLines       = null;
             _repairNothingLines = null;
+            _tombstoneLines   = null;
         }
 
         private static void Postfix(Player __instance)
@@ -330,6 +339,14 @@ namespace Companions
                 if (ship != null)
                 {
                     DirectBoard(setups, localId, ship);
+                    return;
+                }
+
+                // ── TombStone ───────────────────────────────────────
+                var tombstone = col.GetComponentInParent<TombStone>();
+                if (tombstone != null)
+                {
+                    DirectTombstoneRecovery(setups, localId, tombstone);
                     return;
                 }
 
@@ -806,6 +823,32 @@ namespace Companions
             CompanionsPlugin.Log.LogDebug($"[Direct] {boarded} companion(s) → board ship");
         }
 
+        private static void DirectTombstoneRecovery(CompanionSetup[] setups, string localId, TombStone tombstone)
+        {
+            // Find closest commandable companion
+            CompanionSetup closest = null;
+            float closestDist = float.MaxValue;
+            foreach (var setup in setups)
+            {
+                if (!IsOwned(setup, localId)) continue;
+                if (!setup.GetIsCommandable()) continue;
+                float d = Vector3.Distance(setup.transform.position, tombstone.transform.position);
+                if (d < closestDist) { closestDist = d; closest = setup; }
+            }
+
+            if (closest == null) return;
+
+            CancelExistingActions(closest);
+            var ai = closest.GetComponent<CompanionAI>();
+            if (ai == null) return;
+
+            ai.SetDirectedTombstoneRecovery(tombstone);
+
+            SayRandom(closest.GetComponent<CompanionTalk>(), TombstoneLines, "Action");
+            CompanionsPlugin.Log.LogDebug(
+                $"[Direct] Companion → recover tombstone at {tombstone.transform.position:F1}");
+        }
+
         private static void DirectGatherMode(CompanionSetup[] setups, string localId, GameObject target)
         {
             int harvestMode = HarvestController.DetermineHarvestModeStatic(target);
@@ -940,6 +983,7 @@ namespace Companions
                     ai.CancelMoveTarget();
                     ai.CancelPendingDeposit();
                     ai.CancelPendingShipBoard();
+                    ai.CancelTombstoneRecovery();
                     ai.ClearTargets();
                     ai.StopMoving();
 
@@ -1045,6 +1089,10 @@ namespace Companions
                 if (ai.IsBoardingShip)
                     CompanionsPlugin.Log.LogDebug($"[Direct] CancelExisting \"{name}\": cancelling ship boarding");
                 ai.CancelPendingShipBoard();
+
+                if (ai.IsRecoveringTombstone)
+                    CompanionsPlugin.Log.LogDebug($"[Direct] CancelExisting \"{name}\": cancelling tombstone recovery");
+                ai.CancelTombstoneRecovery();
 
                 if (ai.IsOnShip) ai.DetachFromShip();
 

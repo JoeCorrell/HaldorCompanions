@@ -33,9 +33,9 @@ namespace Companions
     {
         private static readonly FieldInfo _inventoryField =
             AccessTools.Field(typeof(Container), "m_inventory");
-        private static readonly FieldInfo _invWidthField =
+        internal static readonly FieldInfo _invWidthField =
             AccessTools.Field(typeof(Inventory), "m_width");
-        private static readonly FieldInfo _invHeightField =
+        internal static readonly FieldInfo _invHeightField =
             AccessTools.Field(typeof(Inventory), "m_height");
         private static readonly MethodInfo _onContainerChanged =
             AccessTools.Method(typeof(Container), "OnContainerChanged");
@@ -73,12 +73,20 @@ namespace Companions
             }
 
             var humanoidInv = humanoid.GetInventory();
-            if (_inventoryField == null || humanoidInv == null) return;
+            if (_inventoryField == null || humanoidInv == null)
+            {
+                CompanionsPlugin.Log.LogWarning(
+                    $"[ContainerAwake] Cannot share inventory — " +
+                    $"field={_inventoryField != null} humanoidInv={humanoidInv != null}");
+                return;
+            }
 
             // Match Humanoid inventory dimensions to the Container definition.
             // Companion UI expects the same grid shape for deterministic slot mapping.
             int width  = __instance.m_width > 0 ? __instance.m_width : 4;
             int height = __instance.m_height > 0 ? __instance.m_height : 8;
+            int oldW = humanoidInv.GetWidth();
+            int oldH = humanoidInv.GetHeight();
             if (_invWidthField != null)  _invWidthField.SetValue(humanoidInv, width);
             if (_invHeightField != null) _invHeightField.SetValue(humanoidInv, height);
 
@@ -94,6 +102,63 @@ namespace Companions
                 humanoidInv.m_onChanged = (Action)Delegate.Remove(humanoidInv.m_onChanged, callback);
                 humanoidInv.m_onChanged = (Action)Delegate.Combine(humanoidInv.m_onChanged, callback);
             }
+
+            CompanionsPlugin.Log.LogDebug(
+                $"[ContainerAwake] Shared inventory — " +
+                $"container={__instance.m_width}x{__instance.m_height} " +
+                $"humanoidInv dim {oldW}x{oldH} → {width}x{height} " +
+                $"items={humanoidInv.NrOfItems()}");
+        }
+    }
+
+    /// <summary>
+    /// Restores companion tombstone inventory dimensions on zone reload.
+    ///
+    /// Inventory.Save/Load does NOT persist m_width/m_height. When a tombstone
+    /// unloads and reloads (player leaves zone and returns), Container.Awake
+    /// creates a new inventory with the prefab's default dimensions (typically 3×2).
+    /// Inventory.Load then calls AddItem(item, amount, x, y) which silently drops
+    /// items where x >= m_width or y >= m_height. For companion inventories
+    /// (8×4 = 32 slots), most items are lost.
+    ///
+    /// We save the correct dimensions in custom ZDO fields (HC_TombInvW/H) during
+    /// tombstone creation, then restore them here before the first CheckForChanges
+    /// → Load cycle runs.
+    /// </summary>
+    [HarmonyPatch(typeof(Container), "Awake")]
+    public static class TombstoneContainerAwakePatch
+    {
+        [HarmonyPostfix]
+        [HarmonyAfter("companions.containerawake")]  // run after companion sharing patch
+        static void Postfix(Container __instance)
+        {
+            // Only apply to tombstones — they have a TombStone component
+            var tombstone = __instance.GetComponent<TombStone>();
+            if (tombstone == null) return;
+
+            var nview = __instance.GetComponent<ZNetView>();
+            var zdo = nview?.GetZDO();
+            if (zdo == null) return;
+
+            int w = zdo.GetInt(CompanionSetup.TombInvWidthHash, 0);
+            int h = zdo.GetInt(CompanionSetup.TombInvHeightHash, 0);
+            if (w <= 0 || h <= 0) return;  // not a companion tombstone
+
+            var inv = __instance.GetInventory();
+            if (inv == null) return;
+
+            int curW = inv.GetWidth();
+            int curH = inv.GetHeight();
+            if (curW == w && curH == h) return;  // already correct
+
+            if (ContainerAwakePatch._invWidthField != null)
+                ContainerAwakePatch._invWidthField.SetValue(inv, w);
+            if (ContainerAwakePatch._invHeightField != null)
+                ContainerAwakePatch._invHeightField.SetValue(inv, h);
+
+            CompanionsPlugin.Log.LogDebug(
+                $"[TombstoneAwake] Restored companion tombstone inventory dims: " +
+                $"{curW}x{curH} → {w}x{h}");
         }
     }
 

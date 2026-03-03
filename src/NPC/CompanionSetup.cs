@@ -31,6 +31,8 @@ namespace Companions
         internal static readonly int FollowHash     = StringExtensionMethods.GetStableHashCode("HC_Follow");
         internal static readonly int CombatStanceHash = StringExtensionMethods.GetStableHashCode("HC_CombatStance");
         internal static readonly int TombstoneIdHash  = StringExtensionMethods.GetStableHashCode("HC_TombstoneId");
+        internal static readonly int TombInvWidthHash  = StringExtensionMethods.GetStableHashCode("HC_TombInvW");
+        internal static readonly int TombInvHeightHash = StringExtensionMethods.GetStableHashCode("HC_TombInvH");
 
         // Fast lookup for VisEquipmentPatches — avoids GetComponent per frame
         private static readonly HashSet<VisEquipment> _companionVisEquips = new HashSet<VisEquipment>();
@@ -43,6 +45,9 @@ namespace Companions
         internal const int ModeStay        = 4;
         internal const int ModeForage     = 5;
         internal const int ModeSmelt      = 6;
+        internal const int ModeHunt       = 7;
+        internal const int ModeFarm       = 8;
+        internal const int ModeFish       = 9;
 
         // ── Combat stances ────────────────────────────────────────────────────
         internal const int StanceBalanced   = 0;
@@ -138,14 +143,25 @@ namespace Companions
             // Use force=true to bypass the harvest-active guard, since the
             // harvest controller was paused during UI and needs a valid
             // fallback follow/patrol to resume from.
+            // Skip if tombstone recovery is active — it manages its own follow state.
             if (_uiFrozen)
             {
                 _uiFrozen = false;
-                var zdo = _nview?.GetZDO();
-                if (zdo != null && _ai != null)
+                if (_ai != null && _ai.IsRecoveringTombstone)
                 {
-                    int mode = zdo.GetInt(ActionModeHash, ModeFollow);
-                    ApplyFollowMode(mode, force: true);
+                    // Tombstone recovery was interrupted by UI — let it resume
+                    // by keeping follow=null so it can navigate to the tombstone.
+                    CompanionsPlugin.Log.LogDebug(
+                        "[Setup] UI closed during tombstone recovery — skipping follow restore");
+                }
+                else
+                {
+                    var zdo = _nview?.GetZDO();
+                    if (zdo != null && _ai != null)
+                    {
+                        int mode = zdo.GetInt(ActionModeHash, ModeFollow);
+                        ApplyFollowMode(mode, force: true);
+                    }
                 }
             }
 
@@ -231,12 +247,9 @@ namespace Companions
                 if (!GetFollow())
                     return;
 
-                // Follow and gather modes: companion should follow player when no
-                // directed navigation is active and Follow toggle is ON.
-                if (mode == ModeFollow ||
-                    (mode >= ModeGatherWood && mode <= ModeGatherOre) ||
-                    mode == ModeForage ||
-                    mode == ModeSmelt)
+                // All active modes (everything except Stay): companion should follow
+                // player when no directed navigation is active and Follow toggle is ON.
+                if (mode != ModeStay)
                 {
                     _ai.SetFollowTarget(Player.m_localPlayer.gameObject);
                     CompanionsPlugin.Log.LogDebug(
@@ -511,9 +524,22 @@ namespace Companions
                     CompanionsPlugin.Log.LogDebug($"[Setup]   → Stay/patrol at {(stayHome ? GetHomePosition() : transform.position):F1}");
                     break;
                 default:
-                    if (Player.m_localPlayer != null)
+                    if (follow && Player.m_localPlayer != null)
+                    {
                         _ai.SetFollowTarget(Player.m_localPlayer.gameObject);
-                    CompanionsPlugin.Log.LogDebug($"[Setup]   → Follow player (default fallback, mode={mode})");
+                        CompanionsPlugin.Log.LogDebug($"[Setup]   → Follow player (default fallback, mode={mode})");
+                    }
+                    else if (stayHome)
+                    {
+                        _ai.SetFollowTarget(null);
+                        _ai.SetPatrolPointAt(GetHomePosition());
+                        CompanionsPlugin.Log.LogDebug($"[Setup]   → StayHome patrol (default fallback, mode={mode})");
+                    }
+                    else
+                    {
+                        _ai.SetFollowTarget(null);
+                        CompanionsPlugin.Log.LogDebug($"[Setup]   → Follow OFF (default fallback, mode={mode})");
+                    }
                     break;
             }
         }
@@ -602,6 +628,14 @@ namespace Companions
             string appearance = zdo.GetString(AppearanceHash, "");
             string owner = zdo.GetString(OwnerHash, "");
             int stance = zdo.GetInt(CombatStanceHash, StanceBalanced);
+            int actionMode = zdo.GetInt(ActionModeHash, ModeFollow);
+            int actionModeSchema = zdo.GetInt(ActionModeSchemaHash, 0);
+            bool follow = zdo.GetBool(FollowHash, true);
+            bool stayHome = zdo.GetBool(StayHomeHash, false);
+            bool autoPickup = zdo.GetBool(AutoPickupHash, true);
+            bool wander = zdo.GetBool(WanderHash, false);
+            int commandable = zdo.GetInt(IsCommandableHash, 1);
+            int formationSlot = zdo.GetInt(FormationSlotHash, -1);
             Vector3 deathPos = _humanoid != null ? _humanoid.GetCenterPoint() : transform.position;
 
             // Resolve prefab name from ZDO hash
@@ -622,8 +656,20 @@ namespace Companions
                 skillsSerialized = skills.SerializeSkills();
             }
 
-            // Generate unique tombstone ID for precise matching after respawn
-            long tombstoneId = System.DateTime.UtcNow.Ticks;
+            // Tombstone ID: only generate a new one if we actually have items to drop.
+            // If inventory is empty (died before recovering previous tombstone), preserve
+            // the existing tombstoneId so the respawned companion can still find the old grave.
+            long existingTombstoneId = zdo.GetLong(TombstoneIdHash, 0L);
+            bool hasItems = _humanoid != null && _humanoid.GetInventory() != null
+                            && _humanoid.GetInventory().NrOfItems() > 0;
+            long tombstoneId = hasItems ? System.DateTime.UtcNow.Ticks : existingTombstoneId;
+
+            if (!hasItems && existingTombstoneId != 0L)
+            {
+                CompanionsPlugin.Log.LogInfo(
+                    $"[Setup] No items — preserving existing tombstoneId={existingTombstoneId} " +
+                    "so respawned companion can find previous tombstone");
+            }
 
             // Spawn tombstone with all inventory items
             CreateCompanionTombstone(companionName, deathPos, tombstoneId);
@@ -638,6 +684,14 @@ namespace Companions
                 AppearanceSerialized = appearance,
                 OwnerId = owner,
                 CombatStance = stance,
+                ActionMode = actionMode,
+                ActionModeSchema = actionModeSchema,
+                Follow = follow,
+                StayHome = stayHome,
+                AutoPickup = autoPickup,
+                Wander = wander,
+                IsCommandable = commandable != 0,
+                FormationSlot = formationSlot,
                 TombstoneId = tombstoneId,
                 SkillsSerialized = skillsSerialized,
                 Timer = 5f,
@@ -652,7 +706,8 @@ namespace Companions
             var inv = _humanoid.GetInventory();
             if (inv == null || inv.NrOfItems() == 0)
             {
-                CompanionsPlugin.Log.LogInfo("[Setup] No items to drop — skipping tombstone");
+                CompanionsPlugin.Log.LogInfo(
+                    $"[Setup] No items to drop — skipping tombstone (inv={inv != null} items={inv?.NrOfItems() ?? -1})");
                 return;
             }
 
@@ -669,7 +724,16 @@ namespace Companions
 
             int itemCount = inv.NrOfItems();
             CompanionsPlugin.Log.LogInfo(
-                $"[Setup] Creating tombstone for \"{companionName}\" — {itemCount} items, tombstoneId={tombstoneId}");
+                $"[Setup] Creating tombstone for \"{companionName}\" — {itemCount} items, " +
+                $"tombstoneId={tombstoneId}, invDim={inv.GetWidth()}x{inv.GetHeight()}");
+
+            // Log each item before transfer for diagnostics
+            foreach (var item in inv.GetAllItems())
+            {
+                CompanionsPlugin.Log.LogDebug(
+                    $"[Setup]   pre-transfer: \"{item.m_shared?.m_name ?? "?"}\" x{item.m_stack} " +
+                    $"pos=({item.m_gridPos.x},{item.m_gridPos.y}) equipped={item.m_equipped}");
+            }
 
             // Unequip all items so MoveInventoryToGrave transfers everything
             _humanoid.UnequipAllItems();
@@ -681,10 +745,15 @@ namespace Companions
             // the best items to slots, but previously-equipped items that are no longer
             // "best" retain their stale m_equipped=true flag. MoveInventoryToGrave skips
             // items with m_equipped=true, causing them to be lost on companion destruction.
+            int equippedCleared = 0;
             foreach (var item in inv.GetAllItems())
+            {
+                if (item.m_equipped) equippedCleared++;
                 item.m_equipped = false;
+            }
 
-            CompanionsPlugin.Log.LogDebug("[Setup] Unequipped all items for grave transfer");
+            CompanionsPlugin.Log.LogDebug(
+                $"[Setup] Unequipped all items for grave transfer (cleared {equippedCleared} stale equipped flags)");
 
             // Spawn tombstone at companion's position
             var tombGo = UnityEngine.Object.Instantiate(tombPrefab, position, transform.rotation);
@@ -692,17 +761,38 @@ namespace Companions
 
             // Transfer inventory to tombstone container
             var container = tombGo.GetComponent<Container>();
-            if (container != null)
-            {
-                container.GetInventory().MoveInventoryToGrave(inv);
-                int transferred = container.GetInventory().NrOfItems();
-                int remaining = inv.NrOfItems();
-                CompanionsPlugin.Log.LogInfo(
-                    $"[Setup] Grave transfer complete — {transferred} items in tombstone, {remaining} remaining on companion");
-            }
-            else
+            if (container == null)
             {
                 CompanionsPlugin.Log.LogError("[Setup] Tombstone has no Container component!");
+                return;
+            }
+
+            var tombInv = container.GetInventory();
+            if (tombInv == null)
+            {
+                CompanionsPlugin.Log.LogError(
+                    "[Setup] Tombstone Container.GetInventory() returned null! " +
+                    "ZNetView ZDO may not be ready — Container.Awake() skipped inventory creation.");
+                return;
+            }
+
+            CompanionsPlugin.Log.LogDebug(
+                $"[Setup] Tombstone inv before transfer: dim={tombInv.GetWidth()}x{tombInv.GetHeight()} " +
+                $"items={tombInv.NrOfItems()}");
+
+            tombInv.MoveInventoryToGrave(inv);
+
+            int transferred = tombInv.NrOfItems();
+            int remaining = inv.NrOfItems();
+            CompanionsPlugin.Log.LogInfo(
+                $"[Setup] Grave transfer complete — {transferred} items in tombstone, " +
+                $"{remaining} remaining on companion, tombInv dim={tombInv.GetWidth()}x{tombInv.GetHeight()}");
+
+            if (transferred == 0 && itemCount > 0)
+            {
+                CompanionsPlugin.Log.LogError(
+                    $"[Setup] MoveInventoryToGrave transferred 0/{itemCount} items! " +
+                    "Items may have had m_equipped=true despite force-clear.");
             }
 
             // Set tombstone ownership (companion name as label, tombstoneId for matching)
@@ -714,10 +804,33 @@ namespace Companions
                     $"[Setup] Tombstone ownership set — name=\"{companionName}\" id={tombstoneId}");
             }
 
-            // Tag the tombstone with our unique ID for companion AI to find
+            // Repack item grid positions to be sequential (0,0), (1,0), (2,0), ...
+            // MoveInventoryToGrave preserves original positions from the companion's 8x4 grid.
+            // Inventory.Save does NOT persist width/height, so on zone reload Container.Awake
+            // recreates the inventory with prefab defaults. Inventory.Load then calls
+            // AddItem(item, amount, x, y) which silently drops items where x >= m_width.
+            // Repacking ensures items survive even if dimensions shrink.
+            int tw = tombInv.GetWidth();
+            int idx = 0;
+            foreach (var item in tombInv.GetAllItems())
+            {
+                item.m_gridPos = new Vector2i(idx % tw, idx / tw);
+                idx++;
+            }
+
+            // Tag the tombstone with our unique ID and inventory dimensions.
+            // Dimensions must be persisted separately because Inventory.Save/Load
+            // does not serialize m_width/m_height — they're lost on zone reload.
             var tombNview = tombGo.GetComponent<ZNetView>();
             if (tombNview?.GetZDO() != null)
-                tombNview.GetZDO().Set(TombstoneIdHash, tombstoneId);
+            {
+                var tombZdo = tombNview.GetZDO();
+                tombZdo.Set(TombstoneIdHash, tombstoneId);
+                tombZdo.Set(TombInvWidthHash, tombInv.GetWidth());
+                tombZdo.Set(TombInvHeightHash, tombInv.GetHeight());
+            }
+
+            SuppressAutoEquip = false;
         }
 
         private void OnDestroy()

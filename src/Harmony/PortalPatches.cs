@@ -38,10 +38,12 @@ namespace Companions
                 var zdo = nview.GetZDO();
                 if (zdo.GetString(CompanionSetup.OwnerHash, "") != localId) continue;
 
-                // Skip companions in Stay mode or with Follow OFF — they're deliberately placed
+                // Skip companions in Stay mode or with Follow OFF — they're deliberately placed.
+                // StayHome is NOT checked here: it means "where to return when not following",
+                // not "never leave".  A companion with Follow=ON + home position should still
+                // teleport through portals with the player.
                 int mode = zdo.GetInt(CompanionSetup.ActionModeHash, CompanionSetup.ModeFollow);
                 if (mode == CompanionSetup.ModeStay) continue;
-                if (zdo.GetBool(CompanionSetup.StayHomeHash, false)) continue;
                 if (!zdo.GetBool(CompanionSetup.FollowHash, true)) continue;
 
                 _pendingCompanions.Add(zdo.m_uid);
@@ -116,7 +118,17 @@ namespace Companions
 
                 var ai = go.GetComponent<CompanionAI>();
                 if (ai != null)
+                {
+                    // Clear all directed states from the old zone — these targets
+                    // no longer exist or are irrelevant after portal travel.
+                    ai.CancelMoveTarget();
+                    ai.CancelPendingCart();
+                    ai.CancelPendingShipBoard();
+                    ai.CancelPendingDeposit();
+                    ai.CancelTombstoneRecovery();
+
                     ai.SetFollowTarget(Player.m_localPlayer?.gameObject);
+                }
 
                 CompanionsPlugin.Log.LogInfo(
                     $"[Portal] Warped companion to {spawnPos:F1} (GameObject present)");

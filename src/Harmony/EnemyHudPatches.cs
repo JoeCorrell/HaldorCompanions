@@ -31,6 +31,9 @@ namespace Companions
         private static System.Collections.IDictionary _cachedHuds;
         private static EnemyHud _cachedHudInstance;
 
+        // Cached m_gui field on EnemyHud.HudData (private nested type)
+        private static System.Reflection.FieldInfo _hudDataGuiField;
+
         private static System.Collections.IDictionary GetHuds(EnemyHud instance)
         {
             if (_cachedHudInstance != instance || _cachedHuds == null)
@@ -40,6 +43,15 @@ namespace Companions
                 _cachedHudInstance = instance;
             }
             return _cachedHuds;
+        }
+
+        private static GameObject GetHudGui(object hudData)
+        {
+            if (hudData == null) return null;
+            if (_hudDataGuiField == null)
+                _hudDataGuiField = hudData.GetType().GetField("m_gui",
+                    System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+            return _hudDataGuiField?.GetValue(hudData) as GameObject;
         }
 
         private static GuiBar CreateBar(Transform healthTransform, Transform guiParent,
@@ -80,8 +92,7 @@ namespace Companions
                 if (huds == null || !huds.Contains(c)) return;
 
                 var hudData = huds[c];
-                var gui = Traverse.Create(hudData).Field("m_gui")
-                    .GetValue<GameObject>();
+                var gui = GetHudGui(hudData);
                 if (gui == null) return;
 
                 var healthTransform = gui.transform.Find("Health");
@@ -141,6 +152,7 @@ namespace Companions
                 _barCharacters.Clear();
                 _cachedHuds = null;
                 _cachedHudInstance = null;
+                _hudDataGuiField = null;
             }
         }
 
@@ -221,8 +233,7 @@ namespace Companions
             if (huds == null || !huds.Contains(character)) return;
 
             var hudData = huds[character];
-            var gui = Traverse.Create(hudData).Field("m_gui")
-                .GetValue<GameObject>();
+            var gui = GetHudGui(hudData);
             if (gui != null)
                 gui.SetActive(false);
         }

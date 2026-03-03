@@ -1,5 +1,45 @@
 # Changelog
 
+## 1.0.9
+
+### Bug Fixes
+- Fixed companions with Follow OFF still teleporting via distance warp — `ApplyFollowMode` default case (modes 7/8/9: Hunt, Farm, Fish) set follow target to the player without checking the Follow toggle, causing the 50m distance warp to fire; now checks Follow toggle in all branches
+- Fixed companions with Follow OFF still distance-warping — added explicit `GetFollow()` check to the distance teleport in `UpdateAI` as a safety net, so even if `m_follow` is set by a stale code path the companion won't warp
+- Fixed StayHome companions wandering indefinitely during combat — companions with StayHome ON and Follow OFF could chase enemies far beyond their home area with no distance limit; added two-layer enforcement: target is dropped when the enemy exceeds 50m from home (soft leash), and companion is teleported back to home if they physically stray past 50m (hard leash)
+
+### Balance
+- Increased homestead task rotation timer from 15s to 60s per task (repair, refuel, sort, smelt) — companions now spend longer on each maintenance task before rotating to the next
+
+### Death/Respawn State Persistence
+- Fixed AutoPickup toggle lost on death — now saved in `RespawnData` and restored on respawn
+- Fixed Wander toggle lost on death — now saved in `RespawnData` and restored on respawn
+- Fixed Commandable toggle lost on death — now saved in `RespawnData` and restored on respawn
+- Fixed FormationSlot lost on death — now saved in `RespawnData` and restored on respawn
+- Fixed ActionModeSchema lost on death — now saved in `RespawnData` and restored on respawn, preventing legacy mode migration from re-running on respawned companions
+
+## 1.0.8
+
+### Bug Fixes
+- Fixed companions not collecting their tombstone after UI interaction — opening the companion inventory during tombstone recovery caused `ApplyFollowMode` to override navigation, pulling the companion back to the player instead of the tombstone
+- Fixed tombstone recovery stuck when pathfinding fails — added 10-second warp fallback for tombstones within 10m when NavMesh path cannot be found, so companions teleport directly to the tombstone instead of standing still
+- Fixed tombstone recovery follow target leak — external systems (UI freeze/restore, CompanionSetup follow restoration) could re-set follow target mid-navigation; tombstone nav now forcefully clears follow every frame
+- Fixed orphaned tombstone ID — `OnCompanionDeath` no longer generates a new tombstoneId when the companion has no items, preserving the existing ID so the respawned companion can still find its previous tombstone
+- Fixed companions not respawning with follow target when home position is set — `DoRespawn` now restores follow target and home position independently instead of treating them as mutually exclusive
+- Fixed companion tombstone inventory items lost on zone reload — vanilla `Inventory.Save/Load` does not persist grid dimensions; companion tombstones (8x4) reverted to default Container size (3x2), silently dropping items at out-of-bounds positions. Added ZDO-persisted dimensions (`HC_TombInvW`/`HC_TombInvH`) and a Container.Awake patch to restore them before the first Load cycle
+- Fixed companion tombstone item positions causing invisible slots — items transferred via `MoveInventoryToGrave` retained their original grid positions (e.g., slot 28 in an 8x4 grid) which broke `InventoryGrid.UpdateGui`; items are now repacked to sequential positions after grave transfer
+- Fixed companions not teleporting through portals when Stay Home is set — `StayHome` means "where to return when dismissed", not "never leave"; portal teleport now only checks Follow toggle and action mode, not StayHome flag
+- Fixed companions not distance-teleporting (50m warp) when Stay Home is set — same StayHome misinterpretation; if `m_follow` is actively set, the companion teleports regardless of home position
+- Fixed Hunt, Farm, and Fish modes not restoring follow target — follow restoration in `CompanionSetup.Update()` only covered modes 0-6; changed to `mode != ModeStay` to cover all current and future active modes
+- Fixed portal warp not clearing directed states — companions arriving in a new zone via portal could retain stale cart attach, move target, deposit container, ship boarding, and tombstone recovery states from the old zone
+- Fixed companion inventory grid overlapping food slots — expanding the panel height for food slots caused vanilla `InventoryGrid.UpdateGui` to re-center the grid content within the now-taller area, shifting it downward; the InventoryGrid's bottom edge is now inset to exclude the food slot region
+
+### Directed Commands
+- Added directed tombstone recovery — point at any companion tombstone and press the command key to send the nearest companion to walk over and loot it
+- Added tombstone recovery speech lines ("I'll grab my things.", "Let me get that.", "On my way to pick that up.")
+
+### Logging
+- Upgraded tombstone navigation progress log from Debug to Info level — now shows `dist` and `pathOK` status for easier troubleshooting
+
 ## 1.0.7
 
 ### Bug Fixes

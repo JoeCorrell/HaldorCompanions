@@ -37,6 +37,10 @@ namespace Companions
         // ── InventoryGrid force-rebuild reflection ───────────────────────────
         private static readonly FieldInfo _gridWidthField =
             AccessTools.Field(typeof(InventoryGrid), "m_width");
+        private static readonly FieldInfo _gridHeightField =
+            AccessTools.Field(typeof(InventoryGrid), "m_height");
+        private static readonly FieldInfo _gridElementsField =
+            AccessTools.Field(typeof(InventoryGrid), "m_elements");
 
         // ── Split dialog reflection ────────────────────────────────────────
         private static readonly MethodInfo _showSplitDialog = AccessTools.Method(
@@ -161,10 +165,14 @@ namespace Companions
             _companionContainer = companion.GetComponent<Container>();
             _companionNview     = companion.GetComponent<ZNetView>();
 
+            var inv = _companionHumanoid?.GetInventory();
+            int itemCount = inv?.NrOfItems() ?? -1;
+            float totalWeight = inv?.GetTotalWeight() ?? -1f;
             CompanionsPlugin.Log.LogDebug(
-                $"[UI] Show — companion=\"{companion.name}\" " +
+                $"[UI] Show — companion=\"{companion.name}\" id={companion.GetInstanceID()} " +
                 $"char={_companionChar != null} humanoid={_companionHumanoid != null} " +
-                $"food={_companionFood != null} nview={_companionNview != null}");
+                $"food={_companionFood != null} nview={_companionNview != null} " +
+                $"items={itemCount} weight={totalWeight:F1}");
 
             EnsureCompanionOwnership();
 
@@ -179,6 +187,9 @@ namespace Companions
                 _built = false;
             }
             _builtForDverger = isDverger;
+            CompanionsPlugin.Log.LogDebug(
+                $"[UI] Show — built={_built} gridCreated={_gridCreated} " +
+                $"grid={_grid != null} root={_root != null}");
             if (!_built) BuildUI();
 
             // Load name
@@ -196,9 +207,60 @@ namespace Companions
             if (_foodSlotsContainer != null)
                 _foodSlotsContainer.SetActive(!_builtForDverger);
 
+            // Force grid to fully rebuild its elements whenever we show a (possibly
+            // different) companion.  Without this, a respawned companion reuses stale
+            // InventoryGrid elements from the previous session, causing ghost items.
+            if (_grid != null)
+            {
+                int oldWidth = _gridWidthField != null ? (int)_gridWidthField.GetValue(_grid) : -1;
+                int oldHeight = _gridHeightField != null ? (int)_gridHeightField.GetValue(_grid) : -1;
+
+                // Destroy existing grid elements explicitly to prevent any visual artifacts
+                if (_gridElementsField != null)
+                {
+                    var elements = _gridElementsField.GetValue(_grid) as System.Collections.IList;
+                    if (elements != null && elements.Count > 0)
+                    {
+                        CompanionsPlugin.Log.LogDebug(
+                            $"[UI] Show — destroying {elements.Count} old grid elements");
+                        foreach (var elem in elements)
+                        {
+                            var goField = elem.GetType().GetField("m_go");
+                            var go = goField?.GetValue(elem) as GameObject;
+                            if (go != null) UnityEngine.Object.Destroy(go);
+                        }
+                        elements.Clear();
+                    }
+                }
+
+                // Reset both width and height to 0 — guarantees UpdateGui will recreate elements
+                _gridWidthField?.SetValue(_grid, 0);
+                _gridHeightField?.SetValue(_grid, 0);
+                _gridCreated = false;
+                CompanionsPlugin.Log.LogDebug(
+                    $"[UI] Show — forced grid rebuild (old={oldWidth}x{oldHeight} → 0x0, gridCreated=false)");
+            }
+
             _root.SetActive(true);
             _root.transform.SetAsLastSibling();
             _visible = true;
+
+            // Immediately refresh grid so the very first visible frame is correct
+            var showInv = GetStorageInventory();
+            CompanionsPlugin.Log.LogDebug(
+                $"[UI] Show — pre-UpdateGrid inv={showInv != null} " +
+                $"items={showInv?.NrOfItems() ?? -1} weight={showInv?.GetTotalWeight() ?? -1f:F1} " +
+                $"invDim={showInv?.GetWidth() ?? -1}x{showInv?.GetHeight() ?? -1}");
+
+            // Validate inventory dimensions match expected values
+            if (showInv != null && (showInv.GetWidth() <= 0 || showInv.GetHeight() <= 0))
+            {
+                CompanionsPlugin.Log.LogError(
+                    $"[UI] Show — INVALID inventory dimensions: {showInv.GetWidth()}x{showInv.GetHeight()}! " +
+                    "This will cause grid rendering issues.");
+            }
+
+            UpdateGrid();
 
             // Inject our UIGroupHandler into vanilla's group system for gamepad support
             InjectGamepadGroups();
@@ -568,12 +630,27 @@ namespace Companions
             float sectionH = slotSize + 16f;
 
             // Expand panel to make room
+            float foodExpansion = sectionH + 4f;
             var rootRT = _root.GetComponent<RectTransform>();
             if (rootRT != null)
             {
                 var sd = rootRT.sizeDelta;
-                sd.y += sectionH + 4f;
+                sd.y += foodExpansion;
                 rootRT.sizeDelta = sd;
+            }
+
+            // Prevent the InventoryGrid from stretching into the food slot area.
+            // Vanilla UpdateGui centers the grid root within its parent RectTransform;
+            // without this, the expanded panel height shifts the grid content downward.
+            if (_grid != null)
+            {
+                var gridRT = _grid.transform as RectTransform;
+                if (gridRT != null)
+                {
+                    gridRT.offsetMin = new Vector2(
+                        gridRT.offsetMin.x,
+                        gridRT.offsetMin.y + foodExpansion);
+                }
             }
 
             _foodSlotsContainer = new GameObject("FoodSlots", typeof(RectTransform));

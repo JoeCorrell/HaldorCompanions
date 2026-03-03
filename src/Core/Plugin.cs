@@ -17,7 +17,7 @@ namespace Companions
     {
         public const string PluginGUID = "com.profmags.companions";
         public const string PluginName = "Offline Companions";
-        public const string PluginVersion = "1.0.7";
+        public const string PluginVersion = "1.0.9";
 
         private static Harmony _harmony;
         internal static ManualLogSource Log;
@@ -77,13 +77,6 @@ namespace Companions
             SceneManager.sceneLoaded += OnSceneLoaded;
             Game.m_playerInitialSpawn += CompanionManager.SpawnStarterCompanion;
             gameObject.AddComponent<CompanionVoice>();
-            EnsureTmpDefaultFont("awake");
-        }
-
-        private void Start()
-        {
-            // Run once after initial scene bootstraps to catch late-loaded UI fonts.
-            EnsureTmpDefaultFont("start");
         }
 
         private void Update()
@@ -148,7 +141,7 @@ namespace Companions
                 if (!_fontFixWarned)
                 {
                     _fontFixWarned = true;
-                    Log?.LogWarning("[Fonts] Could not find a replacement TMP font asset yet.");
+                    Log?.LogDebug($"[Fonts] No replacement TMP font found yet ({source}) — will retry on next scene load.");
                 }
                 return;
             }

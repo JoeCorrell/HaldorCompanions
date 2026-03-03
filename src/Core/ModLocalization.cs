@@ -263,6 +263,9 @@ namespace Companions
                 { "hc_radial_passive", "Passive" },
                 { "hc_radial_melee", "Melee" },
                 { "hc_radial_ranged", "Ranged" },
+                { "hc_radial_hunt", "Hunt" },
+                { "hc_radial_farm", "Farm" },
+                { "hc_radial_fish", "Fish" },
                 { "hc_radial_active", "ACTIVE" },
                 { "hc_radial_on", "ON" },
                 { "hc_radial_off", "OFF" },
@@ -362,6 +365,9 @@ namespace Companions
                 { "hc_cmd_repair_nothing_1", "Nothing to fix here." },
                 { "hc_cmd_repair_nothing_2", "My gear's fine." },
                 { "hc_cmd_repair_nothing_3", "No repairs needed." },
+                { "hc_cmd_tombstone_1", "I'll grab my things." },
+                { "hc_cmd_tombstone_2", "Let me get that." },
+                { "hc_cmd_tombstone_3", "On my way to pick that up." },
             };
         }
     }

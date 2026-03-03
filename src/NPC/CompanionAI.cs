@@ -153,6 +153,7 @@ namespace Companions
         private TombStone _pendingTombstone;
         private float _tombstoneScanTimer;
         private float _tombstoneNavTimeout;
+        private float _tombstoneNavStuckTime;
         private const float TombstoneScanInterval = 5f;
         private const float TombstoneNavTimeoutMax = 120f;
         private const float TombstoneLootRange = 3f;
@@ -684,6 +685,11 @@ namespace Companions
             // Already navigating to a tombstone — use Unity's overloaded != to detect destroyed objects
             if (_pendingTombstone != null)
             {
+                // Ensure follow is clear — external systems (UI freeze/restore,
+                // CompanionSetup.Update) can re-set it, pulling the companion away.
+                if (m_follow != null)
+                    SetFollowTarget(null);
+
                 _tombstoneNavTimeout -= dt;
                 if (_tombstoneNavTimeout <= 0f)
                 {
@@ -710,13 +716,38 @@ namespace Companions
                     return false;
                 }
 
+                // Pathfinding fallback: if within 10m but nav is stuck for 10s,
+                // warp directly to the tombstone rather than giving up.
+                if (!FoundPath() && dist < 10f)
+                {
+                    _tombstoneNavStuckTime += dt;
+                    if (_tombstoneNavStuckTime > 10f)
+                    {
+                        CompanionsPlugin.Log.LogInfo(
+                            $"[AI] Tombstone nav stuck for 10s at dist={dist:F1}m — warping to tombstone");
+                        transform.position = tombPos + Vector3.up * 0.5f;
+                        if (_body != null)
+                        {
+                            _body.position = transform.position;
+                            _body.velocity = Vector3.zero;
+                        }
+                        _tombstoneNavStuckTime = 0f;
+                        // Next frame dist will be < TombstoneLootRange → loot
+                        return true;
+                    }
+                }
+                else
+                {
+                    _tombstoneNavStuckTime = 0f;
+                }
+
                 // Log navigation progress periodically
                 _tombstoneScanTimer -= dt;
                 if (_tombstoneScanTimer <= 0f)
                 {
                     _tombstoneScanTimer = TombstoneScanInterval;
-                    CompanionsPlugin.Log.LogDebug(
-                        $"[AI] Navigating to tombstone — dist={dist:F1}m timeout={_tombstoneNavTimeout:F0}s");
+                    CompanionsPlugin.Log.LogInfo(
+                        $"[AI] Navigating to tombstone — dist={dist:F1}m timeout={_tombstoneNavTimeout:F0}s pathOK={FoundPath()}");
                 }
 
                 // Run to tombstone
@@ -764,6 +795,7 @@ namespace Companions
                 // Found our tombstone
                 _pendingTombstone = ts;
                 _tombstoneNavTimeout = TombstoneNavTimeoutMax;
+                _tombstoneNavStuckTime = 0f;
 
                 float dist = Vector3.Distance(transform.position, ts.transform.position);
                 CompanionsPlugin.Log.LogInfo(
@@ -789,6 +821,36 @@ namespace Companions
                 var zdo = m_nview?.GetZDO();
                 return zdo != null && zdo.GetLong(CompanionSetup.TombstoneIdHash, 0L) != 0L;
             }
+        }
+
+        /// <summary>
+        /// Directed command entry point — player points at a tombstone and presses
+        /// the command key, injecting the tombstone directly into the nav pipeline.
+        /// </summary>
+        internal void SetDirectedTombstoneRecovery(TombStone tombstone)
+        {
+            _pendingTombstone = tombstone;
+            _tombstoneNavTimeout = TombstoneNavTimeoutMax;
+            _tombstoneScanTimer = TombstoneScanInterval;
+            _tombstoneNavStuckTime = 0f;
+            SetFollowTarget(null);
+
+            CompanionsPlugin.Log.LogInfo(
+                $"[AI] Directed tombstone recovery — target at {tombstone.transform.position:F1}");
+
+            if (_talk != null)
+                _talk.Say(ModLocalization.Loc("hc_speech_tomb_found"));
+        }
+
+        /// <summary>Cancel any in-progress tombstone recovery and restore follow.</summary>
+        internal void CancelTombstoneRecovery()
+        {
+            if (_pendingTombstone == null && System.Object.ReferenceEquals(_pendingTombstone, null))
+                return;
+            _pendingTombstone = null;
+            ClearTombstoneId();
+            RestoreFollowOrPatrol();
+            CompanionsPlugin.Log.LogDebug("[AI] CancelTombstoneRecovery");
         }
 
         private void LootTombstone(TombStone tombstone)
@@ -818,7 +880,10 @@ namespace Companions
 
             int totalInTomb = tombInv.NrOfItems();
             CompanionsPlugin.Log.LogInfo(
-                $"[AI] Looting tombstone — {totalInTomb} items to recover");
+                $"[AI] Looting tombstone — {totalInTomb} items to recover, " +
+                $"tombInv dim={tombInv.GetWidth()}x{tombInv.GetHeight()}, " +
+                $"myInv dim={myInv.GetWidth()}x{myInv.GetHeight()} items={myInv.NrOfItems()} " +
+                $"empty={myInv.GetEmptySlots()}");
 
             // Move all items from tombstone to companion inventory
             // AddItem calls Changed() internally; tombstone auto-despawns when NrOfItems()==0
@@ -832,20 +897,23 @@ namespace Companions
                     tombInv.RemoveItem(item);
                     moved++;
                     CompanionsPlugin.Log.LogDebug(
-                        $"[AI]   Recovered: \"{item.m_shared?.m_name ?? "?"}\" x{item.m_stack}");
+                        $"[AI]   Recovered: \"{item.m_shared?.m_name ?? "?"}\" x{item.m_stack} " +
+                        $"→ pos=({item.m_gridPos.x},{item.m_gridPos.y})");
                 }
                 else
                 {
                     failed++;
                     CompanionsPlugin.Log.LogWarning(
-                        $"[AI]   Failed to recover: \"{item.m_shared?.m_name ?? "?"}\" x{item.m_stack} — inventory full?");
+                        $"[AI]   Failed to recover: \"{item.m_shared?.m_name ?? "?"}\" x{item.m_stack} — " +
+                        $"inventory full? myInv items={myInv.NrOfItems()} empty={myInv.GetEmptySlots()}");
                 }
             }
 
             CompanionsPlugin.Log.LogInfo(
                 $"[AI] Tombstone loot complete — recovered {moved}/{totalInTomb} items" +
                 (failed > 0 ? $" ({failed} could not fit)" : "") +
-                $", {tombInv.NrOfItems()} remaining in tombstone");
+                $", {tombInv.NrOfItems()} remaining in tombstone, " +
+                $"myInv items={myInv.NrOfItems()} dim={myInv.GetWidth()}x{myInv.GetHeight()}");
 
             if (_talk != null)
                 _talk.Say(moved > 0 ? ModLocalization.Loc("hc_speech_tomb_recovered") : ModLocalization.Loc("hc_speech_tomb_empty"));
@@ -1005,13 +1073,25 @@ namespace Companions
             UpdateFurnitureUnstuck(dt);
 
             // Follow-mode teleport — warp companion near player if too far away.
-            // Skip if companion is set to stay home — they should remain at their
-            // home position even when Follow is ON (portal / long-distance scenarios).
-            if (m_follow != null && !(_setup != null && _setup.GetStayHome()))
+            // Only teleport if Follow toggle is actually ON (belt-and-suspenders check
+            // in case m_follow was set by a code path that didn't verify the toggle).
+            if (m_follow != null && _setup != null && _setup.GetFollow())
             {
                 float distToFollow = Vector3.Distance(transform.position, m_follow.transform.position);
                 if (distToFollow > FollowTeleportDist)
                     TeleportToFollowTarget();
+            }
+
+            // StayHome hard leash — if companion strays more than 50m from home
+            // (e.g. during combat chase), teleport them back and disengage.
+            if (_setup != null && _setup.GetStayHome() && _setup.HasHomePosition()
+                && !_setup.GetFollow())
+            {
+                float distFromHome = Utils.DistanceXZ(transform.position, _setup.GetHomePosition());
+                if (distFromHome > CompanionSetup.MaxLeashDistance)
+                {
+                    TeleportToHome();
+                }
             }
 
             // Rest navigation — walking to a bed or fire
@@ -1602,15 +1682,30 @@ namespace Companions
                 }
             }
 
-            // ── Alert range check (leash to follow target) ──
+            // ── Alert range check (leash to follow target / home) ──
             if (m_targetCreature != null)
             {
-                if (GetPatrolPoint(out var point))
+                // StayHome companions: drop targets beyond 50m from home so they
+                // don't chase enemies across the map. The hard teleport in UpdateAI
+                // is a safety net; this prevents the chase from starting.
+                bool stayHomeLeash = _setup != null && _setup.GetStayHome()
+                    && _setup.HasHomePosition() && !_setup.GetFollow();
+                if (stayHomeLeash)
+                {
+                    float enemyDistFromHome = Utils.DistanceXZ(
+                        m_targetCreature.transform.position, _setup.GetHomePosition());
+                    if (enemyDistFromHome > CompanionSetup.MaxLeashDistance)
+                    {
+                        m_targetCreature = null;
+                    }
+                }
+
+                if (m_targetCreature != null && GetPatrolPoint(out var point))
                 {
                     if (Vector3.Distance(m_targetCreature.transform.position, point) > AlertRange)
                         m_targetCreature = null;
                 }
-                else if (m_follow != null &&
+                else if (m_targetCreature != null && m_follow != null &&
                          Vector3.Distance(m_targetCreature.transform.position,
                              m_follow.transform.position) > AlertRange)
                 {
@@ -2005,6 +2100,50 @@ namespace Companions
             CompanionsPlugin.Log.LogInfo(
                 $"[AI] Teleported companion to follow target at {spawnPos:F1} " +
                 $"(was {FollowTeleportDist:F0}m+ away)");
+        }
+
+        /// <summary>
+        /// Teleport companion back to home position, clear combat targets,
+        /// and restore home patrol. Used when StayHome companion strays too far.
+        /// </summary>
+        private void TeleportToHome()
+        {
+            if (_setup == null || !_setup.HasHomePosition()) return;
+            Vector3 homePos = _setup.GetHomePosition();
+
+            // Find a valid nearby position
+            Vector3 spawnPos = homePos;
+            for (int i = 0; i < 20; i++)
+            {
+                Vector2 rnd = UnityEngine.Random.insideUnitCircle * 3f;
+                Vector3 candidate = homePos + new Vector3(rnd.x, 0f, rnd.y);
+                if (ZoneSystem.instance != null &&
+                    ZoneSystem.instance.FindFloor(candidate, out float height))
+                {
+                    candidate.y = height;
+                    spawnPos = candidate;
+                    break;
+                }
+            }
+
+            transform.position = spawnPos;
+            var body = GetComponent<Rigidbody>();
+            if (body != null)
+            {
+                body.position = spawnPos;
+                body.linearVelocity = Vector3.zero;
+            }
+
+            // Disengage from combat
+            ClearTargets();
+            if (IsAlerted()) SetAlerted(false);
+
+            // Restore home patrol
+            SetFollowTarget(null);
+            SetPatrolPointAt(homePos);
+
+            CompanionsPlugin.Log.LogInfo(
+                $"[AI] StayHome leash — teleported companion back to home at {spawnPos:F1}");
         }
 
         // ══════════════════════════════════════════════════════════════════════

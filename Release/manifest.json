@@ -1,7 +1,7 @@
 {
   "name": "Offline_Companions",
   "author": "ProfMags",
-  "version_number": "1.0.7",
+  "version_number": "1.0.9",
   "website_url": "https://github.com/JoeCorrell/HaldorCompanions",
   "description": "Hire NPC companions with their own health, stamina, food, inventory, voice lines, and AI. They fight alongside you, gather, forage, smelt, repair gear, maintain your base, and follow you across Valheim.",
   "dependencies": [

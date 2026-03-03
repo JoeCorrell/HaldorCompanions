@@ -102,8 +102,8 @@ namespace Companions
         private const float MoveTimeout      = 15f;
         private const float StuckCheckPeriod = 1f;
         private const float StuckMinDistance = 0.5f;
-        private const float TaskSlotTime    = 15f;  // seconds per homestead task (repair/refuel/sort)
-        private const float SmeltSlotTime   = 15f;  // seconds for smelting turn
+        private const float TaskSlotTime    = 60f;  // seconds per homestead task (repair/refuel/sort)
+        private const float SmeltSlotTime   = 60f;  // seconds for smelting turn
 
         // ── Lifecycle ───────────────────────────────────────────────────────
 

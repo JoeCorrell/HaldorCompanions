@@ -36,6 +36,11 @@ namespace Companions
         private const int ActionWander      = 12;
         private const int ActionAutoPickup  = 13;
         private const int ActionCommand     = 14;
+        // Must match CompanionSetup.ModeHunt/ModeFarm/ModeFish — SetActionMode()
+        // passes ActionId directly as the ZDO mode value.
+        private const int ActionHunt        = 7;
+        private const int ActionFarm        = 8;
+        private const int ActionFish        = 9;
 
         // ── Style ──────────────────────────────────────────────────────────
         private static readonly Color BgColor          = new Color(0.14f, 0.11f, 0.08f, 0.82f);
@@ -171,7 +176,8 @@ namespace Companions
             // All action icons (outer + inner ring)
             int[] allActions = {
                 ActionFollow, ActionGatherWood, ActionGatherStone, ActionGatherOre,
-                ActionForage, ActionSmelt, ActionStayHome, ActionSetHome,
+                ActionForage, ActionSmelt, ActionHunt, ActionFarm, ActionFish,
+                ActionStayHome, ActionSetHome,
                 ActionWander, ActionAutoPickup, ActionCommand,
                 ActionStanceBalanced, ActionStanceAggressive, ActionStanceDefensive,
                 ActionStancePassive, ActionStanceMelee, ActionStanceRanged
@@ -746,6 +752,9 @@ namespace Companions
                 case ActionGatherOre:
                 case ActionForage:
                 case ActionSmelt:
+                case ActionHunt:
+                case ActionFarm:
+                case ActionFish:
                     SetActionMode(outerSeg.ActionId);
                     break;
                 case ActionStayHome:
@@ -930,6 +939,21 @@ namespace Companions
                     Label = ModLocalization.Loc("hc_radial_smelt"), ActionId = ActionSmelt,
                     IsMode = true, IsActive = currentMode == CompanionSetup.ModeSmelt,
                     IconColor = new Color(0.85f, 0.45f, 0.15f)
+                });
+                _segments.Add(new Segment {
+                    Label = ModLocalization.Loc("hc_radial_hunt"), ActionId = ActionHunt,
+                    IsMode = true, IsActive = currentMode == CompanionSetup.ModeHunt,
+                    IconColor = new Color(0.80f, 0.35f, 0.30f)
+                });
+                _segments.Add(new Segment {
+                    Label = ModLocalization.Loc("hc_radial_farm"), ActionId = ActionFarm,
+                    IsMode = true, IsActive = currentMode == CompanionSetup.ModeFarm,
+                    IconColor = new Color(0.45f, 0.70f, 0.25f)
+                });
+                _segments.Add(new Segment {
+                    Label = ModLocalization.Loc("hc_radial_fish"), ActionId = ActionFish,
+                    IsMode = true, IsActive = currentMode == CompanionSetup.ModeFish,
+                    IconColor = new Color(0.30f, 0.55f, 0.85f)
                 });
             }
 
@@ -1383,6 +1407,9 @@ namespace Companions
                 case ActionWander:      return "Wander";
                 case ActionAutoPickup:  return "AutoPickup";
                 case ActionCommand:          return "Command";
+                case ActionHunt:             return "Hunt";
+                case ActionFarm:             return "Farm";
+                case ActionFish:             return "Fish";
                 case ActionStanceBalanced:   return "Balanced";
                 case ActionStanceAggressive: return "Aggressive";
                 case ActionStanceDefensive:  return "Defend";
@@ -1489,6 +1516,35 @@ namespace Companions
                     // Arrowhead
                     DrawLine(pixels, size, c + 20, c + 6, c + 26, c, w, 3f);
                     DrawLine(pixels, size, c + 20, c - 6, c + 26, c, w, 3f);
+                    break;
+
+                case ActionHunt:
+                    // Crosshair — circle with four tick marks
+                    DrawArc(pixels, size, c, c, 18f, 0f, 360f, w, 4f);
+                    DrawLine(pixels, size, c, c - 28, c, c - 20, w, 4f);
+                    DrawLine(pixels, size, c, c + 20, c, c + 28, w, 4f);
+                    DrawLine(pixels, size, c - 28, c, c - 20, c, w, 4f);
+                    DrawLine(pixels, size, c + 20, c, c + 28, c, w, 4f);
+                    break;
+
+                case ActionFarm:
+                    // Wheat stalk — vertical stem with angled grain lines
+                    DrawLine(pixels, size, c, c - 28, c, c + 24, w, 4f);
+                    DrawLine(pixels, size, c, c - 18, c - 14, c - 28, w, 3f);
+                    DrawLine(pixels, size, c, c - 18, c + 14, c - 28, w, 3f);
+                    DrawLine(pixels, size, c, c - 8, c - 12, c - 18, w, 3f);
+                    DrawLine(pixels, size, c, c - 8, c + 12, c - 18, w, 3f);
+                    DrawLine(pixels, size, c, c + 2, c - 10, c - 8, w, 3f);
+                    DrawLine(pixels, size, c, c + 2, c + 10, c - 8, w, 3f);
+                    break;
+
+                case ActionFish:
+                    // Fish hook — curved hook with line
+                    DrawLine(pixels, size, c, c - 28, c, c - 4, w, 4f);
+                    DrawArc(pixels, size, c, c - 4, 14f, 180f, 360f, w, 4f);
+                    DrawLine(pixels, size, c + 14, c - 4, c + 14, c + 10, w, 4f);
+                    // Barb
+                    DrawLine(pixels, size, c + 14, c + 10, c + 8, c + 4, w, 3f);
                     break;
             }
 
