@@ -20,6 +20,7 @@ namespace Companions
             internal bool IsActive;
             internal bool IsEquipmentSlot;
             internal Vector2 Position;
+            internal Vector2i GridPosition;
             internal object SlotObject;
         }
 
@@ -36,12 +37,17 @@ namespace Companions
 
         private static MethodInfo _apiGetEquipmentSlots;
         private static MethodInfo _apiGetExtraSlots;
+        private static Type _equipmentPanelType;
+        private static FieldInfo _quickSlotSpriteField;
+        private static FieldInfo _ammoSlotSpriteField;
+        private static FieldInfo _miscSlotSpriteField;
 
         private static PropertyInfo _slotIdProp;
         private static PropertyInfo _slotNameProp;
         private static PropertyInfo _slotIsActiveProp;
         private static PropertyInfo _slotIsEquipmentSlotProp;
         private static PropertyInfo _slotPositionProp;
+        private static PropertyInfo _slotGridPositionProp;
         private static MethodInfo _slotItemFitsMethod;
 
         private static readonly List<SlotDefinition> _activeEquipmentSlots = new List<SlotDefinition>();
@@ -85,6 +91,14 @@ namespace Companions
             {
                 _apiGetEquipmentSlots = apiType.GetMethod("GetEquipmentSlots", BindingFlags.Public | BindingFlags.Static);
                 _apiGetExtraSlots = apiType.GetMethod("GetExtraSlots", BindingFlags.Public | BindingFlags.Static);
+            }
+            _equipmentPanelType = asm.GetType("ExtraSlots.EquipmentPanel");
+            if (_equipmentPanelType != null)
+            {
+                const BindingFlags flags = BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic;
+                _quickSlotSpriteField = _equipmentPanelType.GetField("quickSlot", flags);
+                _ammoSlotSpriteField = _equipmentPanelType.GetField("ammoSlot", flags);
+                _miscSlotSpriteField = _equipmentPanelType.GetField("miscSlot", flags);
             }
 
             RefreshSlotsMetadata();
@@ -177,6 +191,7 @@ namespace Companions
                     _slotIsActiveProp = type.GetProperty("IsActive", BindingFlags.Public | BindingFlags.Instance);
                     _slotIsEquipmentSlotProp = type.GetProperty("IsEquipmentSlot", BindingFlags.Public | BindingFlags.Instance);
                     _slotPositionProp = type.GetProperty("Position", BindingFlags.Public | BindingFlags.Instance);
+                    _slotGridPositionProp = type.GetProperty("GridPosition", BindingFlags.Public | BindingFlags.Instance);
                     _slotItemFitsMethod = type.GetMethod("ItemFits", BindingFlags.Public | BindingFlags.Instance);
                 }
 
@@ -189,6 +204,8 @@ namespace Companions
 
                 object posObj = _slotPositionProp?.GetValue(slotObj);
                 Vector2 pos = posObj is Vector2 v ? v : Vector2.zero;
+                object gridPosObj = _slotGridPositionProp?.GetValue(slotObj);
+                Vector2i gridPos = gridPosObj is Vector2i gp ? gp : Vector2i.zero;
 
                 var def = new SlotDefinition
                 {
@@ -197,6 +214,7 @@ namespace Companions
                     IsActive = true,
                     IsEquipmentSlot = isEquipment,
                     Position = pos,
+                    GridPosition = gridPos,
                     SlotObject = slotObj
                 };
 
@@ -253,6 +271,49 @@ namespace Companions
             }
 
             return maxIndex + 1;
+        }
+
+        internal static bool TryGetSlotGridPosition(string slotId, out Vector2i gridPos)
+        {
+            gridPos = Vector2i.zero;
+            if (string.IsNullOrEmpty(slotId)) return false;
+
+            for (int i = 0; i < _activeSlots.Count; i++)
+            {
+                var slot = _activeSlots[i];
+                if (!string.Equals(slot.Id, slotId, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                gridPos = slot.GridPosition;
+                return true;
+            }
+
+            return false;
+        }
+
+        internal static bool IsAnySlotGridPosition(Vector2i pos)
+        {
+            for (int i = 0; i < _activeSlots.Count; i++)
+            {
+                if (_activeSlots[i].GridPosition == pos)
+                    return true;
+            }
+
+            return false;
+        }
+
+        internal static Sprite GetSlotHintSprite(string slotId)
+        {
+            if (!IsLoaded || string.IsNullOrEmpty(slotId)) return null;
+
+            if (slotId.StartsWith("Quick", StringComparison.OrdinalIgnoreCase))
+                return _quickSlotSpriteField?.GetValue(null) as Sprite;
+            if (slotId.StartsWith("Ammo", StringComparison.OrdinalIgnoreCase))
+                return _ammoSlotSpriteField?.GetValue(null) as Sprite;
+            if (slotId.StartsWith("Misc", StringComparison.OrdinalIgnoreCase))
+                return _miscSlotSpriteField?.GetValue(null) as Sprite;
+
+            return null;
         }
 
         private static Vector2 GetConfigVector2(object configEntry)

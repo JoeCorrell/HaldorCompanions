@@ -90,6 +90,8 @@ namespace Companions
         // ── Extra utility slots (ExtraSlots compat) ─────────────────────────
         private ItemDrop.ItemData[] _extraUtilities;
         internal const string ExtraUtilitySlotKey = "HC_ExtraUtilitySlot";
+        private const string ExtraSlotPrevPosXKey = "HC_ExtraSlotPrevPosX";
+        private const string ExtraSlotPrevPosYKey = "HC_ExtraSlotPrevPosY";
 
         // Minimap pin — live-updating, owner-only
         private Minimap.PinData _minimapPin;
@@ -137,6 +139,266 @@ namespace Companions
             if (ExtraSlotsCompat.TryGetExtraUtilityIndex(slotId, out int extraIdx))
                 return GetExtraUtilityItem(extraIdx);
 
+            return null;
+        }
+
+        internal bool CanItemFitExtraSlotsSlot(string slotId, ItemDrop.ItemData item)
+        {
+            if (string.IsNullOrEmpty(slotId) || item?.m_shared == null) return false;
+
+            if (ExtraSlotsCompat.IsLoaded)
+                return ExtraSlotsCompat.ItemFitsSlot(slotId, item);
+
+            switch (slotId)
+            {
+                case "Helmet":
+                    return item.m_shared.m_itemType == ItemDrop.ItemData.ItemType.Helmet;
+                case "Chest":
+                    return item.m_shared.m_itemType == ItemDrop.ItemData.ItemType.Chest;
+                case "Legs":
+                    return item.m_shared.m_itemType == ItemDrop.ItemData.ItemType.Legs;
+                case "Shoulder":
+                    return item.m_shared.m_itemType == ItemDrop.ItemData.ItemType.Shoulder;
+                case "Utility":
+                case "Trinket":
+                    return item.m_shared.m_itemType == ItemDrop.ItemData.ItemType.Utility;
+            }
+
+            return false;
+        }
+
+        internal bool TrySetItemForExtraSlotsSlot(string slotId, ItemDrop.ItemData item)
+        {
+            if (_humanoid == null || string.IsNullOrEmpty(slotId)) return false;
+            var inv = _humanoid.GetInventory();
+            if (inv == null) return false;
+            if (item != null && !inv.ContainsItem(item)) return false;
+
+            if (ExtraSlotsCompat.TryGetExtraUtilityIndex(slotId, out int extraIdx))
+                return TrySetExtraUtilitySlot(extraIdx, slotId, item);
+
+            var slotField = GetVanillaSlotField(slotId);
+            if (slotField == null) return false;
+
+            var current = slotField.GetValue(_humanoid) as ItemDrop.ItemData;
+            if (item == null)
+            {
+                if (current == null) return true;
+                _humanoid.UnequipItem(current, false);
+                RestoreFromExtraSlotsGridPosition(current, inv);
+                return true;
+            }
+
+            if (!CanItemFitExtraSlotsSlot(slotId, item))
+                return false;
+
+            RemoveItemFromExtraUtilitySlots(item);
+
+            if (current != null && current != item)
+            {
+                _humanoid.UnequipItem(current, false);
+                RestoreFromExtraSlotsGridPosition(current, inv);
+            }
+
+            if (!_humanoid.IsItemEquiped(item))
+                _humanoid.EquipItem(item, true);
+
+            bool equipped = slotField.GetValue(_humanoid) == item || _humanoid.IsItemEquiped(item);
+            if (equipped)
+                TryMoveIntoExtraSlotsGridPosition(slotId, item, inv);
+            return equipped;
+        }
+
+        private bool TrySetExtraUtilitySlot(int slot, string slotId, ItemDrop.ItemData item)
+        {
+            if (_extraUtilities == null) return false;
+            if (slot < 0 || slot >= _extraUtilities.Length) return false;
+            if (item != null && !CanItemFitExtraSlotsSlot(slotId, item)) return false;
+
+            var current = _extraUtilities[slot];
+            if (current == item) return true;
+
+            if (item != null)
+                RemoveItemFromExtraUtilitySlots(item);
+
+            if (current != null)
+            {
+                current.m_equipped = false;
+                current.m_customData?.Remove(ExtraUtilitySlotKey);
+                _extraUtilities[slot] = null;
+                ExtraSlotsCompat.SetExtraUtility(_humanoid, slot, null);
+                RestoreFromExtraSlotsGridPosition(current, _humanoid?.GetInventory());
+            }
+
+            if (item != null)
+            {
+                item.m_equipped = true;
+                if (item.m_customData == null)
+                    item.m_customData = new Dictionary<string, string>();
+                item.m_customData[ExtraUtilitySlotKey] = slot.ToString();
+                _extraUtilities[slot] = item;
+                ExtraSlotsCompat.SetExtraUtility(_humanoid, slot, item);
+                TryMoveIntoExtraSlotsGridPosition(slotId, item, _humanoid?.GetInventory());
+            }
+
+            ExtraSlotsPatches.CallSetupEquipment(_humanoid);
+            return true;
+        }
+
+        private void RemoveItemFromExtraUtilitySlots(ItemDrop.ItemData item)
+        {
+            if (_extraUtilities == null || item == null) return;
+            for (int i = 0; i < _extraUtilities.Length; i++)
+            {
+                if (_extraUtilities[i] != item) continue;
+                _extraUtilities[i] = null;
+                item.m_customData?.Remove(ExtraUtilitySlotKey);
+                ExtraSlotsCompat.SetExtraUtility(_humanoid, i, null);
+                RestoreFromExtraSlotsGridPosition(item, _humanoid?.GetInventory());
+            }
+        }
+
+        private void TryMoveIntoExtraSlotsGridPosition(string slotId, ItemDrop.ItemData item, Inventory inv)
+        {
+            if (!ExtraSlotsCompat.IsLoaded || item == null || inv == null || string.IsNullOrEmpty(slotId))
+                return;
+            if (!ExtraSlotsCompat.TryGetSlotGridPosition(slotId, out Vector2i slotPos))
+                return;
+            if (!IsPositionInsideInventory(inv, slotPos))
+                return;
+
+            if (!ExtraSlotsCompat.IsAnySlotGridPosition(item.m_gridPos))
+                RememberItemRegularGridPosition(item);
+
+            var existing = inv.GetItemAt(slotPos.x, slotPos.y);
+            if (existing != null && existing != item)
+            {
+                if (TryFindOpenRegularInventoryCell(inv, out Vector2i free))
+                    existing.m_gridPos = free;
+                else if (IsPositionInsideInventory(inv, item.m_gridPos) &&
+                         !ExtraSlotsCompat.IsAnySlotGridPosition(item.m_gridPos))
+                    existing.m_gridPos = item.m_gridPos;
+                else
+                    return;
+            }
+
+            item.m_gridPos = slotPos;
+        }
+
+        private void RestoreFromExtraSlotsGridPosition(ItemDrop.ItemData item, Inventory inv)
+        {
+            if (!ExtraSlotsCompat.IsLoaded || item == null || inv == null)
+                return;
+
+            if (item.m_customData == null)
+                return;
+
+            bool restored = false;
+            if (!item.m_customData.TryGetValue(ExtraSlotPrevPosXKey, out string xStr))
+                return;
+            if (!item.m_customData.TryGetValue(ExtraSlotPrevPosYKey, out string yStr))
+                return;
+
+            if (int.TryParse(xStr, out int x) &&
+                int.TryParse(yStr, out int y))
+            {
+                var prev = new Vector2i(x, y);
+                if (IsPositionInsideInventory(inv, prev) &&
+                    !ExtraSlotsCompat.IsAnySlotGridPosition(prev))
+                {
+                    var blocker = inv.GetItemAt(prev.x, prev.y);
+                    if (blocker == null || blocker == item)
+                    {
+                        item.m_gridPos = prev;
+                        restored = true;
+                    }
+                }
+            }
+
+            if (!restored && TryFindOpenRegularInventoryCell(inv, out Vector2i free))
+                item.m_gridPos = free;
+
+            item.m_customData.Remove(ExtraSlotPrevPosXKey);
+            item.m_customData.Remove(ExtraSlotPrevPosYKey);
+        }
+
+        private static bool TryFindOpenRegularInventoryCell(Inventory inv, out Vector2i pos)
+        {
+            pos = Vector2i.zero;
+            if (inv == null) return false;
+
+            int w = inv.GetWidth();
+            int h = inv.GetHeight();
+
+            for (int y = 0; y < h; y++)
+            {
+                for (int x = 0; x < w; x++)
+                {
+                    var p = new Vector2i(x, y);
+                    if (ExtraSlotsCompat.IsLoaded && ExtraSlotsCompat.IsAnySlotGridPosition(p))
+                        continue;
+                    if (inv.GetItemAt(x, y) != null)
+                        continue;
+
+                    pos = p;
+                    return true;
+                }
+            }
+
+            for (int y = 0; y < h; y++)
+            {
+                for (int x = 0; x < w; x++)
+                {
+                    if (inv.GetItemAt(x, y) != null)
+                        continue;
+
+                    pos = new Vector2i(x, y);
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static bool IsPositionInsideInventory(Inventory inv, Vector2i pos)
+        {
+            if (inv == null) return false;
+            return pos.x >= 0 && pos.y >= 0 &&
+                   pos.x < inv.GetWidth() && pos.y < inv.GetHeight();
+        }
+
+        private static void RememberItemRegularGridPosition(ItemDrop.ItemData item)
+        {
+            if (item == null) return;
+            if (item.m_customData == null)
+                item.m_customData = new Dictionary<string, string>();
+
+            item.m_customData[ExtraSlotPrevPosXKey] = item.m_gridPos.x.ToString();
+            item.m_customData[ExtraSlotPrevPosYKey] = item.m_gridPos.y.ToString();
+        }
+
+        private static FieldInfo GetVanillaSlotField(string slotId)
+        {
+            switch (slotId)
+            {
+                case "Helmet": return _helmetItemField;
+                case "Chest": return _chestItemField;
+                case "Legs": return _legItemField;
+                case "Shoulder": return _shoulderItemField;
+                case "Utility": return _utilityItemField;
+                case "Trinket": return _trinketItemField;
+                default: return null;
+            }
+        }
+
+        private static string GetSlotIdForVanillaField(FieldInfo slotField)
+        {
+            if (slotField == _helmetItemField) return "Helmet";
+            if (slotField == _chestItemField) return "Chest";
+            if (slotField == _legItemField) return "Legs";
+            if (slotField == _shoulderItemField) return "Shoulder";
+            if (slotField == _utilityItemField) return "Utility";
+            if (slotField == _trinketItemField) return "Trinket";
             return null;
         }
 
@@ -1404,6 +1666,7 @@ namespace Companions
                     $"[Setup] Armor swap {slotField.Name}: " +
                     $"\"{equipped.m_shared?.m_name ?? "?"}\" → \"{bestItem.m_shared?.m_name ?? "?"}\"");
                 _humanoid.UnequipItem(equipped, false);
+                RestoreFromExtraSlotsGridPosition(equipped, _humanoid.GetInventory());
             }
             else
             {
@@ -1412,6 +1675,9 @@ namespace Companions
             }
 
             QueueEquip(bestItem);
+            string slotId = GetSlotIdForVanillaField(slotField);
+            if (!string.IsNullOrEmpty(slotId))
+                TryMoveIntoExtraSlotsGridPosition(slotId, bestItem, _humanoid.GetInventory());
         }
 
         private static bool IsTwoHandedWeapon(ItemDrop.ItemData item)
@@ -1650,6 +1916,8 @@ namespace Companions
                 _extraUtilities[slot] = item;
                 item.m_equipped = true;
                 ExtraSlotsCompat.SetExtraUtility(_humanoid, slot, item);
+                string slotId = $"ExtraUtility{slot + 1}";
+                TryMoveIntoExtraSlotsGridPosition(slotId, item, inv);
                 restored = true;
 
                 CompanionsPlugin.Log.LogDebug(
@@ -1671,6 +1939,8 @@ namespace Companions
             item.m_customData[ExtraUtilitySlotKey] = slot.ToString();
             _extraUtilities[slot] = item;
             ExtraSlotsCompat.SetExtraUtility(_humanoid, slot, item);
+            string slotId = $"ExtraUtility{slot + 1}";
+            TryMoveIntoExtraSlotsGridPosition(slotId, item, _humanoid?.GetInventory());
 
             CompanionsPlugin.Log.LogDebug(
                 $"[Setup] Equipped extra utility slot {slot}: \"{item.m_shared?.m_name ?? "?"}\"");
@@ -1688,6 +1958,7 @@ namespace Companions
             item.m_customData?.Remove(ExtraUtilitySlotKey);
             _extraUtilities[slot] = null;
             ExtraSlotsCompat.SetExtraUtility(_humanoid, slot, null);
+            RestoreFromExtraSlotsGridPosition(item, _humanoid?.GetInventory());
 
             CompanionsPlugin.Log.LogDebug(
                 $"[Setup] Unequipped extra utility slot {slot}: \"{item.m_shared?.m_name ?? "?"}\"");
@@ -1702,6 +1973,8 @@ namespace Companions
                 {
                     _extraUtilities[i].m_equipped = false;
                     _extraUtilities[i].m_customData?.Remove(ExtraUtilitySlotKey);
+                    _extraUtilities[i].m_customData?.Remove(ExtraSlotPrevPosXKey);
+                    _extraUtilities[i].m_customData?.Remove(ExtraSlotPrevPosYKey);
                     _extraUtilities[i] = null;
                     ExtraSlotsCompat.SetExtraUtility(_humanoid, i, null);
                 }
@@ -1725,6 +1998,8 @@ namespace Companions
                         $"\"{item.m_shared?.m_name ?? "?"}\"");
                     item.m_equipped = false;
                     item.m_customData?.Remove(ExtraUtilitySlotKey);
+                    item.m_customData?.Remove(ExtraSlotPrevPosXKey);
+                    item.m_customData?.Remove(ExtraSlotPrevPosYKey);
                     _extraUtilities[i] = null;
                     ExtraSlotsCompat.SetExtraUtility(_humanoid, i, null);
                     changed = true;

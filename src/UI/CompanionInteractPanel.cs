@@ -44,6 +44,8 @@ namespace Companions
             AccessTools.Field(typeof(InventoryGrid), "m_width");
         private static readonly FieldInfo _gridHeightField =
             AccessTools.Field(typeof(InventoryGrid), "m_height");
+        private static readonly FieldInfo _gridElementPrefabField =
+            AccessTools.Field(typeof(InventoryGrid), "m_elementPrefab");
         private static readonly FieldInfo _gridElementsField =
             AccessTools.Field(typeof(InventoryGrid), "m_elements");
 
@@ -220,6 +222,8 @@ namespace Companions
             FixEquippedIndicators();
             UpdateWeightAndArmor();
             RefreshFoodSlots(GetStorageInventory());
+            HandleEquipPanelGamepadInput();
+            UpdateEquipPanelGamepadHighlight();
         }
 
         // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
@@ -349,6 +353,7 @@ namespace Companions
         {
             if (!_visible) return;
             _visible = false;
+            SetEquipPanelGamepadActive(false);
 
             // Restore vanilla gamepad groups before hiding
             RestoreGamepadGroups();
@@ -1040,46 +1045,85 @@ namespace Companions
             }
         }
 
-        private float GetEffectiveEquipTileSize()
+        private bool TryGetPlayerSlotTemplate(out RectTransform rt, out Image img)
         {
+            rt = null;
+            img = null;
+
             var gui = InventoryGui.instance;
-            if (gui != null && gui.m_playerGrid != null &&
-                gui.m_playerGrid.m_gridRoot != null &&
-                gui.m_playerGrid.m_gridRoot.childCount > 0)
+            if (gui == null || gui.m_playerGrid == null) return false;
+
+            if (_gridElementPrefabField != null)
+            {
+                var prefab = _gridElementPrefabField.GetValue(gui.m_playerGrid) as GameObject;
+                if (prefab != null)
+                {
+                    rt = prefab.GetComponent<RectTransform>();
+                    img = prefab.GetComponent<Image>();
+                    if (rt != null || img != null) return true;
+                }
+            }
+
+            if (_gridElementsField != null && _elemGoField != null)
+            {
+                var elements = _gridElementsField.GetValue(gui.m_playerGrid) as System.Collections.IList;
+                if (elements != null && elements.Count > 0)
+                {
+                    var go = _elemGoField.GetValue(elements[0]) as GameObject;
+                    if (go != null)
+                    {
+                        rt = go.GetComponent<RectTransform>();
+                        img = go.GetComponent<Image>();
+                        if (rt != null || img != null) return true;
+                    }
+                }
+            }
+
+            if (gui.m_playerGrid.m_gridRoot != null && gui.m_playerGrid.m_gridRoot.childCount > 0)
             {
                 var firstChild = gui.m_playerGrid.m_gridRoot.GetChild(0);
-                var rt = firstChild != null ? firstChild.GetComponent<RectTransform>() : null;
+                if (firstChild != null)
+                {
+                    rt = firstChild.GetComponent<RectTransform>();
+                    img = firstChild.GetComponent<Image>();
+                    return rt != null || img != null;
+                }
+            }
+
+            return false;
+        }
+
+        private float GetEffectiveEquipTileSize()
+        {
+            if (TryGetPlayerSlotTemplate(out RectTransform rt, out _))
+            {
                 if (rt != null)
                 {
                     float size = rt.rect.width;
                     if (size <= 0f) size = rt.sizeDelta.x;
-                    if (size > 0f) return size;
+                    if (size > 0f)
+                        return Mathf.Clamp(size, 40f, 96f);
                 }
             }
 
-            // ExtraSlots uses a 70px tile baseline.
-            return 70f;
+            return EquipTileSize;
         }
 
-        private static void ApplyEquipSlotBackgroundStyle(Image slotImg)
+        private void ApplyEquipSlotBackgroundStyle(Image slotImg)
         {
-            var gui = InventoryGui.instance;
-            if (gui != null && gui.m_playerGrid != null &&
-                gui.m_playerGrid.m_gridRoot != null &&
-                gui.m_playerGrid.m_gridRoot.childCount > 0)
+            if (TryGetPlayerSlotTemplate(out _, out Image src) && src != null && src.sprite != null)
             {
-                var firstChild = gui.m_playerGrid.m_gridRoot.GetChild(0);
-                var src = firstChild != null ? firstChild.GetComponent<Image>() : null;
-                if (src != null)
-                {
-                    slotImg.sprite = src.sprite;
-                    slotImg.type = src.type;
-                    slotImg.preserveAspect = src.preserveAspect;
-                    slotImg.color = src.color;
-                    return;
-                }
+                slotImg.sprite = src.sprite;
+                slotImg.type = src.type;
+                slotImg.preserveAspect = src.preserveAspect;
+                slotImg.color = src.color;
+                slotImg.material = src.material;
+                slotImg.pixelsPerUnitMultiplier = src.pixelsPerUnitMultiplier;
+                slotImg.useSpriteMesh = src.useSpriteMesh;
+                return;
             }
 
+            slotImg.sprite = null;
             slotImg.color = new Color(0f, 0f, 0f, 0.5625f);
         }
 
@@ -1185,6 +1229,226 @@ namespace Companions
                 }
                 icon.enabled = icon.sprite != null;
             }
+        }
+
+        private void HandleEquipPanelGamepadInput()
+        {
+            if (_equipPanel == null || !_equipPanel.activeInHierarchy ||
+                _equipSlotIds == null || _equipSlotCount <= 0)
+            {
+                SetEquipPanelGamepadActive(false);
+                return;
+            }
+
+            if (!ZInput.IsGamepadActive())
+            {
+                SetEquipPanelGamepadActive(false);
+                return;
+            }
+
+            var gui = InventoryGui.instance;
+            if (gui == null || _activeGroupField == null)
+            {
+                SetEquipPanelGamepadActive(false);
+                return;
+            }
+
+            int activeGroup = (int)_activeGroupField.GetValue(gui);
+            if (activeGroup != 0)
+            {
+                SetEquipPanelGamepadActive(false);
+                return;
+            }
+
+            bool dpadLeft  = ZInput.GetButtonDown("JoyDPadLeft")  || ZInput.GetButtonDown("JoyLStickLeft");
+            bool dpadRight = ZInput.GetButtonDown("JoyDPadRight") || ZInput.GetButtonDown("JoyLStickRight");
+            bool dpadUp    = ZInput.GetButtonDown("JoyDPadUp")    || ZInput.GetButtonDown("JoyLStickUp");
+            bool dpadDown  = ZInput.GetButtonDown("JoyDPadDown")  || ZInput.GetButtonDown("JoyLStickDown");
+            bool actionA   = ZInput.GetButtonDown("JoyButtonA")   || ZInput.GetButtonDown("JoyUse");
+            bool actionY   = ZInput.GetButtonDown("JoyButtonY");
+
+            if (!_gamepadEquipPanelActive)
+            {
+                if (dpadRight && IsCompanionGridSelectionAtRightEdge())
+                {
+                    SetEquipPanelGamepadActive(true);
+                    _gamepadEquipSelected = FindEquipSlotClosestToGridSelection();
+                }
+                return;
+            }
+
+            if (dpadLeft)
+            {
+                if (!MoveEquipPanelSelection(new Vector2(-1f, 0f)))
+                {
+                    ExitEquipPanelGamepadToGrid();
+                }
+                return;
+            }
+            if (dpadRight)
+            {
+                MoveEquipPanelSelection(new Vector2(1f, 0f));
+                return;
+            }
+            if (dpadUp)
+            {
+                MoveEquipPanelSelection(new Vector2(0f, 1f));
+                return;
+            }
+            if (dpadDown)
+            {
+                MoveEquipPanelSelection(new Vector2(0f, -1f));
+                return;
+            }
+
+            if (_gamepadEquipSelected < 0 || _gamepadEquipSelected >= _equipSlotCount) return;
+            string slotId = _equipSlotIds[_gamepadEquipSelected];
+            if (string.IsNullOrEmpty(slotId)) return;
+
+            if (actionA)
+            {
+                OnEquipSlotLeftClick(slotId);
+                return;
+            }
+
+            if (actionY)
+                OnEquipSlotRightClick(slotId);
+        }
+
+        private void UpdateEquipPanelGamepadHighlight()
+        {
+            if (_equipSlotBgs == null || _equipSlotBaseColors == null) return;
+
+            for (int i = 0; i < _equipSlotBgs.Length; i++)
+            {
+                var bg = _equipSlotBgs[i];
+                if (bg == null) continue;
+
+                if (_equipSlotBaseColors[i].a <= 0f && bg.color.a > 0f)
+                    _equipSlotBaseColors[i] = bg.color;
+
+                Color baseColor = _equipSlotBaseColors[i];
+                bool selected = _gamepadEquipPanelActive && i == _gamepadEquipSelected;
+                bg.color = selected
+                    ? new Color(
+                        Mathf.Clamp01(baseColor.r + 0.22f),
+                        Mathf.Clamp01(baseColor.g + 0.22f),
+                        Mathf.Clamp01(baseColor.b + 0.22f),
+                        Mathf.Clamp01(baseColor.a + 0.1f))
+                    : baseColor;
+
+                if (_equipSlotRoots != null && i < _equipSlotRoots.Length && _equipSlotRoots[i] != null)
+                    _equipSlotRoots[i].localScale = selected ? Vector3.one * 1.03f : Vector3.one;
+            }
+        }
+
+        private void SetEquipPanelGamepadActive(bool active)
+        {
+            _gamepadEquipPanelActive = active;
+            if (!active)
+            {
+                _gamepadEquipSelected = -1;
+                return;
+            }
+
+            if (_equipSlotCount <= 0)
+            {
+                _gamepadEquipSelected = -1;
+                _gamepadEquipPanelActive = false;
+                return;
+            }
+
+            if (_gamepadEquipSelected < 0 || _gamepadEquipSelected >= _equipSlotCount)
+                _gamepadEquipSelected = 0;
+        }
+
+        private bool IsCompanionGridSelectionAtRightEdge()
+        {
+            if (_grid == null || _gridWidthField == null || _gridSelectedField == null) return false;
+
+            int width = (int)_gridWidthField.GetValue(_grid);
+            if (width <= 0) return false;
+
+            var sel = (Vector2i)_gridSelectedField.GetValue(_grid);
+            return sel.x >= width - 1;
+        }
+
+        private int FindEquipSlotClosestToGridSelection()
+        {
+            if (_equipSlotRoots == null || _equipSlotRoots.Length == 0) return 0;
+            if (_grid == null || _gridSelectedField == null) return 0;
+
+            var sel = (Vector2i)_gridSelectedField.GetValue(_grid);
+            float targetY = -Mathf.Max(0, sel.y) * (_equipTileSize + EquipTileGap);
+            int best = 0;
+            float bestScore = float.MaxValue;
+
+            for (int i = 0; i < _equipSlotRoots.Length; i++)
+            {
+                var rt = _equipSlotRoots[i];
+                if (rt == null) continue;
+
+                var p = rt.anchoredPosition;
+                float score = Mathf.Abs(p.y - targetY) + Mathf.Abs(p.x) * 0.01f;
+                if (score < bestScore)
+                {
+                    bestScore = score;
+                    best = i;
+                }
+            }
+
+            return best;
+        }
+
+        private bool MoveEquipPanelSelection(Vector2 direction)
+        {
+            if (_equipSlotRoots == null || _equipSlotCount <= 1) return false;
+            if (_gamepadEquipSelected < 0 || _gamepadEquipSelected >= _equipSlotCount) return false;
+
+            int from = _gamepadEquipSelected;
+            int best = -1;
+            float bestScore = float.MaxValue;
+
+            var fromRt = _equipSlotRoots[from];
+            if (fromRt == null) return false;
+            Vector2 fromPos = fromRt.anchoredPosition;
+            Vector2 side = new Vector2(-direction.y, direction.x);
+
+            for (int i = 0; i < _equipSlotCount; i++)
+            {
+                if (i == from) continue;
+                var rt = _equipSlotRoots[i];
+                if (rt == null) continue;
+
+                Vector2 delta = rt.anchoredPosition - fromPos;
+                float forward = Vector2.Dot(delta, direction);
+                if (forward <= 0.5f) continue;
+
+                float lateral = Mathf.Abs(Vector2.Dot(delta, side));
+                float score = lateral * 2f + forward;
+                if (score < bestScore)
+                {
+                    bestScore = score;
+                    best = i;
+                }
+            }
+
+            if (best < 0) return false;
+            _gamepadEquipSelected = best;
+            return true;
+        }
+
+        private void ExitEquipPanelGamepadToGrid()
+        {
+            SetEquipPanelGamepadActive(false);
+            if (_grid == null || _gridWidthField == null || _gridSelectedField == null) return;
+
+            int width = (int)_gridWidthField.GetValue(_grid);
+            if (width <= 0) return;
+
+            var sel = (Vector2i)_gridSelectedField.GetValue(_grid);
+            sel.x = width - 1;
+            _grid.SetSelection(sel);
         }
 
         private void OnEquipSlotPointerClick(string slotId, PointerEventData.InputButton button)
@@ -1452,6 +1716,10 @@ namespace Companions
             var inv = GetStorageInventory();
             if (inv == null) return;
 
+            // Items represented by the extra-slot panel should not be interacted with in the main grid.
+            if (ExtraSlotsCompat.IsLoaded && item != null && _slotItemsInPanel.Contains(item))
+                return;
+
             var dragItem = _dragItemField?.GetValue(InventoryGui.instance) as ItemDrop.ItemData;
             var dragInv  = _dragInventoryField?.GetValue(InventoryGui.instance) as Inventory;
             int dragAmt  = (_dragAmountField != null)
@@ -1540,6 +1808,7 @@ namespace Companions
         private void OnCompanionRightClick(InventoryGrid grid, ItemDrop.ItemData item, Vector2i pos)
         {
             if (item == null) return;
+            if (ExtraSlotsCompat.IsLoaded && _slotItemsInPanel.Contains(item)) return;
             var inv = GetStorageInventory();
             if (inv == null) return;
 
@@ -1708,15 +1977,6 @@ namespace Companions
                 var pos = (Vector2i)_elemPosField.GetValue(elem);
                 var equipImg = _elemEquipedField.GetValue(elem) as Image;
                 var item = inv.GetItemAt(pos.x, pos.y);
-                bool inSlotPanel = item != null && _slotItemsInPanel.Contains(item);
-
-                // Hide items that are represented by the side slot panel so they are not mirrored.
-                if (_elemGoField != null)
-                {
-                    var go = _elemGoField.GetValue(elem) as GameObject;
-                    if (go != null) go.SetActive(!inSlotPanel);
-                }
-                if (inSlotPanel) continue;
 
                 if (equipImg != null)
                     equipImg.enabled = item != null && item.m_equipped;
@@ -1729,6 +1989,7 @@ namespace Companions
                         queuedImg.enabled = false; // companions don't queue equips through player
                 }
             }
+
         }
 
         // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
@@ -1870,6 +2131,9 @@ namespace Companions
             _foodSlotCounts     = null;
             _foodSlotsContainer = null;
             _equipSlotIcons     = null;
+            _equipSlotBgs       = null;
+            _equipSlotRoots     = null;
+            _equipSlotBaseColors = null;
             _equipSlotIds       = null;
             _equipPanel         = null;
             _weightText         = null;
@@ -1878,6 +2142,7 @@ namespace Companions
             _dragMode           = false;
             _dragging           = false;
             _built              = false;
+            SetEquipPanelGamepadActive(false);
         }
 
         // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
