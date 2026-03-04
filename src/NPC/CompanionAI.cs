@@ -227,6 +227,10 @@ namespace Companions
         private const float DebugLogInterval = 3f;
         private const float StuckThreshold = 5f;
         private static float FollowTeleportDist => ModConfig.FollowTeleportDistance.Value;
+        // Minimum per-frame player movement to classify as a portal/fast-travel jump.
+        // Normal sprint is ~6m/s → ~0.12m/frame @ 50fps. 15m per frame = portal jump.
+        private const float PortalJumpThreshold = 15f;
+        private Vector3 _lastFollowPos = Vector3.positiveInfinity; // "unset" sentinel
 
         // ── StayHome patrol enforcement ─────────────────────────────────────
         private float _homePatrolTimer;
@@ -320,7 +324,15 @@ namespace Companions
 
         public GameObject GetFollowTarget() => m_follow;
 
-        public void SetFollowTarget(GameObject go) { m_follow = go; }
+        public void SetFollowTarget(GameObject go)
+        {
+            m_follow = go;
+            // Clear the formation slot when follow is disabled so the companion gets
+            // a fresh slot assignment next time follow is re-enabled. Without this,
+            // the stale slot from the previous follow session is reused even if the
+            // formation group has changed.
+            if (go == null) _formationSlot = -1;
+        }
 
         // ══════════════════════════════════════════════════════════════════════
         //  Public API — Targets
@@ -342,6 +354,20 @@ namespace Companions
             m_targetStatic = null;
             _inCombatStopRange = false;
             _attackRetryTime = 0f;
+            _circleTimer = 0f;
+            _navClaimedDoneCount = 0;
+        }
+
+        /// <summary>
+        /// Clears only the creature target and resets combat phase state.
+        /// Used in UpdateTarget wherever m_targetCreature is invalidated directly —
+        /// ensures _inCombatStopRange and _circleTimer never linger from a previous
+        /// fight into the next target acquisition.
+        /// </summary>
+        private void ClearCreatureTarget()
+        {
+            m_targetCreature = null;
+            _inCombatStopRange = false;
             _circleTimer = 0f;
         }
 
@@ -400,7 +426,21 @@ namespace Companions
         // but the companion can't actually move (half-wall blocking the NavMesh path).
         // After this timer exceeds the threshold, context steer takes over.
         private float _pathStuckTimer;
-        private const float PathStuckThreshold = 0.7f;  // lowered from 1.5s: faster response to walking into walls
+        private const float PathStuckThreshold = 2.0f;  // give navmesh time to work — vanilla wolves have no stuck threshold at all
+
+        // "NavMesh claimed done but still far" retry counter — don't switch to
+        // context steer on the first failure. NavMesh tiles may not be loaded yet;
+        // retrying gives PokeArea() time to build them (just like vanilla wolves do).
+        private int _navClaimedDoneCount;
+        private const int NavClaimedDoneRetryFrames = 15; // ~0.25s at 60fps before ctx-steer
+
+        /// <summary>
+        /// True when MoveToPoint's navmesh pathfinding has failed — either context steer
+        /// fallback is active or "NavMesh claimed done" retries are pending.
+        /// External controllers (HarvestController, RepairController) can check this to
+        /// avoid pushing toward unreachable targets.
+        /// </summary>
+        internal bool IsNavMeshFailing => _inContextSteerFallback || _navClaimedDoneCount > 0;
 
         // Logging throttle — context steer decisions are per-frame, throttle to every 2s
         private float _ctxLogTimer;
@@ -421,6 +461,13 @@ namespace Companions
             if (goalDir.sqrMagnitude < 0.01f)
                 return transform.forward;
             goalDir.Normalize();
+
+            // Throttle raycasts to every other frame when a valid smoothed direction
+            // already exists. Context steering is already temporally smoothed so a
+            // 1-frame-old direction is imperceptibly stale, but halves the raycast load
+            // for 5+ companions stuck simultaneously (130 rays/frame → ~65).
+            if (Time.frameCount % 2 != 0 && _ctxSmoothedDir.sqrMagnitude > 0.01f)
+                return _ctxSmoothedDir;
 
             Vector3 center = m_character.GetCenterPoint();
 
@@ -571,20 +618,42 @@ namespace Companions
             bool result = MoveTo(dt, point, dist, run);
 
             // MoveTo returned "arrived" but we're still far — pathfinding failed.
-            // Navigate with context steering directly toward the goal.
+            // Don't switch to context steer immediately; NavMesh tiles may not be
+            // built yet. Vanilla wolves just stop and retry — PokeArea() eventually
+            // builds the tiles and FindPath succeeds. Only fall back to context steer
+            // after multiple consecutive failures.
             if (result && distXZ > dist + 0.5f)
             {
+                _navClaimedDoneCount++;
+                _moveToPointActiveFrame = Time.frameCount;
+
+                if (_navClaimedDoneCount < NavClaimedDoneRetryFrames)
+                {
+                    // Let navmesh retry — just stop (like a vanilla wolf would)
+                    if (_navClaimedDoneCount == 1)
+                    {
+                        CompanionsPlugin.Log.LogDebug(
+                            $"[AI:Path] NavMesh claimed done but {distXZ:F1}m away — " +
+                            $"retrying ({NavClaimedDoneRetryFrames} frames). pos={transform.position:F1}");
+                    }
+                    return false;
+                }
+
                 CompanionsPlugin.Log.LogDebug(
-                    $"[AI:Path] NavMesh claimed done but {distXZ:F1}m away — " +
-                    $"ctx-steer fallback. pos={transform.position:F1}");
+                    $"[AI:Path] NavMesh claimed done {_navClaimedDoneCount}x — " +
+                    $"ctx-steer fallback. dist={distXZ:F1}m pos={transform.position:F1}");
                 _inContextSteerFallback = true;
                 _ctxFallbackStartPos = transform.position;
                 _ctxLogTimer = 0f;
-                _moveToPointActiveFrame = Time.frameCount;
+                _navClaimedDoneCount = 0;
                 Vector3 bestDir = ContextSteer(goalDir, "fallback");
                 MoveTowards(bestDir, run);
                 UpdateFallbackStuck(dt, goalDir, run);
                 return false;
+            }
+            else
+            {
+                _navClaimedDoneCount = 0;
             }
 
             // Path following is in progress. Check for path-stuck: NavMesh says
@@ -598,34 +667,12 @@ namespace Companions
                 float vel = m_character.GetVelocity().magnitude;
                 if (vel < GroundStuckVelThreshold && !m_character.InAttack())
                 {
-                    // Proactive: when velocity has dropped, spherecast in the current
-                    // movement direction. If a building piece is directly ahead (≤2m),
-                    // force the stuck timer to threshold immediately instead of waiting
-                    // up to PathStuckThreshold seconds. This is the main reason companions
-                    // stand still at walls — the stuck timer adds a long visible pause.
-                    bool stuckTimerWasZero = _pathStuckTimer == 0f;
-
-                    if (_pathStuckTimer < PathStuckThreshold)
-                    {
-                        Vector3 moveDir = m_character.GetMoveDir();
-                        moveDir.y = 0f;
-                        if (moveDir.sqrMagnitude > 0.01f)
-                        {
-                            moveDir.Normalize();
-                            Vector3 probeOrigin = m_character.GetCenterPoint();
-                            if (Physics.SphereCast(probeOrigin, 0.35f, moveDir, out RaycastHit sphereHit, 2f, _ctxSteerMask))
-                            {
-                                CompanionsPlugin.Log.LogDebug(
-                                    $"[AI:Path] Proactive wall detect — " +
-                                    $"hit={sphereHit.collider?.name ?? "?"} dist={sphereHit.distance:F1}m — " +
-                                    $"forcing ctx-steer. goal={distXZ:F1}m pos={transform.position:F1}");
-                                _pathStuckTimer = PathStuckThreshold; // wall directly ahead — react now
-                            }
-                        }
-                    }
-
-                    // Log the first frame we start accumulating (vel dropped, not yet stuck)
-                    if (stuckTimerWasZero && _pathStuckTimer < PathStuckThreshold)
+                    // Let the stuck timer accumulate naturally. Vanilla wolves trust
+                    // navmesh completely and just retry — no proactive wall detection.
+                    // The removed proactive wall raycast was causing premature context
+                    // steer activation during normal navmesh pathing near buildings,
+                    // making companions push against walls instead of navigating around.
+                    if (_pathStuckTimer == 0f)
                     {
                         CompanionsPlugin.Log.LogDebug(
                             $"[AI:Path] Stuck timer starting — vel={vel:F2} goal={distXZ:F1}m pos={transform.position:F1}");
@@ -1517,9 +1564,31 @@ namespace Companions
             // in case m_follow was set by a code path that didn't verify the toggle).
             if (m_follow != null && _setup != null && _setup.GetFollow())
             {
-                float distToFollow = Vector3.Distance(transform.position, m_follow.transform.position);
-                if (distToFollow > FollowTeleportDist)
+                Vector3 followNow = m_follow.transform.position;
+                float distToFollow = Vector3.Distance(transform.position, followNow);
+
+                // Portal / fast-travel detection: if the player's position jumped more
+                // than PortalJumpThreshold in a single frame, they used a portal.
+                // Teleport immediately instead of waiting for FollowTeleportDist.
+                bool portalJump = !float.IsInfinity(_lastFollowPos.x) &&
+                    Vector3.Distance(_lastFollowPos, followNow) > PortalJumpThreshold;
+
+                if (portalJump)
+                {
+                    CompanionsPlugin.Log.LogInfo(
+                        $"[AI] Portal/teleport detected — player jumped {Vector3.Distance(_lastFollowPos, followNow):F0}m in one frame — teleporting companion");
                     TeleportToFollowTarget();
+                }
+                else if (distToFollow > FollowTeleportDist)
+                {
+                    TeleportToFollowTarget();
+                }
+
+                _lastFollowPos = followNow;
+            }
+            else if (m_follow == null)
+            {
+                _lastFollowPos = Vector3.positiveInfinity; // reset when follow clears
             }
 
             // StayHome hard leash — if companion strays more than 50m from home
@@ -1847,6 +1916,10 @@ namespace Companions
                 if (IsAlerted()) SetAlerted(false);
                 SuppressAttack = true;
 
+                // Gathering/farming/smelting controllers manage their own mode checks
+                // in their Update() loops — don't call NotifyActionModeChanged every frame
+                // as it resets scan timers, rotation, and spams logs.
+
                 // Repair/Restock modes also run in passive stance — dispatch FIRST
                 // so the state machine advances before the controller-active guard
                 var passiveZdo = m_nview?.GetZDO();
@@ -2107,10 +2180,24 @@ namespace Companions
                 if (stance == CompanionSetup.StanceAggressive)
                     m_viewRange = Mathf.Max(m_viewRange, 50f);
 
+                // FindEnemy returns the closest valid enemy within view/hear range.
+                // After finding it, check for a higher-priority target: enemies actively
+                // attacking the player or companion are preferred over the merely closest.
                 Character enemy = FindEnemy();
 
                 if (stance == CompanionSetup.StanceAggressive)
                     m_viewRange = savedRange;
+
+                // Priority override: if an enemy is actively attacking the player or
+                // companion and we can perceive it, switch focus to that target instead.
+                Character priorityEnemy = FindAttackingPlayerEnemy(savedRange);
+                if (priorityEnemy != null && priorityEnemy != enemy)
+                {
+                    CompanionsPlugin.Log.LogDebug(
+                        $"[AI] Priority target switch: \"{enemy?.m_name ?? "null"}\" → " +
+                        $"\"{priorityEnemy.m_name}\" (attacking player/companion)");
+                    enemy = priorityEnemy;
+                }
 
                 if (enemy != null)
                 {
@@ -2124,6 +2211,13 @@ namespace Companions
                         {
                             var aiTarget = eAI.GetTargetCreature();
                             if (aiTarget != null && (aiTarget == m_character || aiTarget.IsPlayer()))
+                                threatsUs = true;
+                        }
+                        // Also accept if actively attacking
+                        if (!threatsUs && enemy.InAttack())
+                        {
+                            float dToUs = Vector3.Distance(transform.position, enemy.transform.position);
+                            if (dToUs < SelfDefenseRange)
                                 threatsUs = true;
                         }
                         if (!threatsUs)
@@ -2153,21 +2247,22 @@ namespace Companions
                     float enemyDistFromHome = Utils.DistanceXZ(
                         m_targetCreature.transform.position, _setup.GetHomePosition());
                     if (enemyDistFromHome > CompanionSetup.MaxLeashDistance)
-                    {
-                        m_targetCreature = null;
-                    }
+                        ClearCreatureTarget();
                 }
 
                 if (m_targetCreature != null && GetPatrolPoint(out var point))
                 {
-                    if (Vector3.Distance(m_targetCreature.transform.position, point) > AlertRange)
-                        m_targetCreature = null;
+                    // Patrol leash: drop target if it strays too far from patrol point.
+                    // Was AlertRange (9999f) — patrol companions were chasing enemies across
+                    // the entire map. Use SelfDefenseRange as a reasonable patrol leash.
+                    if (Vector3.Distance(m_targetCreature.transform.position, point) > SelfDefenseRange * 2f)
+                        ClearCreatureTarget();
                 }
                 else if (m_targetCreature != null && m_follow != null &&
                          Vector3.Distance(m_targetCreature.transform.position,
                              m_follow.transform.position) > AlertRange)
                 {
-                    m_targetCreature = null;
+                    ClearCreatureTarget();
                 }
             }
 
@@ -2175,11 +2270,11 @@ namespace Companions
             if (m_targetCreature != null)
             {
                 if (m_targetCreature.IsDead())
-                    m_targetCreature = null;
+                    ClearCreatureTarget();
                 else if (!IsEnemy(m_targetCreature))
-                    m_targetCreature = null;
+                    ClearCreatureTarget();
                 else if (m_skipLavaTargets && m_targetCreature.AboveOrInLava())
-                    m_targetCreature = null;
+                    ClearCreatureTarget();
             }
 
             // ── Sense tracking ──
@@ -2211,8 +2306,7 @@ namespace Companions
                     m_timeSinceAttacking > 60f)
                 {
                     SetAlerted(false);
-                    m_targetCreature = null;
-                    m_targetStatic = null;
+                    ClearTargets(); // clears both creature + static + combat phase state
                     m_timeSinceAttacking = 0f;
                     m_timeSinceSensedTargetCreature = 0f;
                     m_updateTargetTimer = 5f;
@@ -2236,11 +2330,13 @@ namespace Companions
 
             foreach (Character c in Character.GetAllCharacters())
             {
-                if (c == null || c == m_character || c.IsDead()) continue;
-                if (c.GetHealth() <= 0f || !IsEnemy(c)) continue;
-
+                if (c == null || c == m_character) continue;
+                // Distance check FIRST — cheap position compare before any method calls.
+                // Previously IsDead/GetHealth/IsEnemy were checked before distance, wasting
+                // time on far-away characters that would be rejected by the range anyway.
                 float distSqr = (c.transform.position - myPos).sqrMagnitude;
                 if (distSqr > maxDistSqr) continue;
+                if (c.IsDead() || c.GetHealth() <= 0f || !IsEnemy(c)) continue;
 
                 _gatherEnemyNearby = true;
                 if (distSqr < nearestSqr)
@@ -2252,6 +2348,48 @@ namespace Companions
 
             if (_gatherNearestEnemy != null)
                 _gatherNearestEnemyDist = Mathf.Sqrt(nearestSqr);
+        }
+
+        /// <summary>
+        /// Scans for an enemy that is actively attacking the player or companion.
+        /// Used to override FindEnemy()'s distance-only selection with threat priority.
+        /// Returns the closest such enemy within the given scan range, or null.
+        /// </summary>
+        private Character FindAttackingPlayerEnemy(float scanRange)
+        {
+            var player = Player.m_localPlayer;
+            float rangeSqr = scanRange * scanRange;
+            Vector3 myPos = transform.position;
+
+            Character best = null;
+            float bestDistSqr = rangeSqr;
+
+            foreach (Character c in Character.GetAllCharacters())
+            {
+                if (c == null || c == m_character || c.IsDead() || c.GetHealth() <= 0f) continue;
+                if (!IsEnemy(c)) continue;
+
+                float distSqr = (c.transform.position - myPos).sqrMagnitude;
+                if (distSqr > rangeSqr) continue;
+
+                // Prefer enemies actively attacking the player or companion
+                var cAI = c.GetBaseAI();
+                if (cAI == null) continue;
+                var cTarget = cAI.GetTargetCreature();
+                bool attackingUs = cTarget != null && (cTarget == m_character ||
+                    (player != null && cTarget == (Character)player));
+                if (!attackingUs) continue;
+
+                // Must be able to see or hear it
+                if (!CanSeeTarget(c) && !CanHearTarget(c)) continue;
+
+                if (distSqr < bestDistSqr)
+                {
+                    bestDistSqr = distSqr;
+                    best = c;
+                }
+            }
+            return best;
         }
 
         private float _suppressLogTimer;
@@ -2436,6 +2574,18 @@ namespace Companions
                     if (_companionStamina != null && _companionStamina.GetStaminaPercentage() < 0.25f)
                         runToTarget = false;
                     MoveToPoint(dt, moveTarget, 0f, runToTarget);
+
+                    // If navmesh can't reach the enemy, stop — don't push against
+                    // walls with context steer. Vanilla monsters just stand still
+                    // when they can't path to a target. The existing flanking logic
+                    // and UpdateTarget will handle target changes.
+                    if (_inContextSteerFallback)
+                    {
+                        _inContextSteerFallback = false;
+                        _pathStuckTimer = 0f;
+                        _ctxSmoothedDir = Vector3.zero;
+                        StopMoving();
+                    }
                 }
                 else
                 {
@@ -2463,6 +2613,13 @@ namespace Companions
                             _circleTargetPos = m_targetCreature.transform.position + circleOffset;
                         }
                         MoveToPoint(dt, _circleTargetPos, 0.5f, false);
+                        if (_inContextSteerFallback)
+                        {
+                            _inContextSteerFallback = false;
+                            _pathStuckTimer = 0f;
+                            _ctxSmoothedDir = Vector3.zero;
+                            StopMoving();
+                        }
                         LookAt(m_targetCreature.transform.position);
                     }
                     else
@@ -2524,6 +2681,12 @@ namespace Companions
         {
             // CombatController blocking — suppress attack
             if (SuppressAttack) return false;
+
+            // Don't attack at critically low stamina — attacks cost stamina and
+            // draining to zero prevents dodge and blocking, leaving the companion
+            // wide open. Allow regen to kick in before swinging again.
+            if (_companionStamina != null && _companionStamina.GetStaminaPercentage() < 0.10f)
+                return false;
 
             Humanoid humanoid = m_character as Humanoid;
             if (humanoid == null) return false;
@@ -2917,6 +3080,7 @@ namespace Companions
             // Reset context steer state — after a teleport the old direction is invalid.
             _ctxSmoothedDir = Vector3.zero;
             _pathStuckTimer = 0f;
+            _navClaimedDoneCount = 0;
             _inContextSteerFallback = false;
             _ctxFallbackStartPos = Vector3.zero;
 
@@ -3065,6 +3229,21 @@ namespace Companions
                 shouldRun = playerRunning || distToTarget > 10f;
 
             MoveToPoint(dt, formationPos, 1f, shouldRun);
+
+            // If MoveToPoint couldn't navmesh-path to the formation slot — either
+            // context steer activated or it's retrying after "NavMesh claimed done" —
+            // fall back to vanilla Follow to the player. The player's position is
+            // always navmesh-reachable (they just walked there), so this gives
+            // wolf-like navigation around buildings instead of pushing against walls.
+            if (_inContextSteerFallback || _navClaimedDoneCount > 0)
+            {
+                _inContextSteerFallback = false;
+                _navClaimedDoneCount = 0;
+                _pathStuckTimer = 0f;
+                _ctxSmoothedDir = Vector3.zero;
+                Follow(target, dt);
+            }
+
             ApplyPlayerMovementMatch(playerSneaking, playerWalking, playerRunning);
         }
 
@@ -3815,8 +3994,15 @@ namespace Companions
                     CompanionsPlugin.Log.LogWarning(
                         $"[AI:Unstuck] {_groundStuckAttempts} failed recovery attempts — " +
                         $"teleporting to follow target. pos={transform.position:F1}");
+                    // Blacklist the stuck position so NavMesh won't route us straight
+                    // back into the same obstacle after the teleport.
+                    BlacklistPosition(_lastGroundStuckPos);
                     TeleportToFollowTarget();
                     _groundStuckAttempts = 0;
+                    // Short suppress after teleport: let the new position settle before
+                    // stuck detection re-arms. Prevents immediate re-trigger if the
+                    // teleport lands near another obstacle.
+                    _groundStuckSuppressTimer = 8f;
                     return false;
                 }
 
@@ -3879,8 +4065,9 @@ namespace Companions
             float bestAngle = 90f;
             float bestScore = -1f;
 
-            // Probe 8 directions: ±45, ±90, ±135, 180, and 0 (forward)
-            float[] angles = { 90f, -90f, 45f, -45f, 135f, -135f, 180f, 0f };
+            // Probe 12 directions. ±90, ±45, ±135, 180, 0 (original 8) plus
+            // ±22.5 and ±112.5 to catch optimal diagonals in L-shaped corners.
+            float[] angles = { 90f, -90f, 45f, -45f, 135f, -135f, 180f, 0f, 22.5f, -22.5f, 112.5f, -112.5f };
             for (int i = 0; i < angles.Length; i++)
             {
                 Vector3 dir = Quaternion.Euler(0f, angles[i], 0f) * transform.forward;

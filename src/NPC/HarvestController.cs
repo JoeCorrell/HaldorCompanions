@@ -732,9 +732,16 @@ namespace Companions
             }
             bool moveResult = _ai.MoveToPoint(dt, targetPos, moveGoal, runToTarget);
 
+            // When navmesh genuinely can't path to the target (ctx-steer or "claimed
+            // done" retries active), don't push directly — stop and let the MoveTimeout
+            // blacklist the target. Pushing against walls makes the companion look broken.
+            if (_ai.IsNavMeshFailing)
+            {
+                _ai.StopMoving();
+            }
             // Pathfinding failed at close range — fall back to direct push.
             // This handles cases where the navmesh has gaps near the target.
-            if (!moveResult && distToTarget < 4f)
+            else if (!moveResult && distToTarget < 4f)
             {
                 Vector3 dir = (targetPos - transform.position);
                 dir.y = 0f;

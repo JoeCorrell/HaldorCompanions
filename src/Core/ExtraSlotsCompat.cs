@@ -291,6 +291,35 @@ namespace Companions
             return false;
         }
 
+        internal static bool TryGetActiveSlotIndex(string slotId, out int index)
+        {
+            index = -1;
+            if (string.IsNullOrEmpty(slotId)) return false;
+
+            for (int i = 0; i < _activeSlots.Count; i++)
+            {
+                if (string.Equals(_activeSlots[i].Id, slotId, StringComparison.OrdinalIgnoreCase))
+                {
+                    index = i;
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        internal static int GetActiveSlotCount()
+        {
+            return _activeSlots.Count;
+        }
+
+        internal static int GetActiveSlotsRowCountForWidth(int inventoryWidth)
+        {
+            if (inventoryWidth <= 0) return 0;
+            if (_activeSlots.Count <= 0) return 0;
+            return (int)Math.Ceiling(_activeSlots.Count / (double)inventoryWidth);
+        }
+
         internal static bool IsAnySlotGridPosition(Vector2i pos)
         {
             for (int i = 0; i < _activeSlots.Count; i++)

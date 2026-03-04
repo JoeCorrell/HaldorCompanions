@@ -57,7 +57,10 @@ namespace Companions
             // handle injection at that point via __instance.
         }
 
-        /// <summary>Auto-generates Translations/English.json if it doesn't exist.</summary>
+        /// <summary>
+        /// Writes Translations/English.json. Creates it if missing; overwrites it if the
+        /// file has fewer entries than the current defaults (i.e. it is stale).
+        /// </summary>
         public static void EnsureDefaultFile()
         {
             if (_englishDefaults == null) return;
@@ -68,7 +71,16 @@ namespace Companions
                     Directory.CreateDirectory(_translationsDir);
 
                 string path = Path.Combine(_translationsDir, "English.json");
-                if (File.Exists(path)) return;
+
+                // Only skip if the file already has a matching (up-to-date) number of entries.
+                if (File.Exists(path))
+                {
+                    string existing = File.ReadAllText(path);
+                    var existingDict = ParseTranslationJson(existing);
+                    if (existingDict != null && existingDict.Count >= _englishDefaults.Count) return;
+                    CompanionsPlugin.Log.LogInfo(
+                        $"[Localization] English.json is stale ({existingDict?.Count ?? 0} vs {_englishDefaults.Count} keys) — regenerating.");
+                }
 
                 var entries = new List<KeyValuePair<string, string>>(_englishDefaults);
                 entries.Sort((a, b) => string.Compare(a.Key, b.Key, StringComparison.Ordinal));
@@ -113,30 +125,39 @@ namespace Companions
             if (loc == null) return;
 
             string language = loc.GetSelectedLanguage();
-            var translations = LoadTranslationFile(language);
-            if (translations == null && language != "English")
-                translations = LoadTranslationFile("English");
-            if (translations == null)
-                translations = _englishDefaults;
 
-            var dict = TranslationsField?.GetValue(loc)
-                as Dictionary<string, string>;
+            var dict = TranslationsField?.GetValue(loc) as Dictionary<string, string>;
             if (dict == null) return;
 
-            int count = 0;
-            foreach (var kvp in translations)
+            // Layer 1: always inject all English defaults first so every key has a value.
+            // This ensures keys added after a user's language file was generated still work.
+            if (_englishDefaults != null)
+                foreach (var kvp in _englishDefaults)
+                    dict[kvp.Key] = kvp.Value;
+
+            // Layer 2: overlay with the language-specific file (or English file for overrides).
+            // Missing keys in the language file gracefully fall back to the English default above.
+            var overrides = LoadTranslationFile(language != "English" ? language : null);
+            if (overrides == null && language != "English")
+                overrides = LoadTranslationFile("English");
+
+            int overrideCount = 0;
+            if (overrides != null)
             {
-                dict[kvp.Key] = kvp.Value;
-                count++;
+                foreach (var kvp in overrides)
+                {
+                    dict[kvp.Key] = kvp.Value;
+                    overrideCount++;
+                }
             }
 
             CompanionsPlugin.Log.LogInfo(
-                $"[Localization] Injected {count} keys for language \"{language}\"");
+                $"[Localization] Injected {_englishDefaults?.Count ?? 0} defaults + {overrideCount} \"{language}\" overrides");
         }
 
         private static Dictionary<string, string> LoadTranslationFile(string language)
         {
-            if (string.IsNullOrEmpty(_translationsDir)) return null;
+            if (string.IsNullOrEmpty(language) || string.IsNullOrEmpty(_translationsDir)) return null;
             string path = Path.Combine(_translationsDir, language + ".json");
             if (!File.Exists(path)) return null;
 

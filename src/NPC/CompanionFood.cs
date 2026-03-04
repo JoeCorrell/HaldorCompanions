@@ -341,7 +341,7 @@ namespace Companions
             _foods[slot] = new FoodEffect
             {
                 ItemName       = item.m_shared.m_name,
-                ItemPrefabName = item.m_dropPrefab != null ? item.m_dropPrefab.name : item.m_shared?.m_name ?? "",
+                ItemPrefabName = GetItemPrefabName(item),
                 HealthBonus    = item.m_shared.m_food,
                 StaminaBonus   = item.m_shared.m_foodStamina,
                 EitrBonus      = item.m_shared.m_foodEitr,
@@ -477,6 +477,25 @@ namespace Companions
                 }
             }
             return bestSlot;
+        }
+
+        private static string GetItemPrefabName(ItemDrop.ItemData item)
+        {
+            if (item == null) return "";
+            if (item.m_dropPrefab != null) return item.m_dropPrefab.name;
+
+            // m_dropPrefab can be null for items in containers. Resolve by matching
+            // the shared data reference against ObjectDB prefabs.
+            var all = ObjectDB.instance?.m_items;
+            if (all == null || item.m_shared == null) return "";
+            for (int i = 0; i < all.Count; i++)
+            {
+                var drop = all[i] != null ? all[i].GetComponent<ItemDrop>() : null;
+                if (drop?.m_itemData?.m_shared == null) continue;
+                if (ReferenceEquals(drop.m_itemData.m_shared, item.m_shared))
+                    return all[i].name;
+            }
+            return "";
         }
 
         private static bool IsFoodItem(ItemDrop.ItemData item)

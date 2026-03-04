@@ -56,6 +56,7 @@ namespace Companions
         private float _consumeTimer;
         private float _powerAttackTimer;
         private float _retreatTimer;
+        private float _retreatCooldown; // blocks immediate re-entry after leaving retreat
         private float _heartbeatTimer;
         private float _stuckTimer;
         private Vector3 _lastStuckPos;
@@ -156,6 +157,7 @@ namespace Companions
             _bowFireCooldown = Mathf.Max(0f, _bowFireCooldown - dt);
             _abandonCooldown = Mathf.Max(0f, _abandonCooldown - dt);
             _dodgeCooldown = Mathf.Max(0f, _dodgeCooldown - dt);
+            _retreatCooldown = Mathf.Max(0f, _retreatCooldown - dt);
             _projectileCacheTimer -= dt;
 
             // Active dodge — supersedes all other combat logic
@@ -341,6 +343,9 @@ namespace Companions
                     CompanionsPlugin.Log.LogDebug(
                         $"[Combat] Retreat RECOVERED — hp={healthPct:P0} stam={staminaPct:P0} — re-engaging");
                     ExitCombat("recovered from retreat");
+                    // Cooldown prevents immediate re-entry if HP is near the boundary.
+                    // Without this, a hit taken in the same frame re-triggers retreat.
+                    _retreatCooldown = 5f;
                 }
                 else
                 {
@@ -348,7 +353,8 @@ namespace Companions
                     return;
                 }
             }
-            else if (healthPct < retreatHpPct || staminaPct < retreatStamPct)
+            else if (_retreatCooldown <= 0f &&
+                     (healthPct < retreatHpPct || staminaPct < retreatStamPct))
             {
                 TransitionTo(CombatPhase.Retreat);
                 CompanionsPlugin.Log.LogDebug(
@@ -1012,9 +1018,20 @@ namespace Companions
             // rotates to face the target, causing IsLookingAt to always return false.
             Vector3 aimPoint = target.GetCenterPoint();
 
-            // Face target and stop to aim
-            _ai.LookAtPoint( aimPoint);
-            _ai.StopMoving();
+            // Face target. While enemy is dangerously close, back away to maintain
+            // minimum bow range. At safe distance, stand still to aim.
+            _ai.LookAtPoint(aimPoint);
+            if (dist < BowMinRange)
+            {
+                // Back away from enemy while continuing to face them for the shot
+                Vector3 backDir = (transform.position - target.transform.position).normalized;
+                backDir.y = 0f;
+                _ai.PushDirection(backDir, false); // walk (not run) to keep aim stable
+            }
+            else
+            {
+                _ai.StopMoving();
+            }
 
             // 30° tolerance — generous enough for NPC rotation lag while still
             // ensuring the shot is in roughly the right direction.
@@ -1327,6 +1344,7 @@ namespace Companions
             TransitionTo(CombatPhase.Idle);
             _stuckTimer = 0f;
             _retreatTimer = 0f;
+            _retreatCooldown = 0f; // clear on full combat exit (not just retreat exit)
             _bowDrawTimer = 0f;
             _bowFireCooldown = 0f;
 
