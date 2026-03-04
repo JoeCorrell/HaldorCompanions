@@ -357,6 +357,7 @@ namespace Companions
                     // Cooldown prevents immediate re-entry if HP is near the boundary.
                     // Without this, a hit taken in the same frame re-triggers retreat.
                     _retreatCooldown = 5f;
+                    return;
                 }
                 else
                 {
@@ -907,15 +908,17 @@ namespace Companions
                 {
                     if (weapon != null && weapon.HaveSecondaryAttack())
                     {
-                        _humanoid.StartAttack(target, true);
-                        float paCooldown = stance == CompanionSetup.StanceAggressive
-                            ? PowerAttackCooldown * 0.5f : PowerAttackCooldown;
-                        _powerAttackTimer = paCooldown;
-                        _attackCooldownTimer = AttackCooldown;
-                        _counterWindow = 0f;
-                        CompanionsPlugin.Log.LogDebug(
-                            $"[Combat] COUNTER POWER ATTACK on staggered \"{target.m_name}\" " +
-                            $"dist={dist:F1} range={weaponRange:F1}");
+                        if (_humanoid.StartAttack(target, true))
+                        {
+                            float paCooldown = stance == CompanionSetup.StanceAggressive
+                                ? PowerAttackCooldown * 0.5f : PowerAttackCooldown;
+                            _powerAttackTimer = paCooldown;
+                            _attackCooldownTimer = AttackCooldown;
+                            _counterWindow = 0f;
+                            CompanionsPlugin.Log.LogDebug(
+                                $"[Combat] COUNTER POWER ATTACK on staggered \"{target.m_name}\" " +
+                                $"dist={dist:F1} range={weaponRange:F1}");
+                        }
                     }
                 }
                 // Normal attacks are handled by CompanionAI.DoAttack (SuppressAttack=false)
@@ -928,14 +931,16 @@ namespace Companions
             {
                 if (weapon != null && weapon.HaveSecondaryAttack())
                 {
-                    _humanoid.StartAttack(target, true);
-                    float paCooldown2 = stance == CompanionSetup.StanceAggressive
-                        ? PowerAttackCooldown * 0.5f : PowerAttackCooldown;
-                    _powerAttackTimer = paCooldown2;
-                    _attackCooldownTimer = AttackCooldown;
-                    CompanionsPlugin.Log.LogDebug(
-                        $"[Combat] POWER ATTACK on staggered \"{target.m_name}\" " +
-                        $"dist={dist:F1} range={weaponRange:F1}");
+                    if (_humanoid.StartAttack(target, true))
+                    {
+                        float paCooldown2 = stance == CompanionSetup.StanceAggressive
+                            ? PowerAttackCooldown * 0.5f : PowerAttackCooldown;
+                        _powerAttackTimer = paCooldown2;
+                        _attackCooldownTimer = AttackCooldown;
+                        CompanionsPlugin.Log.LogDebug(
+                            $"[Combat] POWER ATTACK on staggered \"{target.m_name}\" " +
+                            $"dist={dist:F1} range={weaponRange:F1}");
+                    }
                 }
             }
         }
@@ -1227,6 +1232,7 @@ namespace Companions
                 _ai.ClearTargets();
                 ExitCombat("retreat timeout");
                 _retreatTimer = 0f;
+                _retreatCooldown = 5f;
             }
         }
 

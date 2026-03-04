@@ -1368,7 +1368,7 @@ namespace Companions
 
         private void Finish()
         {
-            Log("Finish — restoring follow target");
+            Log("Finish — immediate re-scan for next task");
             CloseAnyOpenChest();
             RestoreCombatLoadout();
             _targetPickable = null;
@@ -1376,8 +1376,11 @@ namespace Companions
             _outputChest = null;
             _allDoneNotified = false;
             _phase = FarmPhase.Idle;
-            _scanTimer = ScanInterval;
-            RestoreFollow();
+            // Immediate re-scan instead of waiting ScanInterval — prevents
+            // one-frame follow jitter between tasks (Finish→RestoreFollow→
+            // next frame scan→ClearFollow caused companion to briefly walk
+            // toward player then snap back to work).
+            _scanTimer = 0f;
         }
 
         private void Abort(string reason)
@@ -1403,7 +1406,8 @@ namespace Companions
             if (_setup != null)
             {
                 _setup.SuppressAutoEquip = false;
-                Log("SuppressAutoEquip=false, triggering auto-equip");
+                _setup.SyncEquipmentToInventory();
+                Log("SuppressAutoEquip=false, triggered auto-equip");
             }
         }
 

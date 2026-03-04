@@ -90,6 +90,13 @@ namespace Companions
         private readonly List<Piece> _tempPieces = new List<Piece>();
         private readonly List<Container> _nearbyChests = new List<Container>();
 
+        // ── Blacklist for unreachable targets ─────────────────────────────
+        // When stuck-abort fires, the target's instance ID is added here with
+        // an expiry time. Scans skip blacklisted targets to prevent infinite
+        // retry loops on unreachable locations.
+        private readonly Dictionary<int, float> _blacklist = new Dictionary<int, float>();
+        private const float BlacklistDuration = 120f;
+
         // ── Constants ───────────────────────────────────────────────────────
         private static float ScanInterval     => ModConfig.HomesteadScanInterval.Value;
         private static float ScanBackoff      => ModConfig.HomesteadScanBackoff.Value;
@@ -172,6 +179,9 @@ namespace Companions
             _slotTimer -= Time.deltaTime;
             if (_slotTimer <= 0f)
             {
+                // Prune expired blacklist entries on rotation
+                PruneBlacklist();
+
                 // Abort current task before switching
                 if (_phase != HomesteadPhase.Idle)
                     Abort($"rotation → next slot");
@@ -268,6 +278,10 @@ namespace Companions
                 Log($"Scan [{_currentSlot}]: nothing to do — backing off");
             _lastScanEmpty = true;
             _scanTimer = ScanBackoff;
+
+            // If hammer was left equipped from a repair run, restore weapon now
+            if (_hammerEquipped)
+                RestoreWeaponAfterRepair();
         }
 
         // ═════════════════════════════════════════════════════════════════════
@@ -317,6 +331,8 @@ namespace Companions
                     Log($"  Fire \"{fp.m_name}\" fuel={currentFuel:F1}/{maxFuel:F0} ({ratio * 100f:F0}%) — above threshold");
                     continue;
                 }
+
+                if (IsBlacklisted(fp.gameObject)) continue;
 
                 lowFuelCount++;
                 float dist = Vector3.Distance(transform.position, fp.transform.position);
@@ -628,6 +644,8 @@ namespace Companions
                 float hp = wnt.GetHealthPercentage();
                 if (hp >= 1f) continue;
 
+                if (IsBlacklisted(wnt.gameObject)) continue;
+
                 // Prefer closest first — repair nearby before running far
                 if (dist < bestDist)
                 {
@@ -755,10 +773,12 @@ namespace Companions
             {
                 Log("Piece fully repaired — scanning for next");
                 if (_talk != null) _talk.Say(ModLocalization.Loc("hc_speech_homestead_repaired"), "Repair");
-                RestoreWeaponAfterRepair();
+                // Keep hammer equipped — if next scan finds another damaged piece,
+                // this avoids a pointless unequip→re-equip cycle. Weapon restoration
+                // happens in Abort() or when the Repair slot ends.
                 _targetPiece = null;
                 _phase = HomesteadPhase.Idle;
-                _scanTimer = 1f; // quick rescan for next damaged piece
+                _scanTimer = 0f; // immediate rescan for next damaged piece
             }
         }
 
@@ -1126,6 +1146,7 @@ namespace Companions
                 if (container.gameObject == gameObject) continue;
                 // Skip containers in use
                 if (container.IsInUse()) continue;
+                if (IsBlacklisted(container.gameObject)) continue;
                 _nearbyChests.Add(container);
             }
         }
@@ -1304,7 +1325,20 @@ namespace Companions
             }
 
             if (_stuckTimer > MoveTimeout)
+            {
+                // Blacklist the active target to prevent infinite stuck→rescan→stuck loops
+                BlacklistActiveTarget();
                 Abort($"stuck moving to {target} ({dist:F1}m away, stuck {_stuckTimer:F1}s)");
+            }
+        }
+
+        private void BlacklistActiveTarget()
+        {
+            if (_targetFireplace != null) BlacklistTarget(_targetFireplace.gameObject);
+            if (_targetPiece != null) BlacklistTarget(_targetPiece.gameObject);
+            if (_supplyChest != null) BlacklistTarget(_supplyChest.gameObject);
+            if (_sourceChest != null) BlacklistTarget(_sourceChest.gameObject);
+            if (_destChest != null) BlacklistTarget(_destChest.gameObject);
         }
 
         private void LogMovement(float dt, string target, float dist)
@@ -1315,6 +1349,40 @@ namespace Companions
             var vel = _character?.GetVelocity() ?? Vector3.zero;
             Log($"Moving → {target} dist={dist:F1}m speed={vel.magnitude:F1} " +
                 $"stuck={_stuckTimer:F1}s pos={transform.position:F1}");
+        }
+
+        private void BlacklistTarget(GameObject target)
+        {
+            if (target == null) return;
+            int id = target.GetInstanceID();
+            _blacklist[id] = Time.time + BlacklistDuration;
+            Log($"Blacklisted {target.name} (id={id}) for {BlacklistDuration}s");
+        }
+
+        private bool IsBlacklisted(GameObject target)
+        {
+            if (target == null) return false;
+            int id = target.GetInstanceID();
+            if (!_blacklist.TryGetValue(id, out float expiry)) return false;
+            if (Time.time >= expiry)
+            {
+                _blacklist.Remove(id);
+                return false;
+            }
+            return true;
+        }
+
+        private void PruneBlacklist()
+        {
+            if (_blacklist.Count == 0) return;
+            float now = Time.time;
+            var expired = new List<int>();
+            foreach (var kv in _blacklist)
+            {
+                if (now >= kv.Value) expired.Add(kv.Key);
+            }
+            for (int i = 0; i < expired.Count; i++)
+                _blacklist.Remove(expired[i]);
         }
 
         private void Log(string msg)

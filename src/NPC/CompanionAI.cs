@@ -1919,47 +1919,53 @@ namespace Companions
             int stance = _setup != null ? _setup.GetCombatStance() : CompanionSetup.StanceBalanced;
 
             // Passive stance: never target, never attack, just follow
+            // Exception: self-defense for 10s after being hit (same as StayHome mode)
             if (stance == CompanionSetup.StancePassive)
             {
                 _wasPassiveStance = true;
-                ClearTargets();
-                if (IsAlerted()) SetAlerted(false);
-                SuppressAttack = true;
 
-                // Gathering/farming/smelting controllers manage their own mode checks
-                // in their Update() loops — don't call NotifyActionModeChanged every frame
-                // as it resets scan timers, rotation, and spams logs.
-
-                // Repair/Restock modes also run in passive stance — dispatch FIRST
-                // so the state machine advances before the controller-active guard
-                var passiveZdo = m_nview?.GetZDO();
-                if (passiveZdo != null)
+                if (m_timeSinceHurt > 10f)
                 {
-                    int passiveMode = passiveZdo.GetInt(CompanionSetup.ActionModeHash, CompanionSetup.ModeFollow);
-                    if (passiveMode == CompanionSetup.ModeRepairBuildings)
-                        UpdateRepairBuildingsMode(dt);
-                    else if (passiveMode == CompanionSetup.ModeRestock)
-                        UpdateRestockMode(dt);
-                }
+                    ClearTargets();
+                    if (IsAlerted()) SetAlerted(false);
+                    SuppressAttack = true;
 
-                if ((_harvest != null && _harvest.IsActive) ||
-                    (_repair != null && _repair.IsActive) ||
-                    (_smelt != null && _smelt.IsActive) ||
-                    (_farm != null && _farm.IsActive) ||
-                    (_homestead != null && _homestead.IsActive) ||
-                    (_doorHandler != null && _doorHandler.IsActive) ||
-                    IsRepairBuildActive ||
-                    IsRestockActive)
+                    // Gathering/farming/smelting controllers manage their own mode checks
+                    // in their Update() loops — don't call NotifyActionModeChanged every frame
+                    // as it resets scan timers, rotation, and spams logs.
+
+                    // Repair/Restock modes also run in passive stance — dispatch FIRST
+                    // so the state machine advances before the controller-active guard
+                    var passiveZdo = m_nview?.GetZDO();
+                    if (passiveZdo != null)
+                    {
+                        int passiveMode = passiveZdo.GetInt(CompanionSetup.ActionModeHash, CompanionSetup.ModeFollow);
+                        if (passiveMode == CompanionSetup.ModeRepairBuildings)
+                            UpdateRepairBuildingsMode(dt);
+                        else if (passiveMode == CompanionSetup.ModeRestock)
+                            UpdateRestockMode(dt);
+                    }
+
+                    if ((_harvest != null && _harvest.IsActive) ||
+                        (_repair != null && _repair.IsActive) ||
+                        (_smelt != null && _smelt.IsActive) ||
+                        (_farm != null && _farm.IsActive) ||
+                        (_homestead != null && _homestead.IsActive) ||
+                        (_doorHandler != null && _doorHandler.IsActive) ||
+                        IsRepairBuildActive ||
+                        IsRestockActive)
+                        return true;
+
+                    if (m_follow != null)
+                        FollowWithFormation(m_follow, dt);
+                    else
+                    {
+                        if (!EnforceHomePatrol(dt))
+                            IdleMovement(dt);
+                    }
                     return true;
-
-                if (m_follow != null)
-                    FollowWithFormation(m_follow, dt);
-                else
-                {
-                    if (!EnforceHomePatrol(dt))
-                        IdleMovement(dt);
                 }
-                return true;
+                // Recently hurt — fall through to normal targeting for self-defense
             }
 
             // Clear SuppressAttack only on the frame transitioning OUT of Passive stance.
@@ -2840,8 +2846,16 @@ namespace Companions
                         {
                             if (c == m_character || c.IsDead()) continue;
                             if (!BaseAI.IsEnemy(m_character, c)) continue;
-                            if (c.InAttack() && Vector3.Distance(transform.position, c.transform.position) < 8f)
-                                return false;
+                            if (!c.InAttack()) continue;
+                            if (Vector3.Distance(transform.position, c.transform.position) > 6f) continue;
+                            // Only suppress if this enemy is targeting us (not swinging at something else)
+                            var eAI = c.GetBaseAI();
+                            if (eAI != null)
+                            {
+                                var aiTarget = eAI.GetTargetCreature();
+                                if (aiTarget != null && aiTarget != m_character) continue;
+                            }
+                            return false;
                         }
                     }
                 }
