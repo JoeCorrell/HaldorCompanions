@@ -19,18 +19,17 @@ namespace Companions
 
     /// <summary>
     /// For Player-clone companions: replaces the Container's auto-created inventory
-    /// with Humanoid's existing inventory so both components share the same Inventory
-    /// instance.  This lets items placed in the Container be equipped by the Humanoid.
+    /// with Humanoid's existing inventory so both components share the same Inventory.
     ///
-    /// For Dverger variants: inventories are kept separate.  The Humanoid inventory
-    /// holds fixed default gear (staffs, suits) that GiveDefaultItems() adds at spawn.
-    /// Sharing would expose those items in the Container UI as invisible slots,
-    /// letting the player accidentally pick them up — which causes
-    /// IndexOutOfRangeException in InventoryGrid.UpdateGui and breaks the game UI.
+    /// For Dverger variants: inventories are kept separate to avoid exposing the
+    /// Humanoid's fixed default equipment in the storage UI.
     /// </summary>
     [HarmonyPatch(typeof(Container), "Awake")]
     public static class ContainerAwakePatch
     {
+        private const int CompanionInventoryWidth = 8;
+        private const int CompanionInventoryHeight = 4;
+
         private static readonly FieldInfo _inventoryField =
             AccessTools.Field(typeof(Container), "m_inventory");
         internal static readonly FieldInfo _invWidthField =
@@ -49,53 +48,48 @@ namespace Companions
             var humanoid = __instance.GetComponent<Humanoid>();
             if (humanoid == null) return;
 
+            // Keep container metadata aligned with companion inventory shape.
+            __instance.m_width = CompanionInventoryWidth;
+            __instance.m_height = CompanionInventoryHeight;
+
             // Dverger variants: keep inventories separate.
-            // Their Humanoid inventory holds fixed default gear (staffs, suits, projectile
-            // attacks) from GiveDefaultItems().  The Container gets its own clean inventory
-            // for player storage.
             var nview = __instance.GetComponent<ZNetView>();
             if (nview != null && nview.GetZDO() != null &&
                 CompanionTierData.IsDvergerVariant(nview.GetZDO().GetPrefab()))
             {
-                CompanionsPlugin.Log.LogDebug(
-                    $"[ContainerAwake] Dverger variant — keeping separate inventories");
+                ForceInventoryDimensions(__instance.GetInventory(), CompanionInventoryWidth, CompanionInventoryHeight);
+                CompanionsPlugin.Log.LogDebug("[ContainerAwake] Dverger variant, keeping separate inventories");
                 return;
             }
-            // Also check prefab name as fallback (ZDO may not be ready yet)
-            if (nview == null || nview.GetZDO() == null)
+
+            // Fallback when ZDO is not ready yet.
+            if ((nview == null || nview.GetZDO() == null) && __instance.gameObject.name.Contains("Dverger"))
             {
-                if (__instance.gameObject.name.Contains("Dverger"))
-                {
-                    CompanionsPlugin.Log.LogDebug(
-                        $"[ContainerAwake] Dverger variant (name check) — keeping separate inventories");
-                    return;
-                }
+                ForceInventoryDimensions(__instance.GetInventory(), CompanionInventoryWidth, CompanionInventoryHeight);
+                CompanionsPlugin.Log.LogDebug("[ContainerAwake] Dverger variant (name check), keeping separate inventories");
+                return;
             }
 
             var humanoidInv = humanoid.GetInventory();
             if (_inventoryField == null || humanoidInv == null)
             {
                 CompanionsPlugin.Log.LogWarning(
-                    $"[ContainerAwake] Cannot share inventory — " +
-                    $"field={_inventoryField != null} humanoidInv={humanoidInv != null}");
+                    $"[ContainerAwake] Cannot share inventory, field={_inventoryField != null} humanoidInv={humanoidInv != null}");
                 return;
             }
 
-            // Match Humanoid inventory dimensions to the Container definition.
-            // Companion UI expects the same grid shape for deterministic slot mapping.
-            int width  = __instance.m_width > 0 ? __instance.m_width : 4;
-            int height = __instance.m_height > 0 ? __instance.m_height : 8;
+            int width = CompanionInventoryWidth;
+            int height = CompanionInventoryHeight;
             int oldW = humanoidInv.GetWidth();
             int oldH = humanoidInv.GetHeight();
-            if (_invWidthField != null)  _invWidthField.SetValue(humanoidInv, width);
-            if (_invHeightField != null) _invHeightField.SetValue(humanoidInv, height);
+
+            ForceInventoryDimensions(humanoidInv, width, height);
 
             // Replace Container's inventory with Humanoid's inventory
             _inventoryField.SetValue(__instance, humanoidInv);
 
             // Re-register Container.OnContainerChanged on the shared inventory
-            // so that Container.Save() fires when items change (ZDO persistence).
-            // Remove first to guard against duplicate subscriptions.
+            // so that Container.Save() fires when items change.
             if (_onContainerChanged != null)
             {
                 var callback = (Action)Delegate.CreateDelegate(typeof(Action), __instance, _onContainerChanged);
@@ -104,35 +98,68 @@ namespace Companions
             }
 
             CompanionsPlugin.Log.LogDebug(
-                $"[ContainerAwake] Shared inventory — " +
-                $"container={__instance.m_width}x{__instance.m_height} " +
-                $"humanoidInv dim {oldW}x{oldH} → {width}x{height} " +
-                $"items={humanoidInv.NrOfItems()}");
+                $"[ContainerAwake] Shared inventory, container={__instance.m_width}x{__instance.m_height} " +
+                $"humanoidInv dim {oldW}x{oldH} -> {width}x{height} items={humanoidInv.NrOfItems()}");
+        }
+
+        private static void ForceInventoryDimensions(Inventory inv, int width, int height)
+        {
+            if (inv == null) return;
+            int oldW = inv.GetWidth();
+            NormalizeLegacyInventoryLayout(inv, oldW, width);
+            _invWidthField?.SetValue(inv, width);
+            _invHeightField?.SetValue(inv, height);
+        }
+
+        private static void NormalizeLegacyInventoryLayout(Inventory inv, int sourceWidth, int targetWidth)
+        {
+            if (inv == null || targetWidth <= 0) return;
+
+            var items = inv.GetAllItems();
+            if (items == null || items.Count == 0) return;
+
+            int oldW = sourceWidth > 0 ? sourceWidth : targetWidth;
+            bool needsNormalize = oldW != targetWidth;
+
+            if (!needsNormalize)
+            {
+                for (int i = 0; i < items.Count; i++)
+                {
+                    var item = items[i];
+                    if (item == null) continue;
+                    if (item.m_gridPos.x >= targetWidth)
+                    {
+                        needsNormalize = true;
+                        break;
+                    }
+                }
+            }
+
+            if (!needsNormalize) return;
+
+            for (int i = 0; i < items.Count; i++)
+            {
+                var item = items[i];
+                if (item == null) continue;
+                int linear = Math.Max(0, item.m_gridPos.y) * oldW + Math.Max(0, item.m_gridPos.x);
+                item.m_gridPos = new Vector2i(linear % targetWidth, linear / targetWidth);
+            }
+
+            CompanionsPlugin.Log.LogDebug(
+                $"[ContainerAwake] Normalized companion inventory layout to {targetWidth}-wide grid");
         }
     }
 
     /// <summary>
     /// Restores companion tombstone inventory dimensions on zone reload.
-    ///
-    /// Inventory.Save/Load does NOT persist m_width/m_height. When a tombstone
-    /// unloads and reloads (player leaves zone and returns), Container.Awake
-    /// creates a new inventory with the prefab's default dimensions (typically 3×2).
-    /// Inventory.Load then calls AddItem(item, amount, x, y) which silently drops
-    /// items where x >= m_width or y >= m_height. For companion inventories
-    /// (8×4 = 32 slots), most items are lost.
-    ///
-    /// We save the correct dimensions in custom ZDO fields (HC_TombInvW/H) during
-    /// tombstone creation, then restore them here before the first CheckForChanges
-    /// → Load cycle runs.
     /// </summary>
     [HarmonyPatch(typeof(Container), "Awake")]
     public static class TombstoneContainerAwakePatch
     {
         [HarmonyPostfix]
-        [HarmonyAfter("companions.containerawake")]  // run after companion sharing patch
+        [HarmonyAfter("companions.containerawake")]
         static void Postfix(Container __instance)
         {
-            // Only apply to tombstones — they have a TombStone component
             var tombstone = __instance.GetComponent<TombStone>();
             if (tombstone == null) return;
 
@@ -142,14 +169,14 @@ namespace Companions
 
             int w = zdo.GetInt(CompanionSetup.TombInvWidthHash, 0);
             int h = zdo.GetInt(CompanionSetup.TombInvHeightHash, 0);
-            if (w <= 0 || h <= 0) return;  // not a companion tombstone
+            if (w <= 0 || h <= 0) return;
 
             var inv = __instance.GetInventory();
             if (inv == null) return;
 
             int curW = inv.GetWidth();
             int curH = inv.GetHeight();
-            if (curW == w && curH == h) return;  // already correct
+            if (curW == w && curH == h) return;
 
             if (ContainerAwakePatch._invWidthField != null)
                 ContainerAwakePatch._invWidthField.SetValue(inv, w);
@@ -157,13 +184,12 @@ namespace Companions
                 ContainerAwakePatch._invHeightField.SetValue(inv, h);
 
             CompanionsPlugin.Log.LogDebug(
-                $"[TombstoneAwake] Restored companion tombstone inventory dims: " +
-                $"{curW}x{curH} → {w}x{h}");
+                $"[TombstoneAwake] Restored companion tombstone inventory dims: {curW}x{curH} -> {w}x{h}");
         }
     }
 
     /// <summary>
-    /// Ensures the CompanionInteractPanel singleton exists when InventoryGui initialises.
+    /// Ensures the CompanionInteractPanel singleton exists when InventoryGui initializes.
     /// </summary>
     [HarmonyPatch(typeof(InventoryGui), "Awake")]
     public static class InventoryGuiAwakePatch

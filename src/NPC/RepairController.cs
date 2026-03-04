@@ -41,13 +41,19 @@ namespace Companions
         private readonly List<ItemDrop.ItemData> _repairQueue = new List<ItemDrop.ItemData>();
         private readonly List<ItemDrop.ItemData> _tempWorn    = new List<ItemDrop.ItemData>();
 
+        // Oscillation detection: catches back-and-forth pathing loops where
+        // velocity is high but net displacement is near-zero.
+        private Vector3 _oscillationCheckPos;
+        private float   _oscillationTimer;
+        private int     _oscillationCount;
+
         // ── Config ──────────────────────────────────────────────────────────
         private static float DurabilityThreshold => ModConfig.RepairDurabilityThreshold.Value;
         private static float ScanInterval        => ModConfig.RepairScanInterval.Value;
         private const float ScanBackoffInterval = 60f;   // long backoff when no station can help
         private static float ScanRadius          => ModConfig.RepairScanRadius.Value;
         private static float RepairTickInterval  => ModConfig.RepairTickInterval.Value;
-        private const float MoveTimeout         = 12f;
+        private const float MoveTimeout         = 2f;
         private const float StuckCheckPeriod    = 1f;     // check movement every 1s
         private const float StuckMinDistance     = 0.5f;   // must move at least 0.5m per check period
         private static float UseDistance         => ModConfig.RepairUseDistance.Value;
@@ -216,6 +222,9 @@ namespace Companions
             _stuckTimer = 0f;
             _stuckCheckTimer = 0f;
             _stuckCheckPos = transform.position;
+            _oscillationTimer = 0f;
+            _oscillationCount = 0;
+            _oscillationCheckPos = transform.position;
 
             _phase = RepairPhase.MovingToStation;
             Log($"Found {_repairQueue.Count} items to repair at " +
@@ -271,6 +280,27 @@ namespace Companions
                     _stuckTimer = 0f;
                 _stuckCheckPos = transform.position;
                 _stuckCheckTimer = 0f;
+            }
+
+            // Oscillation detection: catches back-and-forth pathing loops where
+            // the companion IS moving (high velocity) but not making net progress.
+            _oscillationTimer += dt;
+            if (_oscillationTimer >= 3f)
+            {
+                _oscillationTimer = 0f;
+                float netDisplacement = Vector3.Distance(transform.position, _oscillationCheckPos);
+                if (netDisplacement < 2f)
+                    _oscillationCount++;
+                else
+                    _oscillationCount = 0;
+                _oscillationCheckPos = transform.position;
+
+                // 2 consecutive windows (6s) of back-and-forth → treat as stuck
+                if (_oscillationCount >= 2)
+                {
+                    _stuckTimer = MoveTimeout + 1f;
+                    _oscillationCount = 0;
+                }
             }
 
             if (_stuckTimer > MoveTimeout)
@@ -377,6 +407,9 @@ namespace Companions
             _stuckTimer = 0f;
             _stuckCheckTimer = 0f;
             _stuckCheckPos = transform.position;
+            _oscillationTimer = 0f;
+            _oscillationCount = 0;
+            _oscillationCheckPos = transform.position;
             _phase = RepairPhase.MovingToStation;
             _lastScanFailed = false;
 

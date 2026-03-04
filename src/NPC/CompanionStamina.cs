@@ -106,14 +106,27 @@ namespace Companions
             if (Stamina > max)
                 Stamina = max;
 
-            // Use Character.IsRunning() + velocity check. IsRunning() checks m_run +
-            // m_moveDir, but during combat oscillation (dual MoveToPoint calls, context
-            // steer jitter) the flag can flicker true even while the companion is
-            // effectively stationary. Require actual velocity to prevent phantom drain.
+            // Use Character.IsRunning() + velocity check. IsRunning() returns m_running
+            // which is only computed in FixedUpdate (Character.UpdateMotion → CheckRun).
+            // Gather controllers (HarvestController, FarmController, etc.) set SetRun(true)
+            // in Update, so m_running can be stale on frames without a FixedUpdate tick.
+            // Velocity fallback catches this: if the companion is physically moving at
+            // running speed, drain regardless of whether m_running has caught up.
             float velocity = _character != null ? _character.GetVelocity().magnitude : 0f;
             bool isSwimming = _character != null && _character.IsSwimming() && velocity > 0.25f;
-            bool isRunning = _character != null && _character.IsRunning() && !isSwimming
-                             && velocity > 0.5f;
+            float runVelThreshold = _character != null
+                ? (_character.m_speed + _character.m_runSpeed) * 0.5f  // midpoint of jog/run
+                : 6f;
+            bool isRunning = _character != null && !isSwimming && velocity > 0.5f
+                             && (_character.IsRunning()
+                                 || (velocity > runVelThreshold && _character.IsOnGround()));
+
+            // Enforce stamina rules: force walk when stamina is depleted.
+            // Multiple systems (Follow, HarvestController, FarmController) call
+            // SetRun(true) without checking stamina. This central gate prevents
+            // the companion from running at 0 stamina regardless of caller.
+            if (Stamina <= 0f && _character != null && _character.IsRunning())
+                _character.SetRun(false);
 
             // Drain for running or swimming.
             if ((isRunning || isSwimming) && Stamina > 0f)

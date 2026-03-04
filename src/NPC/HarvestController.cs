@@ -60,7 +60,7 @@ namespace Companions
         private static float ScanRadius     => ModConfig.HarvestScanRadius.Value;
         private static float AttackInterval => ModConfig.HarvestAttackInterval.Value;
         private const float AttackRetry    = 0.25f;
-        private const float MoveTimeout    = 12f;
+        private const float MoveTimeout    = 2f;
         private const float ArrivalSlack   = 0.5f;
         private const int   WhiffRetryMax  = 20;   // abandon after this many SUCCESSFUL swings without destroy
         private const int   TotalAttemptMax = 30;  // abandon after this many total attempts (incl. failures)
@@ -723,12 +723,16 @@ namespace Companions
             else if (IsLowTarget())
             {
                 moveGoal = range * 0.3f;
-                runToTarget = true;
+                // Walk when close to avoid overshooting low targets
+                runToTarget = distToTarget > range * 2f;
             }
             else
             {
                 moveGoal = range * 0.5f;
-                runToTarget = true;
+                // Walk when within 1.5x attack range to prevent momentum overshoot.
+                // Running at close range causes the companion to sprint past the
+                // target at ~1m and then turn around, creating visible jitter.
+                runToTarget = distToTarget > range * 1.5f;
             }
             bool moveResult = _ai.MoveToPoint(dt, targetPos, moveGoal, runToTarget);
 
@@ -1539,7 +1543,8 @@ namespace Companions
             }
             else // Stone
             {
-                // Stone mode — Destructible rocks + any MineRock/MineRock5 that only drop stone
+                // Stone mode — only MineRock/MineRock5 that drop stone (not ore) + Destructible rocks.
+                // Ore veins (copper, tin, etc.) are reserved for Ore mode.
                 var rock5 = col.GetComponentInParent<MineRock5>();
                 if (rock5 != null && DropsOnlyStone(rock5.m_dropItems))
                 { type = "MineRock5"; return rock5.gameObject; }
@@ -1548,12 +1553,14 @@ namespace Companions
                 if (rock != null && DropsOnlyStone(rock.m_dropItems))
                 { type = "MineRock"; return rock.gameObject; }
 
-                // Destructible rocks: must respond to pickaxe AND be immune to chop
-                // (wood-type destructibles like Beech_small2, stumps respond to chop — exclude them)
+                // Destructible rocks: must respond to pickaxe AND not respond to chop.
+                // Accept both Immune and Ignore for chop — some rocks use Ignore which
+                // is functionally identical (0 damage) but failed the strict equality check.
                 var dest = col.GetComponentInParent<Destructible>();
                 if (dest != null
                     && dest.m_damages.m_pickaxe != HitData.DamageModifier.Immune
-                    && dest.m_damages.m_chop == HitData.DamageModifier.Immune)
+                    && (dest.m_damages.m_chop == HitData.DamageModifier.Immune
+                        || dest.m_damages.m_chop == HitData.DamageModifier.Ignore))
                 {
                     type = "Destructible";
                     return dest.gameObject;

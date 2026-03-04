@@ -1,5 +1,53 @@
 # Changelog
 
+## 1.1.4
+
+### Companion Inventory Overhaul
+- Companion inventory is now a fixed 8-wide x 4-tall grid (was previously variable and sometimes mismatched between systems)
+- Added automatic layout migration for companions saved with the old inventory width — items are repositioned to fit the new grid instead of being lost
+- Removed the equipment side-panel from the companion UI (was only used with ExtraSlots)
+
+### Ranged Combat
+- Companions with bows now fire much more consistently — they pre-draw the bow between shots instead of waiting for the cooldown to finish first
+- Companions no longer constantly back away and reposition after every shot — they only retreat when enemies get dangerously close (within 5m)
+- Companions no longer jump around while trying to aim their bow, which was disrupting their shots
+- Companions in ranged stance who run out of arrows or lose their bow now fall through to melee combat instead of standing still and doing nothing
+
+### Melee Combat
+- Companions now follow up on successful parries much more reliably — the defensive block check no longer prevents counter-attacks during the parry window
+- Companions now consistently face their target during combat approach and while standing in melee range, fixing the rapid head-shaking animation that could occur when navigating around obstacles
+- Increased block grace period from 0.3s to 0.6s so companions hold their shield up long enough to actually block hits that land just after an enemy's attack animation ends
+
+### Self-Defense in Work Modes
+- Companions in forage, farm, smelt, and hunt modes now properly defend themselves when attacked — previously only gather modes (wood/stone/ore) triggered self-defense combat
+
+### "Come to Me" Command
+- The "come to me" command now properly forces companions to follow you even if they were set to Stay Home or had Follow turned off — previously they would ignore the command
+
+### Stamina
+- Companion stamina now properly drains while running during gather modes (foraging, harvesting, etc.) — previously the stamina system couldn't detect running when it was triggered by gather controllers
+- Swimming now also properly drains stamina using the same detection improvement
+
+### Harvesting
+- Stone mode no longer tries to mine ore veins — it now correctly skips copper, tin, and other ore deposits and only targets stone-dropping rocks
+- Stone mode now correctly recognizes rocks that use the "Ignore" damage modifier for chop resistance (some rocks were being skipped because they used a slightly different setting than expected)
+- Companions no longer sprint past their harvest target and jitter back and forth — they walk when close to avoid overshooting
+- Harvest stuck detection is now much faster (2 seconds instead of 12) so companions don't waste time pushing against unreachable targets
+
+### Farming
+- Companions in farm mode now properly detect and harvest mature crops — previously grown crops were being missed because they exist on a different layer than wild plants
+- Companions no longer keep holding the cultivator after farming ends — they now properly switch back to their combat gear when farming finishes or is interrupted
+
+### Repair
+- Fixed companions getting stuck in a back-and-forth pathing loop for up to 30 seconds when trying to reach a repair station — the AI now detects when it's running in circles and gives up after 6 seconds
+- Fixed companions sometimes holding a cultivator while walking to a repair station (caused by farming not cleaning up equipped tools)
+
+### Smelting & Homestead
+- Stuck detection for smelting and homestead tasks is now much faster (2 seconds instead of 15) so companions don't waste time pushing against obstacles they can't reach
+
+### Pathfinding
+- Companions no longer repeatedly jump back and forth over the same rocks in a loop — the AI now detects when jumping isn't making progress and suppresses it for 15 seconds
+
 ## 1.1.3
 
 ### Inventory UI Overhaul

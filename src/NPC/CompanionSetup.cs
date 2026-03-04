@@ -73,7 +73,6 @@ namespace Companions
         private static readonly FieldInfo _shoulderItemField = AccessTools.Field(typeof(Humanoid), "m_shoulderItem");
         private static readonly FieldInfo _utilityItemField  = AccessTools.Field(typeof(Humanoid), "m_utilityItem");
         private static readonly FieldInfo _trinketItemField  = AccessTools.Field(typeof(Humanoid), "m_trinketItem");
-        private static readonly FieldInfo _inventoryHeightField = AccessTools.Field(typeof(Inventory), "m_height");
 
         private ZNetView         _nview;
         private VisEquipment     _visEquip;
@@ -87,13 +86,6 @@ namespace Companions
         private bool           _ownerMismatchLogged;
         private bool           _uiFrozen;
         private bool           _dead;
-
-        // ── Extra utility slots (ExtraSlots compat) ─────────────────────────
-        private ItemDrop.ItemData[] _extraUtilities;
-        private int _baseInventoryHeight = -1;
-        internal const string ExtraUtilitySlotKey = "HC_ExtraUtilitySlot";
-        private const string ExtraSlotPrevPosXKey = "HC_ExtraSlotPrevPosX";
-        private const string ExtraSlotPrevPosYKey = "HC_ExtraSlotPrevPosY";
 
         // Minimap pin — live-updating, owner-only
         private Minimap.PinData _minimapPin;
@@ -110,371 +102,12 @@ namespace Companions
         /// </summary>
         internal bool IsEquipping => _equipQueue.Count > 0 || _equipAnimActive;
 
-        // ── Extra utility accessors (for Harmony patches) ───────────────────
-        internal int GetExtraUtilityCount() => _extraUtilities?.Length ?? 0;
-
-        internal ItemDrop.ItemData GetExtraUtilityItem(int index)
-        {
-            if (_extraUtilities == null || index < 0 || index >= _extraUtilities.Length)
-                return null;
-            return _extraUtilities[index];
-        }
-
-        internal int GetBaseInventoryHeight()
-        {
-            var inv = _humanoid?.GetInventory();
-            return GetCompanionBaseInventoryHeight(inv);
-        }
-
         internal ItemDrop.ItemData GetHelmetItem()   => GetEquipSlot(_helmetItemField);
         internal ItemDrop.ItemData GetChestItem()    => GetEquipSlot(_chestItemField);
         internal ItemDrop.ItemData GetLegsItem()     => GetEquipSlot(_legItemField);
         internal ItemDrop.ItemData GetShoulderItem() => GetEquipSlot(_shoulderItemField);
         internal ItemDrop.ItemData GetUtilityItem()  => GetEquipSlot(_utilityItemField);
         internal ItemDrop.ItemData GetTrinketItem()  => GetEquipSlot(_trinketItemField);
-
-        internal ItemDrop.ItemData GetItemForExtraSlotsSlot(string slotId)
-        {
-            if (string.IsNullOrEmpty(slotId)) return null;
-
-            if (string.Equals(slotId, "Helmet", StringComparison.OrdinalIgnoreCase))   return GetHelmetItem();
-            if (string.Equals(slotId, "Chest", StringComparison.OrdinalIgnoreCase))    return GetChestItem();
-            if (string.Equals(slotId, "Legs", StringComparison.OrdinalIgnoreCase))     return GetLegsItem();
-            if (string.Equals(slotId, "Shoulder", StringComparison.OrdinalIgnoreCase)) return GetShoulderItem();
-            if (string.Equals(slotId, "Utility", StringComparison.OrdinalIgnoreCase))  return GetUtilityItem();
-            if (string.Equals(slotId, "Trinket", StringComparison.OrdinalIgnoreCase))  return GetTrinketItem();
-
-            if (ExtraSlotsCompat.TryGetExtraUtilityIndex(slotId, out int extraIdx))
-                return GetExtraUtilityItem(extraIdx);
-
-            var inv = _humanoid?.GetInventory();
-            if (TryGetCompanionSlotGridPosition(slotId, inv, out var slotPos))
-                return inv.GetItemAt(slotPos.x, slotPos.y);
-
-            return null;
-        }
-
-        internal bool CanItemFitExtraSlotsSlot(string slotId, ItemDrop.ItemData item)
-        {
-            if (string.IsNullOrEmpty(slotId) || item?.m_shared == null) return false;
-
-            if (ExtraSlotsCompat.IsLoaded)
-                return ExtraSlotsCompat.ItemFitsSlot(slotId, item);
-
-            switch (slotId)
-            {
-                case "Helmet":
-                    return item.m_shared.m_itemType == ItemDrop.ItemData.ItemType.Helmet;
-                case "Chest":
-                    return item.m_shared.m_itemType == ItemDrop.ItemData.ItemType.Chest;
-                case "Legs":
-                    return item.m_shared.m_itemType == ItemDrop.ItemData.ItemType.Legs;
-                case "Shoulder":
-                    return item.m_shared.m_itemType == ItemDrop.ItemData.ItemType.Shoulder;
-                case "Utility":
-                case "Trinket":
-                    return item.m_shared.m_itemType == ItemDrop.ItemData.ItemType.Utility;
-            }
-
-            return false;
-        }
-
-        internal bool TrySetItemForExtraSlotsSlot(string slotId, ItemDrop.ItemData item)
-        {
-            if (_humanoid == null || string.IsNullOrEmpty(slotId)) return false;
-            var inv = _humanoid.GetInventory();
-            if (inv == null) return false;
-            EnsureInventoryHeightForExtraSlots();
-            if (item != null && !inv.ContainsItem(item)) return false;
-
-            if (ExtraSlotsCompat.TryGetExtraUtilityIndex(slotId, out int extraIdx))
-                return TrySetExtraUtilitySlot(extraIdx, slotId, item);
-
-            var slotField = GetVanillaSlotField(slotId);
-            if (slotField == null)
-                return TrySetGenericExtraSlot(slotId, item, inv);
-
-            var current = slotField.GetValue(_humanoid) as ItemDrop.ItemData;
-            if (item == null)
-            {
-                if (current == null) return true;
-                _humanoid.UnequipItem(current, false);
-                RestoreFromExtraSlotsGridPosition(current, inv);
-                return true;
-            }
-
-            if (!CanItemFitExtraSlotsSlot(slotId, item))
-                return false;
-
-            RemoveItemFromExtraUtilitySlots(item);
-
-            if (current != null && current != item)
-            {
-                _humanoid.UnequipItem(current, false);
-                RestoreFromExtraSlotsGridPosition(current, inv);
-            }
-
-            if (!_humanoid.IsItemEquiped(item))
-                _humanoid.EquipItem(item, true);
-
-            bool equipped = slotField.GetValue(_humanoid) == item || _humanoid.IsItemEquiped(item);
-            if (equipped)
-                TryMoveIntoExtraSlotsGridPosition(slotId, item, inv);
-            return equipped;
-        }
-
-        private bool TrySetGenericExtraSlot(string slotId, ItemDrop.ItemData item, Inventory inv)
-        {
-            if (!TryGetCompanionSlotGridPosition(slotId, inv, out var slotPos))
-                return false;
-
-            var current = inv.GetItemAt(slotPos.x, slotPos.y);
-            if (item == null)
-            {
-                if (current == null) return true;
-                RestoreFromExtraSlotsGridPosition(current, inv);
-                return true;
-            }
-
-            if (!CanItemFitExtraSlotsSlot(slotId, item))
-                return false;
-
-            if (current != null && current != item)
-                RestoreFromExtraSlotsGridPosition(current, inv);
-
-            if (item != current)
-                TryMoveIntoExtraSlotsGridPosition(slotId, item, inv);
-
-            return true;
-        }
-
-        private bool TrySetExtraUtilitySlot(int slot, string slotId, ItemDrop.ItemData item)
-        {
-            if (_extraUtilities == null) return false;
-            if (slot < 0 || slot >= _extraUtilities.Length) return false;
-            if (item != null && !CanItemFitExtraSlotsSlot(slotId, item)) return false;
-
-            var current = _extraUtilities[slot];
-            if (current == item) return true;
-
-            if (item != null)
-                RemoveItemFromExtraUtilitySlots(item);
-
-            if (current != null)
-            {
-                current.m_equipped = false;
-                current.m_customData?.Remove(ExtraUtilitySlotKey);
-                _extraUtilities[slot] = null;
-                ExtraSlotsCompat.SetExtraUtility(_humanoid, slot, null);
-                RestoreFromExtraSlotsGridPosition(current, _humanoid?.GetInventory());
-            }
-
-            if (item != null)
-            {
-                item.m_equipped = true;
-                if (item.m_customData == null)
-                    item.m_customData = new Dictionary<string, string>();
-                item.m_customData[ExtraUtilitySlotKey] = slot.ToString();
-                _extraUtilities[slot] = item;
-                ExtraSlotsCompat.SetExtraUtility(_humanoid, slot, item);
-                TryMoveIntoExtraSlotsGridPosition(slotId, item, _humanoid?.GetInventory());
-            }
-
-            ExtraSlotsPatches.CallSetupEquipment(_humanoid);
-            return true;
-        }
-
-        private void RemoveItemFromExtraUtilitySlots(ItemDrop.ItemData item)
-        {
-            if (_extraUtilities == null || item == null) return;
-            for (int i = 0; i < _extraUtilities.Length; i++)
-            {
-                if (_extraUtilities[i] != item) continue;
-                _extraUtilities[i] = null;
-                item.m_customData?.Remove(ExtraUtilitySlotKey);
-                ExtraSlotsCompat.SetExtraUtility(_humanoid, i, null);
-                RestoreFromExtraSlotsGridPosition(item, _humanoid?.GetInventory());
-            }
-        }
-
-        private void TryMoveIntoExtraSlotsGridPosition(string slotId, ItemDrop.ItemData item, Inventory inv)
-        {
-            if (string.IsNullOrEmpty(slotId) || item == null || inv == null) return;
-            EnsureInventoryHeightForExtraSlots();
-            if (!TryGetCompanionSlotGridPosition(slotId, inv, out var slotPos)) return;
-            if (!IsPositionInsideInventory(inv, slotPos)) return;
-
-            var slotItem = inv.GetItemAt(slotPos.x, slotPos.y);
-            if (slotItem != null && slotItem != item)
-            {
-                RestoreFromExtraSlotsGridPosition(slotItem, inv);
-            }
-
-            if (item.m_gridPos != slotPos)
-                RememberItemRegularGridPosition(item, inv);
-
-            item.m_gridPos = slotPos;
-        }
-
-        private void RestoreFromExtraSlotsGridPosition(ItemDrop.ItemData item, Inventory inv)
-        {
-            if (item == null || inv == null) return;
-
-            if (item.m_customData != null &&
-                item.m_customData.TryGetValue(ExtraSlotPrevPosXKey, out string xStr) &&
-                item.m_customData.TryGetValue(ExtraSlotPrevPosYKey, out string yStr) &&
-                int.TryParse(xStr, out int x) &&
-                int.TryParse(yStr, out int y))
-            {
-                var prev = new Vector2i(x, y);
-                if (IsRegularInventoryCell(inv, prev) &&
-                    (inv.GetItemAt(prev.x, prev.y) == null || inv.GetItemAt(prev.x, prev.y) == item))
-                {
-                    item.m_gridPos = prev;
-                }
-                else if (TryFindOpenRegularInventoryCell(inv, out var freePos))
-                {
-                    item.m_gridPos = freePos;
-                }
-            }
-            else if (IsCompanionSlotGridPosition(item.m_gridPos, inv) &&
-                     TryFindOpenRegularInventoryCell(inv, out var openPos))
-            {
-                item.m_gridPos = openPos;
-            }
-
-            item.m_customData?.Remove(ExtraSlotPrevPosXKey);
-            item.m_customData?.Remove(ExtraSlotPrevPosYKey);
-        }
-
-        private bool TryFindOpenRegularInventoryCell(Inventory inv, out Vector2i pos)
-        {
-            pos = Vector2i.zero;
-            if (inv == null) return false;
-
-            int w = inv.GetWidth();
-            int h = GetCompanionBaseInventoryHeight(inv);
-            if (w <= 0 || h <= 0) return false;
-
-            for (int y = 0; y < h; y++)
-            {
-                for (int x = 0; x < w; x++)
-                {
-                    var p = new Vector2i(x, y);
-                    if (inv.GetItemAt(x, y) != null)
-                        continue;
-
-                    pos = p;
-                    return true;
-                }
-            }
-
-            return false;
-        }
-
-        private static bool IsPositionInsideInventory(Inventory inv, Vector2i pos)
-        {
-            if (inv == null) return false;
-            return pos.x >= 0 && pos.y >= 0 &&
-                   pos.x < inv.GetWidth() && pos.y < inv.GetHeight();
-        }
-
-        private void RememberItemRegularGridPosition(ItemDrop.ItemData item, Inventory inv)
-        {
-            if (item == null || inv == null) return;
-            if (!IsRegularInventoryCell(inv, item.m_gridPos)) return;
-
-            if (item.m_customData == null)
-                item.m_customData = new Dictionary<string, string>();
-
-            item.m_customData[ExtraSlotPrevPosXKey] = item.m_gridPos.x.ToString();
-            item.m_customData[ExtraSlotPrevPosYKey] = item.m_gridPos.y.ToString();
-        }
-
-        private bool IsRegularInventoryCell(Inventory inv, Vector2i pos)
-        {
-            return IsPositionInsideInventory(inv, pos) && pos.y < GetCompanionBaseInventoryHeight(inv);
-        }
-
-        private int GetCompanionBaseInventoryHeight(Inventory inv)
-        {
-            if (_baseInventoryHeight > 0) return _baseInventoryHeight;
-            if (inv == null) return 0;
-            _baseInventoryHeight = inv.GetHeight();
-            return _baseInventoryHeight;
-        }
-
-        private bool IsCompanionSlotGridPosition(Vector2i pos, Inventory inv)
-        {
-            if (!ExtraSlotsCompat.IsLoaded || inv == null) return false;
-            int width = inv.GetWidth();
-            int baseHeight = GetCompanionBaseInventoryHeight(inv);
-            if (width <= 0 || baseHeight <= 0) return false;
-            if (pos.x < 0 || pos.y < baseHeight) return false;
-            int slotIdx = (pos.y - baseHeight) * width + pos.x;
-            return slotIdx >= 0 && slotIdx < ExtraSlotsCompat.GetActiveSlotCount();
-        }
-
-        private bool TryGetCompanionSlotGridPosition(string slotId, Inventory inv, out Vector2i pos)
-        {
-            pos = Vector2i.zero;
-            if (!ExtraSlotsCompat.IsLoaded || inv == null) return false;
-            if (!ExtraSlotsCompat.TryGetActiveSlotIndex(slotId, out int slotIdx)) return false;
-
-            int width = inv.GetWidth();
-            int baseHeight = GetCompanionBaseInventoryHeight(inv);
-            if (width <= 0 || baseHeight <= 0) return false;
-
-            pos = new Vector2i(slotIdx % width, baseHeight + slotIdx / width);
-            return true;
-        }
-
-        private void EnsureInventoryHeightForExtraSlots()
-        {
-            if (!ExtraSlotsCompat.IsLoaded || _humanoid == null) return;
-
-            var inv = _humanoid.GetInventory();
-            if (inv == null) return;
-            ExtraSlotsCompat.RefreshSlotsMetadata();
-
-            int width = inv.GetWidth();
-            if (width <= 0) return;
-
-            if (_baseInventoryHeight <= 0)
-                _baseInventoryHeight = inv.GetHeight();
-
-            int extraRows = ExtraSlotsCompat.GetActiveSlotsRowCountForWidth(width);
-            int targetHeight = _baseInventoryHeight + extraRows;
-            if (targetHeight <= inv.GetHeight()) return;
-
-            if (_inventoryHeightField != null)
-                _inventoryHeightField.SetValue(inv, targetHeight);
-        }
-
-        private static FieldInfo GetVanillaSlotField(string slotId)
-        {
-            switch (slotId)
-            {
-                case "Helmet": return _helmetItemField;
-                case "Chest": return _chestItemField;
-                case "Legs": return _legItemField;
-                case "Shoulder": return _shoulderItemField;
-                case "Utility": return _utilityItemField;
-                case "Trinket": return _trinketItemField;
-                default: return null;
-            }
-        }
-
-        private static string GetSlotIdForVanillaField(FieldInfo slotField)
-        {
-            if (slotField == _helmetItemField) return "Helmet";
-            if (slotField == _chestItemField) return "Chest";
-            if (slotField == _legItemField) return "Legs";
-            if (slotField == _shoulderItemField) return "Shoulder";
-            if (slotField == _utilityItemField) return "Utility";
-            if (slotField == _trinketItemField) return "Trinket";
-            return null;
-        }
 
         private void Awake()
         {
@@ -720,13 +353,11 @@ namespace Companions
             RestoreName();
             RegisterInventoryCallback();
             AddStarterGear(zdo);
-            InitExtraUtilities();
-            RestoreExtraUtilities();
 
             int mode = zdo.GetInt(ActionModeHash, ModeFollow);
             CompanionsPlugin.Log.LogInfo(
                 $"[Setup] Initialized — mode={mode} appearance={(string.IsNullOrEmpty(serial) ? "default" : "saved")} " +
-                $"extraSlots={_extraUtilities?.Length ?? 0} pos={transform.position:F1}");
+                $"pos={transform.position:F1}");
 
             _initialized = true;
         }
@@ -1136,9 +767,6 @@ namespace Companions
                     $"pos=({item.m_gridPos.x},{item.m_gridPos.y}) equipped={item.m_equipped}");
             }
 
-            // Clear extra utility slots before death — prevents stale m_customData on tombstone items
-            ClearAllExtraUtilities();
-
             // Unequip all items so MoveInventoryToGrave transfers everything
             _humanoid.UnequipAllItems();
 
@@ -1383,25 +1011,6 @@ namespace Companions
                 $"[Setup] SyncEquipmentToInventory — SuppressAutoEquip={SuppressAutoEquip}");
             UnequipMissingEquippedItems();
             if (!SuppressAutoEquip) AutoEquipBest();
-            SyncEquippedItemGridPositions();
-        }
-
-        private void SyncEquippedItemGridPositions()
-        {
-            if (!ExtraSlotsCompat.IsLoaded || _humanoid == null) return;
-            var inv = _humanoid.GetInventory();
-            if (inv == null) return;
-
-            EnsureInventoryHeightForExtraSlots();
-            ExtraSlotsCompat.RefreshSlotsMetadata();
-            var equipmentSlots = ExtraSlotsCompat.GetActiveEquipmentSlots();
-            for (int i = 0; i < equipmentSlots.Count; i++)
-            {
-                var slot = equipmentSlots[i];
-                var item = GetItemForExtraSlotsSlot(slot.Id);
-                if (item == null) continue;
-                TryMoveIntoExtraSlotsGridPosition(slot.Id, item, inv);
-            }
         }
 
         private void AutoEquipBest()
@@ -1500,47 +1109,6 @@ namespace Companions
                         if (armor > bestTrinketArmor) { bestTrinket = item; bestTrinketArmor = armor; }
                         break;
                 }
-
-                // Match ExtraSlots slot validators so companion auto-equip follows the
-                // same slot rules as the player (including modded/customized slot rules).
-                if (ExtraSlotsCompat.IsLoaded)
-                {
-                    if (ExtraSlotsCompat.ItemFitsSlot("Chest", item) && armor > bestChestArmor)
-                    {
-                        bestChest = item;
-                        bestChestArmor = armor;
-                    }
-
-                    if (ExtraSlotsCompat.ItemFitsSlot("Legs", item) && armor > bestLegsArmor)
-                    {
-                        bestLegs = item;
-                        bestLegsArmor = armor;
-                    }
-
-                    if (ExtraSlotsCompat.ItemFitsSlot("Helmet", item) && armor > bestHelmetArmor)
-                    {
-                        bestHelmet = item;
-                        bestHelmetArmor = armor;
-                    }
-
-                    if (ExtraSlotsCompat.ItemFitsSlot("Shoulder", item) && armor > bestShoulderArmor)
-                    {
-                        bestShoulder = item;
-                        bestShoulderArmor = armor;
-                    }
-
-                    if (ExtraSlotsCompat.ItemFitsSlot("Utility", item) && armor > bestUtilityArmor)
-                    {
-                        bestUtility = item;
-                        bestUtilityArmor = armor;
-                    }
-
-                    if (ExtraSlotsCompat.ItemFitsSlot("Trinket", item) && armor > bestTrinketArmor)
-                    {
-                        bestTrinket = item;
-                        bestTrinketArmor = armor;
-                    }
-                }
             }
 
             // Log what AutoEquipBest selected
@@ -1630,115 +1198,6 @@ namespace Companions
             EquipBestArmorSlot(_utilityItemField, bestUtility);
             EquipBestArmorSlot(_trinketItemField, bestTrinket);
 
-            // Extra utility slots (ExtraSlots mod compatibility)
-            AutoEquipExtraUtilities(items);
-        }
-
-        private void AutoEquipExtraUtilities(List<ItemDrop.ItemData> items)
-        {
-            if (_extraUtilities == null) return;
-
-            ExtraSlotsCompat.RefreshSlotsMetadata();
-            var vanillaUtility = GetEquipSlot(_utilityItemField);
-
-            var slotIds = new string[_extraUtilities.Length];
-            if (ExtraSlotsCompat.IsLoaded)
-            {
-                var defs = ExtraSlotsCompat.GetActiveEquipmentSlots();
-                for (int i = 0; i < defs.Count; i++)
-                {
-                    var def = defs[i];
-                    if (!ExtraSlotsCompat.TryGetExtraUtilityIndex(def.Id, out int slotIdx)) continue;
-                    if (slotIdx < 0 || slotIdx >= slotIds.Length) continue;
-                    slotIds[slotIdx] = def.Id;
-                }
-            }
-
-            // Collect all items that fit at least one extra utility slot.
-            var candidates = new List<ItemDrop.ItemData>();
-            foreach (var item in items)
-            {
-                if (item?.m_shared == null) continue;
-                if (item.m_shared.m_useDurability && item.m_durability <= 0f) continue;
-                if (item == vanillaUtility) continue;
-
-                bool fitsAnySlot = false;
-                for (int slotIdx = 0; slotIdx < slotIds.Length; slotIdx++)
-                {
-                    string slotId = slotIds[slotIdx];
-                    if (!string.IsNullOrEmpty(slotId))
-                    {
-                        if (ExtraSlotsCompat.ItemFitsSlot(slotId, item))
-                        {
-                            fitsAnySlot = true;
-                            break;
-                        }
-                        continue;
-                    }
-
-                    // Fallback when dynamic slot metadata is unavailable.
-                    if (item.m_shared.m_itemType == ItemDrop.ItemData.ItemType.Utility)
-                    {
-                        fitsAnySlot = true;
-                        break;
-                    }
-                }
-
-                if (fitsAnySlot) candidates.Add(item);
-            }
-
-            // Sort by armor descending (best protection first).
-            candidates.Sort((a, b) => b.GetArmor().CompareTo(a.GetArmor()));
-
-            bool changed = false;
-            for (int i = 0; i < _extraUtilities.Length; i++)
-            {
-                var old = _extraUtilities[i];
-                var desired = default(ItemDrop.ItemData);
-
-                for (int c = 0; c < candidates.Count; c++)
-                {
-                    var item = candidates[c];
-                    if (item == null) continue;
-
-                    string slotId = slotIds[i];
-                    bool fits = !string.IsNullOrEmpty(slotId)
-                        ? ExtraSlotsCompat.ItemFitsSlot(slotId, item)
-                        : item.m_shared.m_itemType == ItemDrop.ItemData.ItemType.Utility;
-
-                    if (!fits) continue;
-
-                    desired = item;
-                    candidates.RemoveAt(c);
-                    break;
-                }
-
-                if (old == desired) continue;
-
-                // Unequip old
-                if (old != null)
-                {
-                    UnequipExtraUtility(i);
-                    changed = true;
-                }
-
-                // Equip new
-                if (desired != null)
-                {
-                    EquipExtraUtility(desired, i);
-                    changed = true;
-                }
-            }
-
-            if (changed)
-            {
-                ExtraSlotsPatches.CallSetupEquipment(_humanoid);
-                int equipped = 0;
-                for (int i = 0; i < _extraUtilities.Length; i++)
-                    if (_extraUtilities[i] != null) equipped++;
-                CompanionsPlugin.Log.LogDebug(
-                    $"[Setup] Extra utility slots: {equipped}/{_extraUtilities.Length} filled");
-            }
         }
 
         internal ItemDrop.ItemData GetEquipSlot(FieldInfo field)
@@ -1759,7 +1218,6 @@ namespace Companions
                     $"[Setup] Armor swap {slotField.Name}: " +
                     $"\"{equipped.m_shared?.m_name ?? "?"}\" → \"{bestItem.m_shared?.m_name ?? "?"}\"");
                 _humanoid.UnequipItem(equipped, false);
-                RestoreFromExtraSlotsGridPosition(equipped, _humanoid.GetInventory());
             }
             else
             {
@@ -1768,9 +1226,6 @@ namespace Companions
             }
 
             QueueEquip(bestItem);
-            string slotId = GetSlotIdForVanillaField(slotField);
-            if (!string.IsNullOrEmpty(slotId))
-                TryMoveIntoExtraSlotsGridPosition(slotId, bestItem, _humanoid.GetInventory());
         }
 
         private static bool IsTwoHandedWeapon(ItemDrop.ItemData item)
@@ -1930,14 +1385,6 @@ namespace Companions
             if (shoulder != null) armor += shoulder.GetArmor();
             if (trinket  != null) armor += trinket.GetArmor();
 
-            // Include extra utility slot armor (ExtraSlots compat)
-            if (_extraUtilities != null)
-            {
-                for (int i = 0; i < _extraUtilities.Length; i++)
-                    if (_extraUtilities[i] != null)
-                        armor += _extraUtilities[i].GetArmor();
-            }
-
             return armor;
         }
 
@@ -1962,145 +1409,6 @@ namespace Companions
             UnequipIfMissing(items, GetEquipSlot(_shoulderItemField));
             UnequipIfMissing(items, GetEquipSlot(_utilityItemField));
             UnequipIfMissing(items, GetEquipSlot(_trinketItemField));
-            UnequipMissingExtraUtilities();
-        }
-
-        // ══════════════════════════════════════════════════════════════════════
-        //  Extra Utility Slots (ExtraSlots mod compatibility)
-        // ══════════════════════════════════════════════════════════════════════
-
-        private void InitExtraUtilities()
-        {
-            if (!ExtraSlotsCompat.IsLoaded) return;
-            EnsureInventoryHeightForExtraSlots();
-            ExtraSlotsCompat.RefreshSlotsMetadata();
-            ExtraSlotsCompat.RefreshSlotCount();
-            int count = ExtraSlotsCompat.ExtraUtilitySlotCount;
-            if (count <= 0) return;
-            _extraUtilities = new ItemDrop.ItemData[count];
-        }
-
-        private void RestoreExtraUtilities()
-        {
-            if (_extraUtilities == null || _humanoid == null) return;
-            EnsureInventoryHeightForExtraSlots();
-
-            var inv = _humanoid.GetInventory();
-            if (inv == null) return;
-
-            bool restored = false;
-            foreach (var item in inv.GetAllItems())
-            {
-                if (item == null || item.m_customData == null) continue;
-                if (!item.m_customData.TryGetValue(ExtraUtilitySlotKey, out string slotStr)) continue;
-                if (!int.TryParse(slotStr, out int slot)) continue;
-                if (slot < 0 || slot >= _extraUtilities.Length) continue;
-
-                // Prevent slot collision — skip if slot already occupied
-                if (_extraUtilities[slot] != null)
-                {
-                    CompanionsPlugin.Log.LogWarning(
-                        $"[Setup] Extra utility slot {slot} collision — " +
-                        $"\"{item.m_shared?.m_name ?? "?"}\" conflicts with " +
-                        $"\"{_extraUtilities[slot].m_shared?.m_name ?? "?"}\" — clearing duplicate");
-                    item.m_equipped = false;
-                    item.m_customData.Remove(ExtraUtilitySlotKey);
-                    continue;
-                }
-
-                _extraUtilities[slot] = item;
-                item.m_equipped = true;
-                ExtraSlotsCompat.SetExtraUtility(_humanoid, slot, item);
-                string slotId = $"ExtraUtility{slot + 1}";
-                TryMoveIntoExtraSlotsGridPosition(slotId, item, inv);
-                restored = true;
-
-                CompanionsPlugin.Log.LogDebug(
-                    $"[Setup] Restored extra utility slot {slot}: \"{item.m_shared?.m_name ?? "?"}\"");
-            }
-
-            if (restored)
-                ExtraSlotsPatches.CallSetupEquipment(_humanoid);
-        }
-
-        private void EquipExtraUtility(ItemDrop.ItemData item, int slot)
-        {
-            if (_extraUtilities == null || item == null) return;
-            if (slot < 0 || slot >= _extraUtilities.Length) return;
-
-            item.m_equipped = true;
-            if (item.m_customData == null)
-                item.m_customData = new System.Collections.Generic.Dictionary<string, string>();
-            item.m_customData[ExtraUtilitySlotKey] = slot.ToString();
-            _extraUtilities[slot] = item;
-            ExtraSlotsCompat.SetExtraUtility(_humanoid, slot, item);
-            string slotId = $"ExtraUtility{slot + 1}";
-            TryMoveIntoExtraSlotsGridPosition(slotId, item, _humanoid?.GetInventory());
-
-            CompanionsPlugin.Log.LogDebug(
-                $"[Setup] Equipped extra utility slot {slot}: \"{item.m_shared?.m_name ?? "?"}\"");
-        }
-
-        private void UnequipExtraUtility(int slot)
-        {
-            if (_extraUtilities == null) return;
-            if (slot < 0 || slot >= _extraUtilities.Length) return;
-
-            var item = _extraUtilities[slot];
-            if (item == null) return;
-
-            item.m_equipped = false;
-            item.m_customData?.Remove(ExtraUtilitySlotKey);
-            _extraUtilities[slot] = null;
-            ExtraSlotsCompat.SetExtraUtility(_humanoid, slot, null);
-            RestoreFromExtraSlotsGridPosition(item, _humanoid?.GetInventory());
-
-            CompanionsPlugin.Log.LogDebug(
-                $"[Setup] Unequipped extra utility slot {slot}: \"{item.m_shared?.m_name ?? "?"}\"");
-        }
-
-        private void ClearAllExtraUtilities()
-        {
-            if (_extraUtilities == null) return;
-            for (int i = 0; i < _extraUtilities.Length; i++)
-            {
-                if (_extraUtilities[i] != null)
-                {
-                    _extraUtilities[i].m_equipped = false;
-                    _extraUtilities[i].m_customData?.Remove(ExtraUtilitySlotKey);
-                    _extraUtilities[i].m_customData?.Remove(ExtraSlotPrevPosXKey);
-                    _extraUtilities[i].m_customData?.Remove(ExtraSlotPrevPosYKey);
-                    _extraUtilities[i] = null;
-                    ExtraSlotsCompat.SetExtraUtility(_humanoid, i, null);
-                }
-            }
-        }
-
-        private void UnequipMissingExtraUtilities()
-        {
-            if (_extraUtilities == null) return;
-            var inv = _humanoid?.GetInventory();
-            if (inv == null) return;
-            var items = inv.GetAllItems();
-            bool changed = false;
-            for (int i = 0; i < _extraUtilities.Length; i++)
-            {
-                var item = _extraUtilities[i];
-                if (item != null && !items.Contains(item))
-                {
-                    CompanionsPlugin.Log.LogDebug(
-                        $"[Setup] Extra utility slot {i} missing from inventory — clearing " +
-                        $"\"{item.m_shared?.m_name ?? "?"}\"");
-                    item.m_equipped = false;
-                    item.m_customData?.Remove(ExtraUtilitySlotKey);
-                    item.m_customData?.Remove(ExtraSlotPrevPosXKey);
-                    item.m_customData?.Remove(ExtraSlotPrevPosYKey);
-                    _extraUtilities[i] = null;
-                    ExtraSlotsCompat.SetExtraUtility(_humanoid, i, null);
-                    changed = true;
-                }
-            }
-            if (changed) ExtraSlotsPatches.CallSetupEquipment(_humanoid);
         }
     }
 }

@@ -90,7 +90,7 @@ namespace Companions
         // ── Scan buffers ─────────────────────────────────────────────────────
         private readonly Collider[] _spacingBuffer    = new Collider[64];
         private readonly Collider[] _dropBuffer       = new Collider[64];
-        private readonly Collider[] _pickableScanBuffer = new Collider[128];
+        private readonly Collider[] _pickableScanBuffer = new Collider[512];
         private readonly List<Piece> _tempPieces      = new List<Piece>();
         private readonly List<Container> _nearbyChests = new List<Container>();
 
@@ -104,7 +104,7 @@ namespace Companions
         private static float ScanInterval  => ModConfig.FarmScanInterval.Value;
         private static float PlantSpacing  => ModConfig.FarmPlantSpacing.Value;
         private static float UseDistance   => ModConfig.FarmUseDistance.Value;
-        private const float MoveTimeout   = 15f;
+        private const float MoveTimeout   = 2f;
         private const float StuckCheckPeriod = 1f;
         private const float StuckMinDistance = 0.5f;
 
@@ -994,22 +994,37 @@ namespace Companions
         {
             result = Vector3.zero;
 
-            float spacing = Mathf.Max(PlantSpacing, info.GrowRadius) * 2f;
+            // Grid step = max of configured spacing and vanilla minimum (2 * growRadius).
+            // Previous bug: max(PlantSpacing, GrowRadius) * 2  doubled the CONFIGURED spacing too.
+            float spacing = Mathf.Max(PlantSpacing, info.GrowRadius * 2f);
             float radius = ScanRadius;
             Vector3 center = transform.position;
+
+            // Snap grid origin to world-aligned coordinates so the grid is stable
+            // regardless of companion position. This ensures previously planted crops
+            // align with future grid points.
+            float gridOriginX = Mathf.Floor(center.x / spacing) * spacing;
+            float gridOriginZ = Mathf.Floor(center.z / spacing) * spacing;
 
             float bestDist = float.MaxValue;
             bool found = false;
 
-            // Grid sample within scan radius
-            for (float x = -radius; x <= radius; x += spacing)
-            {
-                for (float z = -radius; z <= radius; z += spacing)
-                {
-                    Vector3 candidate = new Vector3(center.x + x, 0f, center.z + z);
+            // Calculate grid bounds: enough steps to cover the scan radius from center
+            int steps = Mathf.CeilToInt(radius / spacing);
 
-                    // Check if within circular radius
-                    float flatDist = new Vector2(x, z).magnitude;
+            // World-aligned grid sample within scan radius
+            for (int ix = -steps; ix <= steps; ix++)
+            {
+                for (int iz = -steps; iz <= steps; iz++)
+                {
+                    float worldX = gridOriginX + ix * spacing;
+                    float worldZ = gridOriginZ + iz * spacing;
+                    Vector3 candidate = new Vector3(worldX, 0f, worldZ);
+
+                    // Check if within circular radius of companion
+                    float dx = worldX - center.x;
+                    float dz = worldZ - center.z;
+                    float flatDist = Mathf.Sqrt(dx * dx + dz * dz);
                     if (flatDist > radius) continue;
 
                     // Get terrain height (excludes building pieces — prevents planting on wood floors)
@@ -1350,6 +1365,7 @@ namespace Companions
         {
             Log("Finish — restoring follow target");
             CloseAnyOpenChest();
+            RestoreCombatLoadout();
             _targetPickable = null;
             _targetChest = null;
             _outputChest = null;
@@ -1363,6 +1379,7 @@ namespace Companions
         {
             Log($"Aborted — {reason} (phase was {_phase})");
             CloseAnyOpenChest();
+            RestoreCombatLoadout();
             _targetPickable = null;
             _targetChest = null;
             _outputChest = null;
@@ -1370,6 +1387,19 @@ namespace Companions
             _phase = FarmPhase.Idle;
             _scanTimer = ScanInterval;
             RestoreFollow();
+        }
+
+        /// <summary>
+        /// Unequip cultivator and re-enable auto-equip so the companion
+        /// returns to combat gear after farming ends.
+        /// </summary>
+        private void RestoreCombatLoadout()
+        {
+            if (_setup != null)
+            {
+                _setup.SuppressAutoEquip = false;
+                Log("SuppressAutoEquip=false, triggering auto-equip");
+            }
         }
 
         private void CloseAnyOpenChest()

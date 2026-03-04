@@ -4,7 +4,6 @@ using System.Reflection;
 using HarmonyLib;
 using TMPro;
 using UnityEngine;
-using UnityEngine.EventSystems;
 using UnityEngine.UI;
 
 namespace Companions
@@ -104,21 +103,6 @@ namespace Companions
         private Image[]           _foodSlotIcons;
         private TextMeshProUGUI[] _foodSlotCounts;
 
-        // Equipment panel (visible only when ExtraSlots mod is installed)
-        private GameObject _equipPanel;
-        private Image[]    _equipSlotIcons;
-        private Image[]    _equipSlotBgs;
-        private RectTransform[] _equipSlotRoots;
-        private Color[]    _equipSlotBaseColors;
-        private string[]   _equipSlotIds;
-        private int        _equipSlotCount;
-        private float      _equipTileSize = 64f;
-        private bool       _gamepadEquipPanelActive;
-        private int        _gamepadEquipSelected = -1;
-        // True if equip panel was built with legacy fallback (ExtraSlots positions not ready).
-        // On the next Show() we rebuild it if ExtraSlots positions are now valid.
-        private bool       _equipPanelUsedLegacy;
-
         // Weight & armor display (on the cloned container panel)
         private TMP_Text _weightText;
         private TMP_Text _armorText;
@@ -127,7 +111,6 @@ namespace Companions
         private bool _visible;
         private bool _builtForDverger;
         private bool _gridCreated;  // true after first UpdateInventory (grid elements exist)
-        private readonly HashSet<ItemDrop.ItemData> _slotItemsInPanel = new HashSet<ItemDrop.ItemData>();
 
         // â”€â”€ Gamepad UIGroupHandler state â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         private UIGroupHandler _uiGroup;             // our companion grid's UIGroupHandler
@@ -162,26 +145,45 @@ namespace Companions
 
             var invGui = InventoryGui.instance;
             if (invGui == null || !invGui.IsContainerOpen())
-            { Hide(); return; }
+            {
+                CompanionsPlugin.Log.LogDebug("[UI] Update hide: InventoryGui missing or container closed");
+                Hide();
+                return;
+            }
 
             // Detect external close â€” another container opened or vanilla closed us
             if (_currentContainerField != null)
             {
                 var currentContainer = _currentContainerField.GetValue(invGui) as Container;
                 if (currentContainer == null || currentContainer != _companionContainer)
-                { Hide(); return; }
+                {
+                    CompanionsPlugin.Log.LogDebug(
+                        $"[UI] Update hide: current container mismatch current={ContainerName(currentContainer)} " +
+                        $"companion={ContainerName(_companionContainer)}");
+                    Hide();
+                    return;
+                }
             }
 
             // Unity null check â€” companion may have been destroyed
             if (_companion == null || !_companion)
-            { Hide(); return; }
+            {
+                CompanionsPlugin.Log.LogDebug("[UI] Update hide: companion destroyed");
+                Hide();
+                return;
+            }
 
             if (Player.m_localPlayer != null)
             {
                 float dist = Vector3.Distance(
                     Player.m_localPlayer.transform.position,
                     _companion.transform.position);
-                if (dist > 5f) { Hide(); return; }
+                if (dist > 5f)
+                {
+                    CompanionsPlugin.Log.LogDebug($"[UI] Update hide: out of range dist={dist:F2}");
+                    Hide();
+                    return;
+                }
             }
 
             // F7: toggle drag-to-reposition mode
@@ -206,9 +208,27 @@ namespace Companions
         {
             if (!_visible || _companion == null || _dragMode) return;
 
+            // Race condition guard: if another container (chest) was opened between
+            // our Update() and this LateUpdate, vanilla's UpdateContainer already
+            // pushed the chest's inventory into m_containerGrid (our _grid) and
+            // re-enabled m_container. Hiding m_container now would show stale chest
+            // data in our panel for one frame. Detect and hide immediately.
+            var invGui = InventoryGui.instance;
+            if (invGui != null && _currentContainerField != null)
+            {
+                var current = _currentContainerField.GetValue(invGui) as Container;
+                if (current != null && current != _companionContainer)
+                {
+                    CompanionsPlugin.Log.LogWarning(
+                        $"[UI] LateUpdate race detected current={ContainerName(current)} " +
+                        $"companion={ContainerName(_companionContainer)}");
+                    Hide();
+                    return;
+                }
+            }
+
             // Suppress vanilla container panel â€” must run AFTER vanilla's UpdateContainer
             // re-enables it each frame when m_currentContainer is set
-            var invGui = InventoryGui.instance;
             if (invGui != null && invGui.m_container != null)
                 invGui.m_container.gameObject.SetActive(false);
 
@@ -220,44 +240,10 @@ namespace Companions
             // Instead, fix the equipped indicators that vanilla renders incorrectly
             // (it passes null player, disabling all equipped icons), then update our
             // custom weight/armor and food slot displays.
-            // Refresh slot bindings first so grid suppression uses current slot occupancy.
             var inv = GetStorageInventory();
-            RefreshEquipmentPanel();
-            RefreshEquipmentSlotBackgrounds();
-            ClampGridToRegularRows(inv);
             FixEquippedIndicators();
-            EnsureGridSelectionNotSuppressed(inv);
             UpdateWeightAndArmor();
             RefreshFoodSlots(inv);
-            HandleEquipPanelGamepadInput();
-            UpdateEquipPanelGamepadHighlight();
-        }
-
-        private void RefreshEquipmentSlotBackgrounds()
-        {
-            if (_equipSlotBgs == null || _equipSlotBaseColors == null) return;
-            if (!TryGetPlayerSlotTemplate(out RectTransform srcRT, out Image src) || src == null || src.sprite == null) return;
-
-            // Use normalColor (not raw Image.color) — Button.CrossFadeColor writes to the
-            // CanvasRenderer tint, leaving Image.color at the prefab value (often white).
-            Color useColor = GetSlotBackgroundColor(srcRT, src);
-
-            for (int i = 0; i < _equipSlotBgs.Length; i++)
-            {
-                var bg = _equipSlotBgs[i];
-                if (bg == null) continue;
-                if (bg.sprite != null) continue;
-
-                bg.sprite = src.sprite;
-                bg.type = src.type;
-                bg.preserveAspect = src.preserveAspect;
-                bg.color = useColor;
-                bg.material = src.material;
-                bg.pixelsPerUnitMultiplier = src.pixelsPerUnitMultiplier;
-                bg.useSpriteMesh = src.useSpriteMesh;
-                if (i < _equipSlotBaseColors.Length)
-                    _equipSlotBaseColors[i] = bg.color;
-            }
         }
 
         // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
@@ -273,6 +259,11 @@ namespace Companions
             _companionContainer = companion.GetComponent<Container>();
             _companionNview     = companion.GetComponent<ZNetView>();
 
+            var invGui = InventoryGui.instance;
+            Container currentContainer = null;
+            if (_currentContainerField != null && invGui != null)
+                currentContainer = _currentContainerField.GetValue(invGui) as Container;
+
             var inv = _companionHumanoid?.GetInventory();
             int itemCount = inv?.NrOfItems() ?? -1;
             float totalWeight = inv?.GetTotalWeight() ?? -1f;
@@ -280,7 +271,8 @@ namespace Companions
                 $"[UI] Show â€” companion=\"{companion.name}\" id={companion.GetInstanceID()} " +
                 $"char={_companionChar != null} humanoid={_companionHumanoid != null} " +
                 $"food={_companionFood != null} nview={_companionNview != null} " +
-                $"items={itemCount} weight={totalWeight:F1}");
+                $"items={itemCount} weight={totalWeight:F1} " +
+                $"currentContainer={ContainerName(currentContainer)} companionContainer={ContainerName(_companionContainer)}");
 
             EnsureCompanionOwnership();
 
@@ -295,27 +287,6 @@ namespace Companions
                 _built = false;
             }
 
-            // Rebuild the equipment panel if it was built with the legacy fallback
-            // (positions were zero when first built) and ExtraSlots now has valid positions.
-            if (_built && _equipPanelUsedLegacy && ExtraSlotsCompat.IsLoaded)
-            {
-                ExtraSlotsCompat.RefreshSlotsMetadata();
-                var defs = ExtraSlotsCompat.GetActiveSlots();
-                bool hasPos = false;
-                if (defs != null)
-                    for (int i = 0; i < defs.Count; i++)
-                        if (defs[i].Position.sqrMagnitude > 1f) { hasPos = true; break; }
-                if (hasPos)
-                {
-                    if (_equipPanel != null) { Destroy(_equipPanel); _equipPanel = null; }
-                    _equipSlotIcons = null; _equipSlotBgs = null;
-                    _equipSlotRoots = null; _equipSlotBaseColors = null; _equipSlotIds = null;
-                    _equipPanelUsedLegacy = false;
-                    BuildEquipmentPanel();
-                    var font = GetFont();
-                    if (font != null && _equipPanel != null) ApplyFallbackFont(_equipPanel.transform, font);
-                }
-            }
             _builtForDverger = isDverger;
             CompanionsPlugin.Log.LogDebug(
                 $"[UI] Show â€” built={_built} gridCreated={_gridCreated} " +
@@ -337,10 +308,6 @@ namespace Companions
             if (_foodSlotsContainer != null)
                 _foodSlotsContainer.SetActive(!_builtForDverger);
 
-            // Show/hide equipment panel (ExtraSlots only)
-            if (_equipPanel != null)
-                _equipPanel.SetActive(ExtraSlotsCompat.IsLoaded);
-
             // Force a clean grid rebuild for the current companion inventory.
             if (_grid != null)
             {
@@ -355,7 +322,6 @@ namespace Companions
             }
 
             // Hide vanilla container panel immediately to prevent single-frame flicker
-            var invGui = InventoryGui.instance;
             if (invGui != null && invGui.m_container != null)
                 invGui.m_container.gameObject.SetActive(false);
 
@@ -386,9 +352,21 @@ namespace Companions
 
         public void Hide()
         {
+            HideInternal(closeInventoryGuiIfNoTakeover: true, reason: "Hide()");
+        }
+
+        private void HideForContainerSwitch()
+        {
+            HideInternal(closeInventoryGuiIfNoTakeover: false, reason: "ContainerSwitch");
+        }
+
+        private void HideInternal(bool closeInventoryGuiIfNoTakeover, string reason)
+        {
             if (!_visible) return;
             _visible = false;
-            SetEquipPanelGamepadActive(false);
+            CompanionsPlugin.Log.LogDebug(
+                $"[UI] HideInternal reason={reason} closeGui={closeInventoryGuiIfNoTakeover} " +
+                $"companionContainer={ContainerName(_companionContainer)}");
 
             // Restore vanilla gamepad groups before hiding
             RestoreGamepadGroups();
@@ -422,9 +400,17 @@ namespace Companions
             _companionContainer = null;
             _companionNview     = null;
 
-            // Close vanilla InventoryGui only if no other container took over
-            if (!anotherContainerOpen && InventoryGui.instance != null && InventoryGui.IsVisible())
+            // Close vanilla InventoryGui only if no other container took over,
+            // and only when this hide path is intended to close it.
+            if (closeInventoryGuiIfNoTakeover &&
+                !anotherContainerOpen &&
+                InventoryGui.instance != null &&
+                InventoryGui.IsVisible())
                 InventoryGui.instance.Hide();
+
+            CompanionsPlugin.Log.LogDebug(
+                $"[UI] HideInternal done reason={reason} anotherContainerOpen={anotherContainerOpen} " +
+                $"guiVisible={(InventoryGui.instance != null && InventoryGui.IsVisible())}");
         }
 
         // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
@@ -611,16 +597,9 @@ namespace Companions
             // Build food slots at the bottom (expand panel height to fit)
             BuildFoodSlots();
 
-            // Build equipment panel on the right side (ExtraSlots mod only)
-            BuildEquipmentPanel();
-
             // Fix any broken TMP fonts in the cloned hierarchy
             TMP_FontAsset font = GetFont();
             if (font != null) ApplyFallbackFont(_root.transform, font);
-
-            // Also fix fonts in the equipment panel
-            if (_equipPanel != null && font != null)
-                ApplyFallbackFont(_equipPanel.transform, font);
 
             _built = true;
             _gridCreated = false;  // first UpdateInventory will create elements with null player
@@ -905,793 +884,6 @@ namespace Companions
         }
 
         // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-        //  Equipment panel â€” ExtraSlots mod only, side panel replicating
-        //  the ExtraSlots equipment layout (3-row columns on the right)
-        // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-
-        private const float EquipTileSize = 70f;
-        private const float EquipTileGap  = 6f;
-        private const float EquipPadding  = 8f;
-        private const float EquipPanelGap = 100f;
-
-        private static readonly string[] LegacyEquipSlotIds =
-        {
-            "Helmet", "Chest", "Legs", "Shoulder", "Utility", "Trinket"
-        };
-
-        private void BuildEquipmentPanel()
-        {
-            if (!ExtraSlotsCompat.IsLoaded) return;
-
-            ExtraSlotsCompat.RefreshSlotsMetadata();
-            var slotDefs = ExtraSlotsCompat.GetActiveSlots();
-            if (slotDefs == null || slotDefs.Count == 0)
-            {
-                BuildLegacyEquipmentPanel();
-                return;
-            }
-
-            // ExtraSlots sets slot positions in InventoryGui.Show → UpdatePanel → SetSlotsPositions.
-            // If BuildEquipmentPanel is called during that same Show() (e.g. companion panel opens
-            // before ExtraSlots' Postfix fires), all positions are still Vector2.zero.
-            // In that case we fall back to the legacy grid so slots don't all pile up at (0,0).
-            bool hasValidPositions = false;
-            for (int i = 0; i < slotDefs.Count; i++)
-            {
-                if (slotDefs[i].Position.sqrMagnitude > 1f)
-                {
-                    hasValidPositions = true;
-                    break;
-                }
-            }
-            if (!hasValidPositions)
-            {
-                BuildLegacyEquipmentPanel();
-                return;
-            }
-
-            _equipSlotCount = slotDefs.Count;
-            _equipSlotIcons = new Image[_equipSlotCount];
-            _equipSlotBgs = new Image[_equipSlotCount];
-            _equipSlotRoots = new RectTransform[_equipSlotCount];
-            _equipSlotBaseColors = new Color[_equipSlotCount];
-            _equipSlotIds = new string[_equipSlotCount];
-            _equipTileSize = GetEffectiveEquipTileSize();
-
-            float minX = float.MaxValue;
-            float maxX = float.MinValue;
-            float minY = float.MaxValue;
-            float maxY = float.MinValue;
-            for (int i = 0; i < slotDefs.Count; i++)
-            {
-                var p = slotDefs[i].Position;
-                if (p.x < minX) minX = p.x;
-                if (p.x > maxX) maxX = p.x;
-                if (p.y < minY) minY = p.y;
-                if (p.y > maxY) maxY = p.y;
-            }
-
-            float panelW = (maxX - minX) + _equipTileSize + EquipPadding * 2f;
-            float panelH = (maxY - minY) + _equipTileSize + EquipPadding * 2f;
-
-            _equipPanel = new GameObject("HC_EquipPanel", typeof(RectTransform));
-            _equipPanel.transform.SetParent(_root.transform, false);
-
-            var panelRT = _equipPanel.GetComponent<RectTransform>();
-            panelRT.anchorMin = new Vector2(1f, 1f);
-            panelRT.anchorMax = new Vector2(1f, 1f);
-            panelRT.pivot = new Vector2(0f, 1f);
-            panelRT.sizeDelta = new Vector2(panelW, panelH);
-            panelRT.anchoredPosition = new Vector2(
-                EquipPanelGap + ExtraSlotsCompat.EquipmentPanelOffset.x,
-                -ExtraSlotsCompat.EquipmentPanelOffset.y);
-
-            BuildEquipmentPanelBackground();
-
-            for (int i = 0; i < _equipSlotCount; i++)
-            {
-                var slot = slotDefs[i];
-                float x = EquipPadding + (slot.Position.x - minX);
-                float y = -EquipPadding - (maxY - slot.Position.y);
-                string label = string.IsNullOrEmpty(slot.Name) ? slot.Id : slot.Name;
-                CreateEquipSlot(i, x, y, label, slot.Id);
-            }
-        }
-
-        private void BuildLegacyEquipmentPanel()
-        {
-            _equipPanelUsedLegacy = true;
-            ExtraSlotsCompat.RefreshSlotCount();
-            int extraCount = ExtraSlotsCompat.ExtraUtilitySlotCount;
-            _equipSlotCount = LegacyEquipSlotIds.Length + extraCount;
-            _equipSlotIcons = new Image[_equipSlotCount];
-            _equipSlotBgs = new Image[_equipSlotCount];
-            _equipSlotRoots = new RectTransform[_equipSlotCount];
-            _equipSlotBaseColors = new Color[_equipSlotCount];
-            _equipSlotIds = new string[_equipSlotCount];
-            _equipTileSize = GetEffectiveEquipTileSize();
-
-            int cols = 2 + (extraCount > 0 ? (int)Math.Ceiling(extraCount / 3.0) : 0);
-            int rows = 3;
-            float panelW = cols * _equipTileSize + (cols - 1) * EquipTileGap + EquipPadding * 2f;
-            float panelH = rows * _equipTileSize + (rows - 1) * EquipTileGap + EquipPadding * 2f;
-
-            _equipPanel = new GameObject("HC_EquipPanel", typeof(RectTransform));
-            _equipPanel.transform.SetParent(_root.transform, false);
-
-            var panelRT = _equipPanel.GetComponent<RectTransform>();
-            panelRT.anchorMin = new Vector2(1f, 1f);
-            panelRT.anchorMax = new Vector2(1f, 1f);
-            panelRT.pivot = new Vector2(0f, 1f);
-            panelRT.sizeDelta = new Vector2(panelW, panelH);
-            panelRT.anchoredPosition = new Vector2(
-                EquipPanelGap + ExtraSlotsCompat.EquipmentPanelOffset.x,
-                -ExtraSlotsCompat.EquipmentPanelOffset.y);
-
-            BuildEquipmentPanelBackground();
-
-            for (int i = 0; i < _equipSlotCount; i++)
-            {
-                int col;
-                int row;
-                if (i < LegacyEquipSlotIds.Length)
-                {
-                    col = i / 3;
-                    row = i % 3;
-                }
-                else
-                {
-                    int extraIdx = i - LegacyEquipSlotIds.Length;
-                    col = 2 + extraIdx / 3;
-                    row = extraIdx % 3;
-                }
-
-                float x = EquipPadding + col * (_equipTileSize + EquipTileGap);
-                float y = -EquipPadding - row * (_equipTileSize + EquipTileGap);
-                string slotId = i < LegacyEquipSlotIds.Length
-                    ? LegacyEquipSlotIds[i]
-                    : $"ExtraUtility{i - LegacyEquipSlotIds.Length + 1}";
-                string label = i < LegacyEquipSlotIds.Length
-                    ? LegacyEquipSlotIds[i]
-                    : $"Utility {i - LegacyEquipSlotIds.Length + 2}";
-
-                CreateEquipSlot(i, x, y, label, slotId);
-            }
-        }
-
-        private void BuildEquipmentPanelBackground()
-        {
-            var gui = InventoryGui.instance;
-            if (gui != null && gui.m_player != null)
-            {
-                var darken = gui.m_player.Find("Darken");
-                var bkg = gui.m_player.Find("Bkg");
-
-                if (darken != null)
-                {
-                    var darkenClone = Instantiate(darken.gameObject, _equipPanel.transform);
-                    darkenClone.name = "Darken";
-                    var dkRT = darkenClone.GetComponent<RectTransform>();
-                    dkRT.anchorMin = Vector2.zero;
-                    dkRT.anchorMax = Vector2.one;
-                    dkRT.offsetMin = Vector2.zero;
-                    dkRT.offsetMax = Vector2.zero;
-                    darkenClone.transform.SetAsFirstSibling();
-                }
-
-                if (bkg != null)
-                {
-                    var bkgClone = Instantiate(bkg.gameObject, _equipPanel.transform);
-                    bkgClone.name = "Bkg";
-                    var bgRT = bkgClone.GetComponent<RectTransform>();
-                    bgRT.anchorMin = Vector2.zero;
-                    bgRT.anchorMax = Vector2.one;
-                    bgRT.offsetMin = Vector2.zero;
-                    bgRT.offsetMax = Vector2.zero;
-                    bkgClone.transform.SetSiblingIndex(1);
-                }
-            }
-
-            if (_equipPanel.transform.childCount == 0)
-            {
-                var fallbackBg = _equipPanel.AddComponent<Image>();
-                fallbackBg.color = new Color(0f, 0f, 0f, 0.85f);
-                fallbackBg.raycastTarget = false;
-            }
-        }
-
-        private bool TryGetPlayerSlotTemplate(out RectTransform rt, out Image img)
-        {
-            rt = null;
-            img = null;
-
-            var gui = InventoryGui.instance;
-            if (gui == null || gui.m_playerGrid == null) return false;
-
-            if (_gridElementsField != null && _elemGoField != null)
-            {
-                var elements = _gridElementsField.GetValue(gui.m_playerGrid) as System.Collections.IList;
-                if (elements != null && elements.Count > 0)
-                {
-                    var go = _elemGoField.GetValue(elements[0]) as GameObject;
-                    if (go != null)
-                    {
-                        rt = go.GetComponent<RectTransform>();
-                        img = go.GetComponent<Image>();
-                        if (img != null && img.sprite != null) return true;
-                    }
-                }
-            }
-
-            if (_gridElementPrefabField != null)
-            {
-                var prefab = _gridElementPrefabField.GetValue(gui.m_playerGrid) as GameObject;
-                if (prefab != null)
-                {
-                    rt = prefab.GetComponent<RectTransform>();
-                    img = prefab.GetComponent<Image>();
-                    if (img != null && img.sprite != null) return true;
-                }
-            }
-
-            if (gui.m_playerGrid.m_gridRoot != null && gui.m_playerGrid.m_gridRoot.childCount > 0)
-            {
-                var firstChild = gui.m_playerGrid.m_gridRoot.GetChild(0);
-                if (firstChild != null)
-                {
-                    rt = firstChild.GetComponent<RectTransform>();
-                    img = firstChild.GetComponent<Image>();
-                    return img != null && img.sprite != null;
-                }
-            }
-
-            return false;
-        }
-
-        private float GetEffectiveEquipTileSize()
-        {
-            // ExtraSlots positions equipment slots on a 70f grid (its tileSize constant).
-            // Always use 70f for the equip panel to match ExtraSlots' layout.
-            // The vanilla grid element sizeDelta may differ (e.g. 64) but that's for the
-            // inventory grid, not the equipment panel.
-            return EquipTileSize;
-        }
-
-        /// <summary>
-        /// Returns the display color to use for a slot background image sourced from the
-        /// vanilla player-grid element.  Unity Button.ColorTint uses CrossFadeColor which
-        /// sets the CanvasRenderer tint rather than Image.color, so Image.color stays at
-        /// its prefab value (often Color.white).  Reading Button.colors.normalColor gives
-        /// us the actual "resting" tint the button would normally apply.
-        /// </summary>
-        private static Color GetSlotBackgroundColor(RectTransform srcRT, Image src)
-        {
-            var btn = srcRT != null ? srcRT.GetComponent<Button>() : null;
-            if (btn != null && btn.transition == Selectable.Transition.ColorTint)
-                return btn.colors.normalColor;
-
-            // If Image.color is effectively white (no meaningful tint), fall back to a
-            // vanilla-approximate dark slot color so we don't render bright-white squares.
-            var c = src.color;
-            if (c.r > 0.85f && c.g > 0.85f && c.b > 0.85f && c.a > 0.85f)
-                return new Color(0.4f, 0.35f, 0.3f, 0.75f);
-
-            return c;
-        }
-
-        private void ApplyEquipSlotBackgroundStyle(Image slotImg)
-        {
-            if (TryGetPlayerSlotTemplate(out RectTransform srcRT, out Image src) && src != null && src.sprite != null)
-            {
-                slotImg.sprite = src.sprite;
-                slotImg.type = src.type;
-                slotImg.preserveAspect = src.preserveAspect;
-                slotImg.color = GetSlotBackgroundColor(srcRT, src);
-                slotImg.material = src.material;
-                slotImg.pixelsPerUnitMultiplier = src.pixelsPerUnitMultiplier;
-                slotImg.useSpriteMesh = src.useSpriteMesh;
-                return;
-            }
-
-            var gui = InventoryGui.instance;
-            if (gui != null && gui.m_player != null)
-            {
-                var bkg = gui.m_player.Find("Bkg");
-                var bkgImg = bkg != null ? bkg.GetComponent<Image>() : null;
-                if (bkgImg != null && bkgImg.sprite != null)
-                {
-                    slotImg.sprite = bkgImg.sprite;
-                    slotImg.type = bkgImg.type;
-                    slotImg.material = bkgImg.material;
-                    slotImg.color = new Color(bkgImg.color.r, bkgImg.color.g, bkgImg.color.b, Mathf.Clamp01(bkgImg.color.a * 0.35f));
-                    return;
-                }
-            }
-
-            slotImg.sprite = null;
-            slotImg.color = new Color(0f, 0f, 0f, 0.5625f);
-        }
-
-        private void CreateEquipSlot(int index, float x, float y, string label, string slotId)
-        {
-            // Slot container
-            var slotGO = new GameObject(
-                $"EquipSlot_{label}",
-                typeof(RectTransform),
-                typeof(Image),
-                typeof(Button),
-                typeof(EquipSlotClickHandler));
-            slotGO.transform.SetParent(_equipPanel.transform, false);
-
-            var slotRT = slotGO.GetComponent<RectTransform>();
-            slotRT.anchorMin = new Vector2(0f, 1f);
-            slotRT.anchorMax = new Vector2(0f, 1f);
-            slotRT.pivot     = new Vector2(0f, 1f);
-            slotRT.sizeDelta = new Vector2(_equipTileSize, _equipTileSize);
-            slotRT.anchoredPosition = new Vector2(x, y);
-
-            var slotImg = slotGO.GetComponent<Image>();
-            ApplyEquipSlotBackgroundStyle(slotImg);
-            slotImg.raycastTarget = true;
-            if (_equipSlotBgs != null && index >= 0 && index < _equipSlotBgs.Length)
-            {
-                _equipSlotBgs[index] = slotImg;
-                _equipSlotBaseColors[index] = slotImg.color;
-            }
-            if (_equipSlotRoots != null && index >= 0 && index < _equipSlotRoots.Length)
-                _equipSlotRoots[index] = slotRT;
-
-            var slotButton = slotGO.GetComponent<Button>();
-            slotButton.targetGraphic = slotImg;
-            slotButton.transition = Selectable.Transition.None;
-
-            var clickHandler = slotGO.GetComponent<EquipSlotClickHandler>();
-            clickHandler.Init(this, slotId);
-
-            // Item icon
-            var iconGO = new GameObject("Icon", typeof(RectTransform), typeof(Image));
-            iconGO.transform.SetParent(slotGO.transform, false);
-            var iconRT = iconGO.GetComponent<RectTransform>();
-            iconRT.anchorMin = Vector2.zero;
-            iconRT.anchorMax = Vector2.one;
-            iconRT.offsetMin = new Vector2(2f, 2f);
-            iconRT.offsetMax = new Vector2(-2f, -2f);
-            _equipSlotIcons[index] = iconGO.GetComponent<Image>();
-            if (_equipSlotIds != null && index >= 0 && index < _equipSlotIds.Length)
-                _equipSlotIds[index] = slotId;
-            _equipSlotIcons[index].preserveAspect = true;
-            _equipSlotIcons[index].raycastTarget  = false;
-            _equipSlotIcons[index].enabled        = false;
-        }
-
-        private void RefreshEquipmentPanel()
-        {
-            if (_equipSlotIcons == null || _equipSlotIds == null || _companion == null) return;
-            if (ExtraSlotsCompat.IsLoaded) ExtraSlotsCompat.RefreshSlotsMetadata();
-
-            _slotItemsInPanel.Clear();
-            int count = Mathf.Min(_equipSlotIcons.Length, _equipSlotIds.Length);
-            for (int i = 0; i < count; i++)
-            {
-                var item = _companion.GetItemForExtraSlotsSlot(_equipSlotIds[i]);
-                if (item != null) _slotItemsInPanel.Add(item);
-                SetEquipIcon(i, _equipSlotIds[i], item);
-            }
-        }
-
-        private void SetEquipIcon(int index, string slotId, ItemDrop.ItemData item)
-        {
-            if (index < 0 || index >= _equipSlotIcons.Length) return;
-            var icon = _equipSlotIcons[index];
-            if (item != null)
-            {
-                icon.sprite  = item.GetIcon();
-                icon.color   = Color.white;
-                icon.rectTransform.localScale = Vector3.one;
-                icon.enabled = true;
-            }
-            else
-            {
-                icon.sprite = ExtraSlotsCompat.GetSlotHintSprite(slotId);
-                if (slotId.StartsWith("Quick", StringComparison.OrdinalIgnoreCase))
-                {
-                    icon.color = new Color(0.5f, 0.5f, 0.5f, 0.4f);
-                    icon.rectTransform.localScale = Vector3.one * 0.6f;
-                }
-                else if (slotId.StartsWith("Ammo", StringComparison.OrdinalIgnoreCase))
-                {
-                    icon.color = new Color(0.5f, 0.5f, 0.5f, 0.9f);
-                    icon.rectTransform.localScale = Vector3.one * 0.8f;
-                }
-                else if (slotId.StartsWith("Misc", StringComparison.OrdinalIgnoreCase))
-                {
-                    icon.color = new Color(0.5f, 0.5f, 0.5f, 0.25f);
-                    icon.rectTransform.localScale = Vector3.one * 0.8f;
-                }
-                else
-                {
-                    icon.color = new Color(0.6f, 0.6f, 0.6f, 0.9f);
-                    icon.rectTransform.localScale = Vector3.one;
-                }
-                icon.enabled = icon.sprite != null;
-            }
-        }
-
-        private void HandleEquipPanelGamepadInput()
-        {
-            if (_equipPanel == null || !_equipPanel.activeInHierarchy ||
-                _equipSlotIds == null || _equipSlotCount <= 0)
-            {
-                SetEquipPanelGamepadActive(false);
-                return;
-            }
-
-            if (!ZInput.IsGamepadActive())
-            {
-                SetEquipPanelGamepadActive(false);
-                return;
-            }
-
-            var gui = InventoryGui.instance;
-            if (gui == null || _activeGroupField == null)
-            {
-                SetEquipPanelGamepadActive(false);
-                return;
-            }
-
-            int activeGroup = (int)_activeGroupField.GetValue(gui);
-            if (activeGroup != 0)
-            {
-                SetEquipPanelGamepadActive(false);
-                return;
-            }
-
-            bool dpadLeft  = ZInput.GetButtonDown("JoyDPadLeft")  || ZInput.GetButtonDown("JoyLStickLeft");
-            bool dpadRight = ZInput.GetButtonDown("JoyDPadRight") || ZInput.GetButtonDown("JoyLStickRight");
-            bool dpadUp    = ZInput.GetButtonDown("JoyDPadUp")    || ZInput.GetButtonDown("JoyLStickUp");
-            bool dpadDown  = ZInput.GetButtonDown("JoyDPadDown")  || ZInput.GetButtonDown("JoyLStickDown");
-            bool actionA   = ZInput.GetButtonDown("JoyButtonA")   || ZInput.GetButtonDown("JoyUse");
-            bool actionY   = ZInput.GetButtonDown("JoyButtonY");
-
-            if (!_gamepadEquipPanelActive)
-            {
-                if (dpadRight && IsCompanionGridSelectionAtRightEdge())
-                {
-                    SetEquipPanelGamepadActive(true);
-                    _gamepadEquipSelected = FindEquipSlotClosestToGridSelection();
-                }
-                return;
-            }
-
-            if (dpadLeft)
-            {
-                if (!MoveEquipPanelSelection(new Vector2(-1f, 0f)))
-                {
-                    ExitEquipPanelGamepadToGrid();
-                }
-                return;
-            }
-            if (dpadRight)
-            {
-                MoveEquipPanelSelection(new Vector2(1f, 0f));
-                return;
-            }
-            if (dpadUp)
-            {
-                MoveEquipPanelSelection(new Vector2(0f, 1f));
-                return;
-            }
-            if (dpadDown)
-            {
-                MoveEquipPanelSelection(new Vector2(0f, -1f));
-                return;
-            }
-
-            if (_gamepadEquipSelected < 0 || _gamepadEquipSelected >= _equipSlotCount) return;
-            string slotId = _equipSlotIds[_gamepadEquipSelected];
-            if (string.IsNullOrEmpty(slotId)) return;
-
-            if (actionA)
-            {
-                OnEquipSlotLeftClick(slotId);
-                return;
-            }
-
-            if (actionY)
-                OnEquipSlotRightClick(slotId);
-        }
-
-        private void UpdateEquipPanelGamepadHighlight()
-        {
-            if (_equipSlotBgs == null || _equipSlotBaseColors == null) return;
-
-            for (int i = 0; i < _equipSlotBgs.Length; i++)
-            {
-                var bg = _equipSlotBgs[i];
-                if (bg == null) continue;
-
-                if (_equipSlotBaseColors[i].a <= 0f && bg.color.a > 0f)
-                    _equipSlotBaseColors[i] = bg.color;
-
-                Color baseColor = _equipSlotBaseColors[i];
-                bool selected = _gamepadEquipPanelActive && i == _gamepadEquipSelected;
-                bg.color = selected
-                    ? new Color(
-                        Mathf.Clamp01(baseColor.r + 0.22f),
-                        Mathf.Clamp01(baseColor.g + 0.22f),
-                        Mathf.Clamp01(baseColor.b + 0.22f),
-                        Mathf.Clamp01(baseColor.a + 0.1f))
-                    : baseColor;
-
-                if (_equipSlotRoots != null && i < _equipSlotRoots.Length && _equipSlotRoots[i] != null)
-                    _equipSlotRoots[i].localScale = selected ? Vector3.one * 1.03f : Vector3.one;
-            }
-        }
-
-        private void SetEquipPanelGamepadActive(bool active)
-        {
-            _gamepadEquipPanelActive = active;
-            if (!active)
-            {
-                _gamepadEquipSelected = -1;
-                return;
-            }
-
-            if (_equipSlotCount <= 0)
-            {
-                _gamepadEquipSelected = -1;
-                _gamepadEquipPanelActive = false;
-                return;
-            }
-
-            if (_gamepadEquipSelected < 0 || _gamepadEquipSelected >= _equipSlotCount)
-                _gamepadEquipSelected = 0;
-        }
-
-        private bool IsCompanionGridSelectionAtRightEdge()
-        {
-            if (_grid == null || _gridWidthField == null || _gridSelectedField == null) return false;
-
-            int width = (int)_gridWidthField.GetValue(_grid);
-            if (width <= 0) return false;
-
-            var sel = (Vector2i)_gridSelectedField.GetValue(_grid);
-            return sel.x >= width - 1;
-        }
-
-        private int FindEquipSlotClosestToGridSelection()
-        {
-            if (_equipSlotRoots == null || _equipSlotRoots.Length == 0) return 0;
-            if (_grid == null || _gridSelectedField == null) return 0;
-
-            var sel = (Vector2i)_gridSelectedField.GetValue(_grid);
-            float targetY = -Mathf.Max(0, sel.y) * (_equipTileSize + EquipTileGap);
-            int best = 0;
-            float bestScore = float.MaxValue;
-
-            for (int i = 0; i < _equipSlotRoots.Length; i++)
-            {
-                var rt = _equipSlotRoots[i];
-                if (rt == null) continue;
-
-                var p = rt.anchoredPosition;
-                float score = Mathf.Abs(p.y - targetY) + Mathf.Abs(p.x) * 0.01f;
-                if (score < bestScore)
-                {
-                    bestScore = score;
-                    best = i;
-                }
-            }
-
-            return best;
-        }
-
-        private bool MoveEquipPanelSelection(Vector2 direction)
-        {
-            if (_equipSlotRoots == null || _equipSlotCount <= 1) return false;
-            if (_gamepadEquipSelected < 0 || _gamepadEquipSelected >= _equipSlotCount) return false;
-
-            int from = _gamepadEquipSelected;
-            int best = -1;
-            float bestScore = float.MaxValue;
-
-            var fromRt = _equipSlotRoots[from];
-            if (fromRt == null) return false;
-            Vector2 fromPos = fromRt.anchoredPosition;
-            Vector2 side = new Vector2(-direction.y, direction.x);
-
-            for (int i = 0; i < _equipSlotCount; i++)
-            {
-                if (i == from) continue;
-                var rt = _equipSlotRoots[i];
-                if (rt == null) continue;
-
-                Vector2 delta = rt.anchoredPosition - fromPos;
-                float forward = Vector2.Dot(delta, direction);
-                if (forward <= 0.5f) continue;
-
-                float lateral = Mathf.Abs(Vector2.Dot(delta, side));
-                float score = lateral * 2f + forward;
-                if (score < bestScore)
-                {
-                    bestScore = score;
-                    best = i;
-                }
-            }
-
-            if (best < 0) return false;
-            _gamepadEquipSelected = best;
-            return true;
-        }
-
-        private void ExitEquipPanelGamepadToGrid()
-        {
-            SetEquipPanelGamepadActive(false);
-            if (_grid == null || _gridWidthField == null || _gridSelectedField == null) return;
-
-            int width = (int)_gridWidthField.GetValue(_grid);
-            if (width <= 0) return;
-
-            var sel = (Vector2i)_gridSelectedField.GetValue(_grid);
-            sel.x = width - 1;
-            _grid.SetSelection(sel);
-        }
-
-        private void OnEquipSlotPointerClick(string slotId, PointerEventData.InputButton button)
-        {
-            if (button == PointerEventData.InputButton.Right)
-            {
-                OnEquipSlotRightClick(slotId);
-                return;
-            }
-
-            if (button != PointerEventData.InputButton.Left) return;
-            OnEquipSlotLeftClick(slotId);
-        }
-
-        private void OnEquipSlotLeftClick(string slotId)
-        {
-            if (InventoryGui.instance == null || _companion == null) return;
-            var inv = GetStorageInventory();
-            if (inv == null) return;
-
-            var dragItem = _dragItemField?.GetValue(InventoryGui.instance) as ItemDrop.ItemData;
-            var dragInv  = _dragInventoryField?.GetValue(InventoryGui.instance) as Inventory;
-            int dragAmt  = (_dragAmountField != null)
-                ? (int)_dragAmountField.GetValue(InventoryGui.instance) : 1;
-
-            // While dragging: drop/equip directly into the clicked slot.
-            if (dragItem != null && dragInv != null)
-            {
-                try
-                {
-                    if (!dragInv.ContainsItem(dragItem))
-                    { ClearDrag(); return; }
-                }
-                catch (NullReferenceException) { ClearDrag(); return; }
-
-                if (!_companion.CanItemFitExtraSlotsSlot(slotId, dragItem))
-                    return;
-
-                if (!PrepareDraggedItemForCompanionSlot(inv, dragInv, ref dragItem, dragAmt))
-                    return;
-
-                if (_companion.TrySetItemForExtraSlotsSlot(slotId, dragItem))
-                {
-                    ClearDrag();
-                    OnCompanionInventoryMutated();
-                    RefreshEquipmentPanel();
-                }
-                return;
-            }
-
-            // Not dragging: click an occupied slot to pick it up into drag.
-            var slotItem = _companion.GetItemForExtraSlotsSlot(slotId);
-            if (slotItem == null) return;
-
-            // Suppress auto-equip so SyncEquipmentToInventory doesn't immediately
-            // re-equip the item we're removing, which would move it back to a hidden row.
-            _companion.SuppressAutoEquip = true;
-            try
-            {
-                if (!_companion.TrySetItemForExtraSlotsSlot(slotId, null))
-                    return;
-
-                _setupDragItem?.Invoke(InventoryGui.instance, new object[] { slotItem, inv, slotItem.m_stack });
-                RefreshEquipmentPanel();
-            }
-            finally { _companion.SuppressAutoEquip = false; }
-        }
-
-        private void OnEquipSlotRightClick(string slotId)
-        {
-            if (_companion == null) return;
-            var slotItem = _companion.GetItemForExtraSlotsSlot(slotId);
-            if (slotItem == null) return;
-
-            // Suppress auto-equip so the removed item isn't immediately re-equipped
-            // back into a hidden ExtraSlots row by SyncEquipmentToInventory.
-            _companion.SuppressAutoEquip = true;
-            try
-            {
-                if (_companion.TrySetItemForExtraSlotsSlot(slotId, null))
-                {
-                    OnCompanionInventoryMutated();
-                    RefreshEquipmentPanel();
-                }
-            }
-            finally { _companion.SuppressAutoEquip = false; }
-        }
-
-        private bool PrepareDraggedItemForCompanionSlot(
-            Inventory companionInv,
-            Inventory dragInv,
-            ref ItemDrop.ItemData dragItem,
-            int dragAmount)
-        {
-            if (companionInv == null || dragInv == null || dragItem == null) return false;
-
-            // Already in companion inventory.
-            if (dragInv == companionInv)
-                return companionInv.ContainsItem(dragItem);
-
-            // Unequip from player before moving into companion inventory if needed.
-            var player = Player.m_localPlayer;
-            if (player != null && dragInv == player.GetInventory() && player.IsItemEquiped(dragItem))
-            {
-                player.RemoveEquipAction(dragItem);
-                player.UnequipItem(dragItem, false);
-            }
-
-            int sx = dragItem.m_gridPos.x;
-            int sy = dragItem.m_gridPos.y;
-            if (!companionInv.MoveItemToThis(dragInv, dragItem, dragAmount, sx, sy))
-                return false;
-
-            // MoveItemToThis may create a new instance for split/move cases.
-            if (!companionInv.ContainsItem(dragItem))
-            {
-                dragItem = FindMovedItemReference(companionInv, dragItem);
-                if (dragItem == null) return false;
-            }
-
-            return true;
-        }
-
-        private static ItemDrop.ItemData FindMovedItemReference(Inventory inv, ItemDrop.ItemData source)
-        {
-            if (inv == null || source?.m_shared == null) return null;
-
-            foreach (var item in inv.GetAllItems())
-            {
-                if (item?.m_shared == null) continue;
-                if (!ReferenceEquals(item.m_shared, source.m_shared)) continue;
-                if (item.m_quality != source.m_quality) continue;
-                return item;
-            }
-
-            return null;
-        }
-
-        private sealed class EquipSlotClickHandler : MonoBehaviour, IPointerClickHandler
-        {
-            private CompanionInteractPanel _owner;
-            private string _slotId;
-
-            internal void Init(CompanionInteractPanel owner, string slotId)
-            {
-                _owner = owner;
-                _slotId = slotId;
-            }
-
-            public void OnPointerClick(PointerEventData eventData)
-            {
-                if (_owner == null || string.IsNullOrEmpty(_slotId) || eventData == null) return;
-                _owner.OnEquipSlotPointerClick(_slotId, eventData.button);
-            }
-        }
-
-        // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
         //  Weight & armor display
         // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
@@ -1815,11 +1007,6 @@ namespace Companions
             if (InventoryGui.instance == null) return;
             var inv = GetStorageInventory();
             if (inv == null) return;
-            if (pos.y >= GetRegularInventoryRows(inv)) return;
-
-            // Items represented by the extra-slot panel should not be interacted with in the main grid.
-            if (ExtraSlotsCompat.IsLoaded && item != null && _slotItemsInPanel.Contains(item))
-                return;
 
             var dragItem = _dragItemField?.GetValue(InventoryGui.instance) as ItemDrop.ItemData;
             var dragInv  = _dragInventoryField?.GetValue(InventoryGui.instance) as Inventory;
@@ -1910,9 +1097,7 @@ namespace Companions
         {
             var inv = GetStorageInventory();
             if (inv == null) return;
-            if (pos.y >= GetRegularInventoryRows(inv)) return;
             if (item == null) return;
-            if (ExtraSlotsCompat.IsLoaded && _slotItemsInPanel.Contains(item)) return;
 
             bool changed = false;
 
@@ -1975,7 +1160,9 @@ namespace Companions
 
             _gamepadInjected = true;
             CompanionsPlugin.Log.LogDebug(
-                $"[UI] Gamepad groups injected â€” companion UIGroup into m_uiGroups[0]");
+                $"[UI] Gamepad injected group0Old={(_savedVanillaGroup != null)} " +
+                $"containerGridOld={(_savedContainerGrid != null)} " +
+                $"companionContainer={ContainerName(_companionContainer)}");
         }
 
         /// <summary>
@@ -2001,7 +1188,11 @@ namespace Companions
 
             _savedVanillaGroup = null;
             _savedContainerGrid = null;
-            CompanionsPlugin.Log.LogDebug("[UI] Gamepad groups restored to vanilla");
+            Container currentContainer = null;
+            if (_currentContainerField != null)
+                currentContainer = _currentContainerField.GetValue(gui) as Container;
+            CompanionsPlugin.Log.LogDebug(
+                $"[UI] Gamepad restored currentContainer={ContainerName(currentContainer)}");
         }
 
         /// <summary>
@@ -2051,46 +1242,9 @@ namespace Companions
             Player gridPlayer = _gridCreated ? Player.m_localPlayer : null;
             _grid.UpdateInventory(inv, gridPlayer, dragItem);
             _gridCreated = true;
-            ClampGridToRegularRows(inv);
 
             UpdateWeightAndArmor();
             RefreshFoodSlots(inv);
-        }
-
-        private int GetRegularInventoryRows(Inventory inv)
-        {
-            if (inv == null) return 0;
-            int fullHeight = inv.GetHeight();
-            if (!ExtraSlotsCompat.IsLoaded || _companion == null) return fullHeight;
-
-            int baseRows = _companion.GetBaseInventoryHeight();
-            if (baseRows <= 0 || baseRows > fullHeight) return fullHeight;
-            return baseRows;
-        }
-
-        private void ClampGridToRegularRows(Inventory inv)
-        {
-            if (_grid == null || inv == null) return;
-
-            int regularRows = GetRegularInventoryRows(inv);
-            if (regularRows <= 0) return;
-
-            if (_grid.m_gridRoot != null)
-                _grid.m_gridRoot.SetSizeWithCurrentAnchors(RectTransform.Axis.Vertical, regularRows * _grid.m_elementSpace);
-
-            if (_gridElementsField == null || _elemGoField == null || _elemPosField == null) return;
-            var elements = _gridElementsField.GetValue(_grid) as System.Collections.IList;
-            if (elements == null) return;
-
-            for (int i = 0; i < elements.Count; i++)
-            {
-                var elem = elements[i];
-                var go = _elemGoField.GetValue(elem) as GameObject;
-                if (go == null) continue;
-
-                var pos = (Vector2i)_elemPosField.GetValue(elem);
-                go.SetActive(pos.y < regularRows);
-            }
         }
 
         /// <summary>
@@ -2129,22 +1283,6 @@ namespace Companions
                 }
             }
 
-        }
-
-        private void EnsureGridSelectionNotSuppressed(Inventory inv)
-        {
-            if (inv == null || _grid == null || _gridSelectedField == null) return;
-
-            int regularRows = GetRegularInventoryRows(inv);
-            if (regularRows <= 0) return;
-
-            var selected = (Vector2i)_gridSelectedField.GetValue(_grid);
-            if (selected.y < regularRows) return;
-
-            int width = _gridWidthField != null ? (int)_gridWidthField.GetValue(_grid) : inv.GetWidth();
-            if (width <= 0) return;
-
-            _grid.SetSelection(new Vector2i(Mathf.Clamp(selected.x, 0, width - 1), regularRows - 1));
         }
 
         // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
@@ -2285,19 +1423,12 @@ namespace Companions
             _foodSlotIcons      = null;
             _foodSlotCounts     = null;
             _foodSlotsContainer = null;
-            _equipSlotIcons     = null;
-            _equipSlotBgs       = null;
-            _equipSlotRoots     = null;
-            _equipSlotBaseColors = null;
-            _equipSlotIds       = null;
-            _equipPanel         = null;
             _weightText         = null;
             _armorText          = null;
             _canvasGroup        = null;
             _dragMode           = false;
             _dragging           = false;
             _built              = false;
-            SetEquipPanelGamepadActive(false);
         }
 
         // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
@@ -2365,9 +1496,42 @@ namespace Companions
             rt.offsetMax = Vector2.zero;
         }
 
+        private static string ContainerName(Container container)
+        {
+            if (container == null) return "null";
+            return $"{container.name}#{container.GetInstanceID()}";
+        }
+
         // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
         //  Bootstrap
         // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+
+        [HarmonyPatch(typeof(InventoryGui), nameof(InventoryGui.Show))]
+        private static class InventoryGuiShowPrefixPatch
+        {
+            [HarmonyPrefix]
+            private static void Prefix(Container container)
+            {
+                if (Instance == null) return;
+
+                bool panelActive = Instance._root != null && Instance._root.activeSelf;
+                bool needsCleanup = Instance._visible || panelActive || Instance._gamepadInjected;
+                if (!needsCleanup) return;
+
+                bool sameCompanionContainer =
+                    container != null &&
+                    Instance._companionContainer != null &&
+                    container == Instance._companionContainer;
+                CompanionsPlugin.Log.LogDebug(
+                    $"[UI] InventoryGui.Show prefix container={ContainerName(container)} " +
+                    $"needsCleanup={needsCleanup} visible={Instance._visible} panelActive={panelActive} " +
+                    $"gamepadInjected={Instance._gamepadInjected} sameCompanion={sameCompanionContainer} " +
+                    $"trackedCompanionContainer={ContainerName(Instance._companionContainer)}");
+                if (sameCompanionContainer) return;
+
+                Instance.HideForContainerSwitch();
+            }
+        }
 
         internal static void EnsureInstance()
         {

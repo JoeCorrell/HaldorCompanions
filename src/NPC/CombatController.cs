@@ -37,7 +37,7 @@ namespace Companions
         private static float ThreatDetectRange    => ModConfig.ThreatDetectRange.Value;
         private static float ProjectileDetectRange => ModConfig.ProjectileDetectRange.Value;
         private const float ProjectileScanInterval = 0.25f; // scan frequency for projectiles
-        private const float BlockGrace           = 0.3f;  // hold block after last threat clears
+        private const float BlockGrace           = 0.6f;  // hold block after last threat clears (0.3 was too short — hits land after InAttack goes false)
         private static float BlockSafetyCap     => ModConfig.BlockSafetyCap.Value;
         private static float CounterWindowDuration => ModConfig.CounterWindowDuration.Value;
 
@@ -89,6 +89,8 @@ namespace Companions
         private float _blockGraceTimer;
         private float _blockHoldTimer;      // how long block has been held continuously
         private float _counterWindow;
+        /// <summary>True when the companion just parried and should counter-attack immediately.</summary>
+        public bool InCounterWindow => _counterWindow > 0f;
         private float _projectileScanTimer;
         private bool  _lastProjectileThreat;
         private bool  _wasBlocking;         // track transitions for counter-attack window
@@ -175,15 +177,21 @@ namespace Companions
                 }
             }
 
-            // Mode check — in gather modes, only allow self-defense combat
+            // Mode check — in work modes, only allow self-defense combat.
+            // Includes all gather modes (Wood/Stone/Ore), Forage, Farm, Smelt, and Hunt.
             int mode = _nview.GetZDO().GetInt(CompanionSetup.ActionModeHash,
                 CompanionSetup.ModeFollow);
-            bool isGatherMode = mode >= CompanionSetup.ModeGatherWood
-                             && mode <= CompanionSetup.ModeGatherOre;
+            bool isWorkMode = (mode >= CompanionSetup.ModeGatherWood && mode <= CompanionSetup.ModeGatherOre)
+                           || mode == CompanionSetup.ModeForage
+                           || mode == CompanionSetup.ModeFarm
+                           || mode == CompanionSetup.ModeSmelt
+                           || mode == CompanionSetup.ModeHunt;
+            // Keep old name for log compatibility
+            bool isGatherMode = isWorkMode;
 
-            if (isGatherMode)
+            if (isWorkMode)
             {
-                // In gather mode: only engage if a nearby enemy is actively targeting us
+                // In work mode: only engage if a nearby enemy is actively targeting us
                 Character gatherTarget = _ai.m_targetCreature;
                 bool nearbyThreat = gatherTarget != null && !gatherTarget.IsDead()
                     && gatherTarget.GetHealth() > 0f
@@ -195,11 +203,11 @@ namespace Companions
                     if (_phase != CombatPhase.Idle && gatherTarget != null)
                     {
                         CompanionsPlugin.Log.LogDebug(
-                            $"[Combat] Gather threat cleared — \"{gatherTarget.m_name}\" " +
+                            $"[Combat] Work mode threat cleared — \"{gatherTarget.m_name}\" " +
                             $"isDead={gatherTarget.IsDead()} hp={gatherTarget.GetHealth():F0} " +
                             $"dist={Vector3.Distance(transform.position, gatherTarget.transform.position):F1}");
                     }
-                    if (_phase != CombatPhase.Idle) ExitCombat("gather mode, no nearby threat");
+                    if (_phase != CombatPhase.Idle) ExitCombat("work mode, no nearby threat");
                     return;
                 }
                 // Otherwise fall through to combat logic for self-defense
@@ -210,8 +218,8 @@ namespace Companions
                 return;
             }
 
-            // Don't interfere with UI
-            if (!isGatherMode && _harvest != null && _harvest.IsActive)
+            // Don't interfere with directed harvest (not in gather mode but harvest active)
+            if (!isWorkMode && _harvest != null && _harvest.IsActive)
             {
                 if (_phase != CombatPhase.Idle) ExitCombat("harvest active");
                 return;
@@ -437,15 +445,21 @@ namespace Companions
                 return;
             }
 
-            // ── Ranged stance but no bow/arrows — don't fall through to melee ──
+            // ── Ranged stance but no bow/arrows — fall through to melee ──
+            // Previous behavior: disengage entirely. But this caused a per-frame
+            // oscillation (ClearTargets → AI re-acquires target → ENGAGE → clear → ...)
+            // and the companion stood still getting hit. Now we just fight in melee.
             if (forceRanged && !hasBow)
             {
-                if (_phase != CombatPhase.Idle)
+                if (_phase == CombatPhase.Ranged)
                 {
                     RestoreMeleeLoadout();
-                    ExitCombat("ranged stance but no bow/arrows");
+                    TransitionTo(CombatPhase.Melee);
+                    EnsureShieldEquipped();
                 }
-                _ai.ClearTargets();
+                if (_phase != CombatPhase.Melee)
+                    TransitionTo(CombatPhase.Melee);
+                UpdateMelee(target, dt, stance);
                 return;
             }
 
@@ -1018,10 +1032,12 @@ namespace Companions
             // rotates to face the target, causing IsLookingAt to always return false.
             Vector3 aimPoint = target.GetCenterPoint();
 
-            // Face target. While enemy is dangerously close, back away to maintain
-            // minimum bow range. At safe distance, stand still to aim.
+            // Face target. Only back away when enemy is very close (melee threat range).
+            // At BowMinRange or beyond, stand still to aim — constant repositioning
+            // disrupts draw timer and wastes time.
             _ai.LookAtPoint(aimPoint);
-            if (dist < BowMinRange)
+            float retreatDist = Mathf.Min(BowMinRange, 5f); // don't retreat at more than 5m
+            if (dist < retreatDist)
             {
                 // Back away from enemy while continuing to face them for the shot
                 Vector3 backDir = (transform.position - target.transform.position).normalized;
@@ -1037,10 +1053,12 @@ namespace Companions
             // ensuring the shot is in roughly the right direction.
             bool onTarget = _ai.IsLookingAtPoint( aimPoint, 30f);
 
-            // Draw timer — only accumulates while facing target
-            if (onTarget && _bowFireCooldown <= 0f)
+            // Draw timer — accumulates while facing target, even during fire cooldown.
+            // This lets the companion pre-draw during cooldown so the next shot fires
+            // as soon as cooldown expires, instead of waiting cooldown + full draw time.
+            if (onTarget)
                 _bowDrawTimer += dt;
-            else if (!onTarget)
+            else
                 _bowDrawTimer = Mathf.Max(0f, _bowDrawTimer - dt * 2f); // decay if off-target
 
             // Periodic bow draw progress log (every 1s)

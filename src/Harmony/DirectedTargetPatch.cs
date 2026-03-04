@@ -409,14 +409,28 @@ namespace Companions
 
             CancelAll(setups, localId);
 
-            // Override the CancelAll speech with "come here" speech
+            // Force follow ON for all owned companions — CancelAll only restores
+            // follow when GetFollow() is already true. The "come to me" command
+            // should override Follow=OFF and StayHome so companions actually come.
             CompanionTalk firstTalk = null;
             foreach (var setup in setups)
             {
                 if (!IsOwned(setup, localId)) continue;
-                firstTalk = setup.GetComponent<CompanionTalk>();
-                if (firstTalk != null) break;
+
+                if (!setup.GetFollow())
+                {
+                    setup.SetFollow(true);
+                    CompanionsPlugin.Log.LogDebug(
+                        $"[Direct] Come-to-me: forced Follow ON for \"{setup.GetComponent<Character>()?.m_name ?? "?"}\"");
+                }
+
+                var ai = setup.GetComponent<CompanionAI>();
+                if (ai != null && Player.m_localPlayer != null)
+                    ai.SetFollowTarget(Player.m_localPlayer.gameObject);
+
+                if (firstTalk == null) firstTalk = setup.GetComponent<CompanionTalk>();
             }
+
             SayRandom(firstTalk, ComeHereLines, "Action");
 
             string inputSource = isGamepad ? "gamepad hold" : "keyboard hold";

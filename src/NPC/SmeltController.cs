@@ -79,7 +79,7 @@ namespace Companions
         private static float ScanInterval       => ModConfig.SmeltScanInterval.Value;
         private static float ScanRadius         => ModConfig.SmeltScanRadius.Value;
         private static float UseDistance        => ModConfig.SmeltUseDistance.Value;
-        private const float MoveTimeout        = 15f;
+        private const float MoveTimeout        = 2f;
         private const float StuckCheckPeriod   = 1f;
         private const float StuckMinDistance    = 0.5f;
         private const float MonitorInterval    = 3f;

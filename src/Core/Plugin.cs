@@ -13,12 +13,11 @@ namespace Companions
     [BepInPlugin(PluginGUID, PluginName, PluginVersion)]
     [BepInDependency("com.profmags.traderoverhaul", BepInDependency.DependencyFlags.SoftDependency)]
     [BepInDependency("com.haldor.bounties", BepInDependency.DependencyFlags.SoftDependency)]
-    [BepInDependency("shudnal.ExtraSlots", BepInDependency.DependencyFlags.SoftDependency)]
     public class CompanionsPlugin : BaseUnityPlugin
     {
         public const string PluginGUID = "com.profmags.companions";
         public const string PluginName = "Offline Companions";
-        public const string PluginVersion = "1.1.3";
+        public const string PluginVersion = "1.1.4";
 
         private static Harmony _harmony;
         internal static ManualLogSource Log;
@@ -43,8 +42,6 @@ namespace Companions
             {
                 Log.LogError($"[Companions] Harmony PatchAll failed: {ex}");
             }
-
-            ExtraSlotsCompat.Init();
 
             ModLocalization.Init();
             ModLocalization.EnsureDefaultFile();

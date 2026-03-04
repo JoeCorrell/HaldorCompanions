@@ -73,6 +73,7 @@ namespace Companions
         private float m_updateTargetTimer;
         private float _attackRetryTime;      // cooldown after failed DoAttack (stamina, etc.)
         private bool  _inCombatStopRange;    // hysteresis flag — prevents stop-range oscillation
+        private bool  _wasPassiveStance;    // tracks Passive→other stance transition for SuppressAttack
         private float _gatherThreatScanTimer;
         private bool _gatherEnemyNearby;
         private Character _gatherNearestEnemy;
@@ -1912,6 +1913,7 @@ namespace Companions
             // Passive stance: never target, never attack, just follow
             if (stance == CompanionSetup.StancePassive)
             {
+                _wasPassiveStance = true;
                 ClearTargets();
                 if (IsAlerted()) SetAlerted(false);
                 SuppressAttack = true;
@@ -1952,12 +1954,17 @@ namespace Companions
                 return true;
             }
 
-            // Clear SuppressAttack unconditionally when not in Passive stance.
-            // Passive sets it true; if the player switches to any other stance while
-            // enemies are nearby (m_targetCreature != null), it must still be cleared
-            // so the companion can engage immediately.
-            if (SuppressAttack)
+            // Clear SuppressAttack only on the frame transitioning OUT of Passive stance.
+            // Passive sets SuppressAttack=true; we must clear it once when switching
+            // to another stance. But we must NOT clear it every frame — CombatController
+            // sets SuppressAttack=true during shield blocking, and UpdateAI runs in
+            // FixedUpdate BEFORE CombatController.Update(), so clearing it every frame
+            // would override the blocking flag and cause attack/block spazzing.
+            if (_wasPassiveStance)
+            {
+                _wasPassiveStance = false;
                 SuppressAttack = false;
+            }
 
             // Humanoid ref needed by heal check and combat below
             Humanoid humanoid = m_character as Humanoid;
@@ -2440,6 +2447,13 @@ namespace Companions
                 return;
             }
 
+            // CombatController owns ALL movement and aiming during ranged phase —
+            // it handles backing away at close range, standing still to aim, draw
+            // timer, and firing. Running melee approach/circle logic here would
+            // fight those commands every frame, causing spasm.
+            if (_combat != null && _combat.Phase == CombatController.CombatPhase.Ranged)
+                return;
+
             ItemDrop.ItemData weapon = humanoid.GetCurrentWeapon();
 
             // If holding unarmed weapon or nothing, try to equip a real weapon first
@@ -2575,6 +2589,13 @@ namespace Companions
                         runToTarget = false;
                     MoveToPoint(dt, moveTarget, 0f, runToTarget);
 
+                    // Override path-following look direction with enemy position.
+                    // MoveTowards (called by MoveToPoint) sets look direction to the
+                    // movement path, which oscillates when pathing around obstacles.
+                    // Forcing LookAt(enemy) gives stable head tracking during approach.
+                    if (m_targetCreature != null)
+                        LookAt(m_targetCreature.GetTopPoint());
+
                     // If navmesh can't reach the enemy, stop — don't push against
                     // walls with context steer. Vanilla monsters just stand still
                     // when they can't path to a target. The existing flanking logic
@@ -2591,6 +2612,20 @@ namespace Companions
                 {
                     _inCombatStopRange = true;
 
+                    // While blocking (SuppressAttack from CombatController), freeze
+                    // the circle timer and face the enemy. Don't reposition — the
+                    // companion should stand and block, not wander to random points.
+                    // Reset circleTimer so that when the block ends and counter
+                    // window opens, the companion pauses to attack instead of
+                    // immediately entering a stale circle phase.
+                    if (SuppressAttack)
+                    {
+                        _circleTimer = 0f;
+                        StopMoving();
+                        LookAt(m_targetCreature.GetTopPoint());
+                    }
+                    else
+                    {
                     // In melee range — use circle/attack pattern instead of standing still.
                     // This mimics vanilla MonsterAI's circleTarget behavior: pause briefly
                     // to attack, then reposition around the enemy for a more dynamic fight.
@@ -2626,8 +2661,11 @@ namespace Companions
                     {
                         // Pause phase: stand and face target (ready to attack)
                         StopMoving();
+                        if (m_targetCreature != null)
+                            LookAt(m_targetCreature.GetTopPoint());
                         if (_circleTimer > CircleInterval + CircleDuration)
                             _circleTimer = UnityEngine.Random.Range(0f, CircleInterval * 0.25f);
+                    }
                     }
                 }
 
@@ -2681,6 +2719,35 @@ namespace Companions
         {
             // CombatController blocking — suppress attack
             if (SuppressAttack) return false;
+
+            // Preemptive block check: don't start attacks while nearby enemies are
+            // mid-swing. Valheim's IsBlocking() returns false when InAttack() is
+            // true, so starting an attack while an enemy swings means the shield
+            // can't block the incoming hit. This check runs before the attack to
+            // ensure the companion keeps its guard up in Defensive/Balanced stances.
+            //
+            // EXCEPTION: Skip this check during the counter window after a successful
+            // parry — the whole point of parrying is to create an opening to attack.
+            bool inCounterWindow = _combat != null && _combat.InCounterWindow;
+            if (!inCounterWindow && !m_character.InAttack() && _combat != null)
+            {
+                Humanoid h = m_character as Humanoid;
+                var blocker = h != null ? ReflectionHelper.GetLeftItem(h) : null;
+                if (blocker != null && blocker.m_shared.m_itemType == ItemDrop.ItemData.ItemType.Shield)
+                {
+                    int stance = _setup != null ? _setup.GetCombatStance() : CompanionSetup.StanceBalanced;
+                    if (stance != CompanionSetup.StanceAggressive)
+                    {
+                        foreach (Character c in Character.GetAllCharacters())
+                        {
+                            if (c == m_character || c.IsDead()) continue;
+                            if (!BaseAI.IsEnemy(m_character, c)) continue;
+                            if (c.InAttack() && Vector3.Distance(transform.position, c.transform.position) < 8f)
+                                return false;
+                        }
+                    }
+                }
+            }
 
             // Don't attack at critically low stamina — attacks cost stamina and
             // draining to zero prevents dodge and blocking, leaving the companion
@@ -3662,6 +3729,12 @@ namespace Companions
         private Vector3 _proactiveJumpStartPos;      // position when jump attempt counter started
         private float _proactiveJumpSuppressTimer;   // when > 0, all proactive jumping suppressed
 
+        // Oscillation detection: catches "running back and forth over rocks" loops
+        // where velocity is high but net displacement is near-zero.
+        private Vector3 _oscillationCheckPos;
+        private float   _oscillationTimer;
+        private int     _oscillationCount;
+
         /// <summary>
         /// Detects when the companion has low velocity but wants to move (likely
         /// blocked by a small step or rock) and triggers a jump to clear it.
@@ -3675,6 +3748,11 @@ namespace Companions
             if (m_character.InAttack()) return;
             if (_groundStuckRecoveryTimer > 0f) return; // stuck recovery handles movement
             if (_inContextSteerFallback) return;         // context steer has its own stuck handling
+
+            // Ranged combat: companion is intentionally standing still to aim.
+            // Low velocity here is desired, not a sign of being stuck.
+            if (_combat != null && _combat.Phase == CombatController.CombatPhase.Ranged)
+                return;
 
             _proactiveJumpTimer -= dt;
             _proactiveJumpSuppressTimer -= dt;
@@ -3722,6 +3800,33 @@ namespace Companions
                     _lowVelAccum = 0f;
                     return;
                 }
+            }
+
+            // Oscillation detection: if the companion has been moving (high velocity)
+            // but stays within a small area for multiple sample windows, it's likely
+            // running back and forth over the same spot (e.g., rock-hopping loops).
+            // Suppress proactive jump to avoid making it worse.
+            _oscillationTimer += dt;
+            if (_oscillationTimer >= 3f)
+            {
+                _oscillationTimer = 0f;
+                float netDisplacement = Vector3.Distance(transform.position, _oscillationCheckPos);
+                if (netDisplacement < 3f)
+                {
+                    _oscillationCount++;
+                    if (_oscillationCount >= 2)
+                    {
+                        // Been oscillating for 6+ seconds — suppress jumping
+                        _proactiveJumpSuppressTimer = Mathf.Max(_proactiveJumpSuppressTimer, 15f);
+                        _oscillationCount = 0;
+                        _lowVelAccum = 0f;
+                    }
+                }
+                else
+                {
+                    _oscillationCount = 0;
+                }
+                _oscillationCheckPos = transform.position;
             }
 
             float vel = m_character.GetVelocity().magnitude;
