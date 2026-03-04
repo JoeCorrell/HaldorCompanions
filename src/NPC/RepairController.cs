@@ -53,7 +53,7 @@ namespace Companions
         private const float ScanBackoffInterval = 60f;   // long backoff when no station can help
         private static float ScanRadius          => ModConfig.RepairScanRadius.Value;
         private static float RepairTickInterval  => ModConfig.RepairTickInterval.Value;
-        private const float MoveTimeout         = 2f;
+        private const float MoveTimeout         = 10f;
         private const float StuckCheckPeriod    = 1f;     // check movement every 1s
         private const float StuckMinDistance     = 0.5f;   // must move at least 0.5m per check period
         private static float UseDistance         => ModConfig.RepairUseDistance.Value;
@@ -266,8 +266,8 @@ namespace Companions
                 return;
             }
 
-            // Move toward station
-            _ai.MoveToPoint( dt, _targetStation.transform.position, UseDistance, true);
+            // Move toward station — walk when close, run when far
+            _ai.MoveToPoint( dt, _targetStation.transform.position, UseDistance, dist > 8f);
 
             // Stuck detection — check movement over 1s windows
             _stuckCheckTimer += dt;

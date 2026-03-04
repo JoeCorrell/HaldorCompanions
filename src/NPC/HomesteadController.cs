@@ -100,7 +100,7 @@ namespace Companions
         private const float ItemTransferDelay = 0.6f;
         private const float ChestOpenDelay   = 0.8f;
         private static float FuelThreshold    => ModConfig.HomesteadFuelThreshold.Value;
-        private const float MoveTimeout      = 2f;
+        private const float MoveTimeout      = 10f;
         private const float StuckCheckPeriod = 1f;
         private const float StuckMinDistance = 0.5f;
         private static float TaskSlotTime    => ModConfig.HomesteadTaskSlotTime.Value;

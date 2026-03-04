@@ -203,10 +203,18 @@ namespace Companions
         private const float AlertRange = 9999f;
 
         // Combat: intercept prediction (lead running targets) + circling
-        private const float InterceptTime = 1.5f;         // seconds of velocity to lead by
-        private const float CircleInterval = 4f;           // seconds between circle repositions
+        // Tuned to match RenegadeVikings/MonsterAI combat feel.
+        private const float InterceptTime = 2f;            // seconds of velocity to lead by (was 1.5)
+        private const float CircleInterval = 3f;           // seconds between circle repositions (was 4)
         private const float CircleDuration = 2f;           // seconds spent circling per cycle
-        private const float CircleDistance = 4.5f;           // radius of circle around target (beyond melee stop range)
+        private const float CircleDistance = 5f;            // radius of circle around target (was 4.5)
+
+        // MonsterAI port: if companion hasn't landed a hit in this long,
+        // the current target is likely unreachable — allow target switching.
+        private const float UnableToAttackDuration = 15f;
+        // MonsterAI port: if can't attack for 30s AND recently hurt, retreat.
+        private const float FleeUnreachableSinceAttacking = 30f;
+        private const float FleeUnreachableSinceHurt = 20f;
         private float _circleTimer;
         private Vector3 _circleTargetPos;    // circle phase: target point (re-picked each phase)
 
@@ -2175,6 +2183,26 @@ namespace Companions
                 // This prevents bouncing between multiple enemies. The companion
                 // commits to one target until it dies, escapes (give-up timer),
                 // or the player directs a new target via hotkey.
+                //
+                // MonsterAI port: after UnableToAttackDuration without landing
+                // a hit, the target is likely unreachable — break stickiness and
+                // let FindEnemy pick a closer/reachable alternative.
+                if (m_timeSinceAttacking > UnableToAttackDuration && m_updateTargetTimer <= 0f)
+                {
+                    bool playerNear = Player.IsPlayerInRange(transform.position, 50f);
+                    m_updateTargetTimer = playerNear ? UpdateTargetIntervalNear : UpdateTargetIntervalFar;
+
+                    Character alt = FindEnemy();
+                    if (alt != null && alt != m_targetCreature)
+                    {
+                        CompanionsPlugin.Log.LogDebug(
+                            $"[AI] Unable to attack \"{m_targetCreature.m_name}\" for " +
+                            $"{m_timeSinceAttacking:F0}s — switching to \"{alt.m_name}\"");
+                        m_targetCreature = alt;
+                        m_targetStatic = null;
+                        m_timeSinceAttacking = 0f;
+                    }
+                }
             }
             // ── Timer-based target scan — only when we have no target ──
             else if (m_updateTargetTimer <= 0f && !m_character.InAttack())
@@ -2302,6 +2330,22 @@ namespace Companions
             else
             {
                 SetTargetInfo(ZDOID.None);
+            }
+
+            // ── Flee when hurt but can't reach target (MonsterAI port) ──
+            // If the companion hasn't attacked in 30s but has been hurt recently,
+            // it's stuck on an unreachable target taking damage. Disengage and
+            // return to the player instead of standing helplessly.
+            if (m_targetCreature != null && m_timeSinceAttacking > FleeUnreachableSinceAttacking
+                && m_timeSinceHurt < FleeUnreachableSinceHurt)
+            {
+                CompanionsPlugin.Log.LogDebug(
+                    $"[AI] FLEE — can't reach \"{m_targetCreature.m_name}\" for " +
+                    $"{m_timeSinceAttacking:F0}s, hurt {m_timeSinceHurt:F1}s ago — disengaging");
+                SetAlerted(false);
+                ClearTargets();
+                m_timeSinceAttacking = 0f;
+                m_updateTargetTimer = 5f;
             }
 
             // ── Give-up timer ──
@@ -2454,6 +2498,20 @@ namespace Companions
             if (_combat != null && _combat.Phase == CombatController.CombatPhase.Ranged)
                 return;
 
+            // Ranged STANCE with Phase still Idle — CombatController.Update hasn't
+            // run yet this frame (AI runs in FixedUpdate, CombatController in Update).
+            // Without this guard, one AI tick of melee MoveToPoint fires before
+            // CombatController transitions to Ranged and calls StopMoving, causing
+            // a visible sprint toward the target on first engagement.
+            // Just face the target and wait for CombatController to set the phase.
+            if (_combat != null && stance == CompanionSetup.StanceRanged
+                && _combat.Phase == CombatController.CombatPhase.Idle)
+            {
+                if (m_targetCreature != null)
+                    LookAt(m_targetCreature.GetTopPoint());
+                return;
+            }
+
             ItemDrop.ItemData weapon = humanoid.GetCurrentWeapon();
 
             // If holding unarmed weapon or nothing, try to equip a real weapon first
@@ -2584,29 +2642,19 @@ namespace Companions
                     // Stamina-aware approach: walk when stamina is low to
                     // allow regen. Running at 0 stamina is wasteful and leads
                     // to the retreat-loop (drain > regen → never recover).
+                    // Aggressive stance always sprints (matches MonsterAI aggression).
                     bool runToTarget = IsAlerted();
-                    if (_companionStamina != null && _companionStamina.GetStaminaPercentage() < 0.25f)
+                    if (_companionStamina != null && _companionStamina.GetStaminaPercentage() < 0.25f
+                        && stance != CompanionSetup.StanceAggressive)
                         runToTarget = false;
-                    MoveToPoint(dt, moveTarget, 0f, runToTarget);
+                    MoveTo(dt, moveTarget, 0f, runToTarget);
 
                     // Override path-following look direction with enemy position.
-                    // MoveTowards (called by MoveToPoint) sets look direction to the
+                    // MoveTowards (called by MoveTo) sets look direction to the
                     // movement path, which oscillates when pathing around obstacles.
                     // Forcing LookAt(enemy) gives stable head tracking during approach.
                     if (m_targetCreature != null)
                         LookAt(m_targetCreature.GetTopPoint());
-
-                    // If navmesh can't reach the enemy, stop — don't push against
-                    // walls with context steer. Vanilla monsters just stand still
-                    // when they can't path to a target. The existing flanking logic
-                    // and UpdateTarget will handle target changes.
-                    if (_inContextSteerFallback)
-                    {
-                        _inContextSteerFallback = false;
-                        _pathStuckTimer = 0f;
-                        _ctxSmoothedDir = Vector3.zero;
-                        StopMoving();
-                    }
                 }
                 else
                 {
@@ -2626,45 +2674,95 @@ namespace Companions
                     }
                     else
                     {
-                    // In melee range — use circle/attack pattern instead of standing still.
-                    // This mimics vanilla MonsterAI's circleTarget behavior: pause briefly
-                    // to attack, then reposition around the enemy for a more dynamic fight.
+                    // Circulate-while-charging: ported from MonsterAI behavior.
+                    // Circle the target when weapon is on cooldown (can't attack yet).
+                    // Stand still when attack is ready OR mid-swing (InAttack).
+                    // MonsterAI explicitly stops during InAttack — circling mid-swing
+                    // causes the companion to slide around while swinging.
                     _circleTimer += dt;
-                    inCirclePhase = _circleTimer > CircleInterval &&
-                        _circleTimer < CircleInterval + CircleDuration &&
-                        !m_character.InAttack();
-                    if (inCirclePhase)
+
+                    // Stamina check: if the companion doesn't have enough stamina
+                    // for the weapon's attack cost, don't consider it "ready to attack".
+                    // Without this, the companion stands still thinking it can swing,
+                    // but StartAttack→HaveStamina fails and it just freezes.
+                    float attackStamCost = weapon.m_shared.m_attack?.m_attackStamina ?? 0f;
+                    bool hasStaminaToAttack = _companionStamina == null
+                        || _companionStamina.Stamina >= attackStamCost;
+
+                    bool canAttackRightNow = inAttackRange && canSee && !m_character.InAttack()
+                        && Time.time >= _attackRetryTime && hasStaminaToAttack;
+                    bool midSwing = m_character.InAttack();
+
+                    if (canAttackRightNow || midSwing)
                     {
-                        // Circle phase: move to a position around the target.
-                        // Pick a fresh point when the phase starts (timer just crossed CircleInterval).
-                        // Uses MoveToPoint (with context steer fallback) rather than
-                        // RandomMovementArroundPoint which has a 9999s internal timer — meaning
-                        // it would circle the same fixed point for the entire fight regardless of
-                        // where the target moves.
-                        if (_circleTimer <= CircleInterval + dt * 2f)
-                        {
-                            float angle = UnityEngine.Random.Range(0f, 360f);
-                            Vector3 circleOffset = Quaternion.Euler(0f, angle, 0f) * Vector3.forward * CircleDistance;
-                            _circleTargetPos = m_targetCreature.transform.position + circleOffset;
-                        }
-                        MoveToPoint(dt, _circleTargetPos, 0.5f, false);
-                        if (_inContextSteerFallback)
-                        {
-                            _inContextSteerFallback = false;
-                            _pathStuckTimer = 0f;
-                            _ctxSmoothedDir = Vector3.zero;
-                            StopMoving();
-                        }
-                        LookAt(m_targetCreature.transform.position);
-                    }
-                    else
-                    {
-                        // Pause phase: stand and face target (ready to attack)
+                        // Attack ready or mid-swing: stop and face target
                         StopMoving();
                         if (m_targetCreature != null)
                             LookAt(m_targetCreature.GetTopPoint());
-                        if (_circleTimer > CircleInterval + CircleDuration)
-                            _circleTimer = UnityEngine.Random.Range(0f, CircleInterval * 0.25f);
+                    }
+                    else
+                    {
+                        // Weapon on cooldown — stance determines behavior:
+                        // Aggressive: stand ready, attack the instant cooldown expires
+                        // Defensive: circle at wider radius to maintain distance
+                        // Balanced: normal circling
+                        bool shouldCircle = stance != CompanionSetup.StanceAggressive;
+
+                        if (shouldCircle)
+                        {
+                            inCirclePhase = true;
+                            if (_circleTimer > CircleInterval + CircleDuration)
+                                _circleTimer = UnityEngine.Random.Range(0f, CircleInterval * 0.1f);
+
+                            float circleDist = stance == CompanionSetup.StanceDefensive
+                                ? CircleDistance * 1.4f
+                                : CircleDistance;
+
+                            // Smart circle point selection ported from MonsterAI's
+                            // RandomMovementArroundPoint. Picks a point by rotating the
+                            // current companion→target vector instead of a random angle.
+                            // Checks if the result is behind the companion and flips if so.
+                            // This ensures smooth orbital movement, not random teleports.
+                            bool needNewPoint = _circleTargetPos == Vector3.zero
+                                || _circleTimer <= dt * 2f
+                                || Vector3.Distance(transform.position, _circleTargetPos) < 1f;
+                            if (needNewPoint)
+                            {
+                                Vector3 awayFromTarget = transform.position - m_targetCreature.transform.position;
+                                awayFromTarget.y = 0f;
+                                if (awayFromTarget.sqrMagnitude > 0.01f)
+                                    awayFromTarget.Normalize();
+                                else
+                                    awayFromTarget = transform.forward;
+
+                                float distToTarget = Vector3.Distance(transform.position, m_targetCreature.transform.position);
+                                float turnAngle = distToTarget < circleDist * 0.5f
+                                    ? (UnityEngine.Random.value > 0.5f ? 90f : -90f)
+                                    : (UnityEngine.Random.value > 0.5f ? 40f : -40f);
+
+                                Vector3 rotated = Quaternion.Euler(0f, turnAngle, 0f) * awayFromTarget;
+                                _circleTargetPos = m_targetCreature.transform.position + rotated * circleDist;
+
+                                // If the chosen point is behind us (>90° from forward), flip it.
+                                // Prevents the companion from needing a 180° turn before moving.
+                                if (Vector3.Dot(transform.forward, _circleTargetPos - transform.position) < 0f)
+                                {
+                                    rotated = Quaternion.Euler(0f, -turnAngle, 0f) * awayFromTarget;
+                                    _circleTargetPos = m_targetCreature.transform.position + rotated * circleDist;
+                                }
+                            }
+                            // Use vanilla MoveTo for circling — no context steer needed
+                            // for nearby points. MonsterAI uses MoveTo for all combat.
+                            MoveTo(dt, _circleTargetPos, 0.5f, false);
+                            LookAt(m_targetCreature.transform.position);
+                        }
+                        else
+                        {
+                            // Aggressive: stand and face, ready to swing immediately
+                            StopMoving();
+                            if (m_targetCreature != null)
+                                LookAt(m_targetCreature.GetTopPoint());
+                        }
                     }
                     }
                 }
@@ -2749,17 +2847,18 @@ namespace Companions
                 }
             }
 
-            // Don't attack at critically low stamina — attacks cost stamina and
-            // draining to zero prevents dodge and blocking, leaving the companion
-            // wide open. Allow regen to kick in before swinging again.
-            if (_companionStamina != null && _companionStamina.GetStaminaPercentage() < 0.10f)
-                return false;
-
             Humanoid humanoid = m_character as Humanoid;
             if (humanoid == null) return false;
 
             ItemDrop.ItemData weapon = humanoid.GetCurrentWeapon();
             if (weapon == null || !CanUseAttack(weapon)) return false;
+
+            // Don't attack if we don't have enough stamina for the swing.
+            // This mirrors the HaveStamina check that StartAttack does internally,
+            // preventing a wasted attack attempt + retry cooldown.
+            float atkCost = weapon.m_shared.m_attack?.m_attackStamina ?? 0f;
+            if (_companionStamina != null && atkCost > 0f && _companionStamina.Stamina < atkCost)
+                return false;
 
             // Power attack on staggered target
             bool secondary = target != null && target.IsStaggering()

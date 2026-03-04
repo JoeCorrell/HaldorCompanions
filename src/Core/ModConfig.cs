@@ -244,7 +244,7 @@ namespace Companions
             RunSpeed                = Bind(cfg, "Movement", "RunSpeed", 7f, "Running speed (requires world reload)", new AcceptableValueRange<float>(2f, 15f));
             SwimSpeed               = Bind(cfg, "Movement", "SwimSpeed", 2f, "Swimming speed (requires world reload)", new AcceptableValueRange<float>(0.5f, 5f));
             TurnSpeed               = Bind(cfg, "Movement", "TurnSpeed", 300f, "Turn speed (requires world reload)", new AcceptableValueRange<float>(50f, 600f));
-            ViewRange               = Bind(cfg, "Movement", "ViewRange", 30f, "Visual detection range (requires world reload)", new AcceptableValueRange<float>(5f, 100f));
+            ViewRange               = Bind(cfg, "Movement", "ViewRange", 40f, "Visual detection range (requires world reload)", new AcceptableValueRange<float>(5f, 100f));
             ViewAngle               = Bind(cfg, "Movement", "ViewAngle", 90f, "Field of view angle (requires world reload)", new AcceptableValueRange<float>(30f, 360f));
 
             // ── Food ─────────────────────────────────────────────────────────

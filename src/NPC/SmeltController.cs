@@ -79,7 +79,7 @@ namespace Companions
         private static float ScanInterval       => ModConfig.SmeltScanInterval.Value;
         private static float ScanRadius         => ModConfig.SmeltScanRadius.Value;
         private static float UseDistance        => ModConfig.SmeltUseDistance.Value;
-        private const float MoveTimeout        = 2f;
+        private const float MoveTimeout        = 10f;
         private const float StuckCheckPeriod   = 1f;
         private const float StuckMinDistance    = 0.5f;
         private const float MonitorInterval    = 3f;
@@ -93,6 +93,7 @@ namespace Companions
 
         // ── Movement logging ─────────────────────────────────────────────
         private float _moveLogTimer;
+        private bool  _shouldRun;        // run decision from movement — LateUpdate respects this
 
         // ── Lifecycle ───────────────────────────────────────────────────────
 
@@ -148,7 +149,7 @@ namespace Companions
         }
 
         /// <summary>
-        /// Force run speed while moving to targets. Runs after CompanionAI.UpdateAI
+        /// Walk when close, run when far. Runs after CompanionAI.UpdateAI
         /// so it overrides any Follow-based walk decisions.
         /// </summary>
         private void LateUpdate()
@@ -159,7 +160,7 @@ namespace Companions
                 _phase == SmeltPhase.MovingToOutputChest ||
                 (_phase == SmeltPhase.CollectingOutput && !_collectTriggered))
             {
-                _character.SetRun(true);
+                _character.SetRun(_shouldRun);
             }
         }
 
@@ -418,7 +419,8 @@ namespace Companions
                 return;
             }
 
-            bool moveOk = _ai.MoveToPoint(dt, _targetChest.transform.position, UseDistance, true);
+            _shouldRun = dist > 8f;
+            bool moveOk = _ai.MoveToPoint(dt, _targetChest.transform.position, UseDistance, _shouldRun);
             LogMovement(dt, "chest", dist, moveOk);
             UpdateStuckDetection(dt, "chest");
         }
@@ -534,7 +536,8 @@ namespace Companions
             bool closeEnough = dist < UseDistance;
             if (!closeEnough)
             {
-                bool moveOk = _ai.MoveToPoint(dt, interactPos, UseDistance, true);
+                _shouldRun = dist > 8f;
+                bool moveOk = _ai.MoveToPoint(dt, interactPos, UseDistance, _shouldRun);
                 // MoveTo returns true when pathfinding reached closest point or
                 // XZ distance satisfied — accept if within a relaxed threshold
                 // (handles Y-offset and NavMesh imprecision near smelter colliders)
@@ -658,7 +661,8 @@ namespace Companions
             // Walk to smelter output side if not close enough
             if (dist > UseDistance)
             {
-                bool moveOk = _ai.MoveToPoint(Time.deltaTime, outputPos, UseDistance, true);
+                _shouldRun = dist > 8f;
+                bool moveOk = _ai.MoveToPoint(Time.deltaTime, outputPos, UseDistance, _shouldRun);
                 // Accept pathfinding "arrived" if within relaxed threshold
                 if (moveOk && dist < UseDistance + 1f)
                 {
@@ -747,7 +751,8 @@ namespace Companions
                 return;
             }
 
-            bool moveOk = _ai.MoveToPoint(dt, _outputChest.transform.position, UseDistance, true);
+            _shouldRun = dist > 8f;
+            bool moveOk = _ai.MoveToPoint(dt, _outputChest.transform.position, UseDistance, _shouldRun);
             LogMovement(dt, "output chest", dist, moveOk);
             UpdateStuckDetection(dt, "output chest");
         }

@@ -37,6 +37,7 @@ namespace Companions
         private int          _totalAttempts;   // total attack attempts (success + failure) on current target
         private int          _consecutiveFailures; // consecutive StartAttack failures (not animation-blocked)
         private bool         _reapproach;      // true = return to Moving used tighter approach distance
+        private bool         _shouldRun;       // run decision from UpdateMoving — LateUpdate respects this
         private float        _selfDefenseLogTimer;
         private bool         _wasInSelfDefense;  // true last frame when combat target was present
         private ItemDrop.ItemData _pendingToolReequip; // deferred equip when EquipItem fails mid-animation
@@ -60,7 +61,7 @@ namespace Companions
         private static float ScanRadius     => ModConfig.HarvestScanRadius.Value;
         private static float AttackInterval => ModConfig.HarvestAttackInterval.Value;
         private const float AttackRetry    = 0.25f;
-        private const float MoveTimeout    = 2f;
+        private const float MoveTimeout    = 10f;
         private const float ArrivalSlack   = 0.5f;
         private const int   WhiffRetryMax  = 20;   // abandon after this many SUCCESSFUL swings without destroy
         private const int   TotalAttemptMax = 30;  // abandon after this many total attempts (incl. failures)
@@ -674,10 +675,17 @@ namespace Companions
             float dt = Time.deltaTime;
 
             // Don't count time toward stuck timeout while locked in attack animation —
-            // the companion physically can't move, so it's not a pathfinding failure
+            // the companion physically can't move, so it's not a pathfinding failure.
+            // When actively moving (vel > 1 m/s), accumulate slower — the companion
+            // is making progress, just pathing around obstacles. Only count full speed
+            // when truly stuck (vel near zero).
             bool inAttack = _humanoid != null && _humanoid.InAttack();
             if (!inAttack)
-                _moveTimer += dt;
+            {
+                float vel = _character?.GetVelocity().magnitude ?? 0f;
+                float stuckRate = vel > 1f ? 0.2f : 1f;
+                _moveTimer += dt * stuckRate;
+            }
 
             // Stuck timeout — give up and scan for a new target
             if (_moveTimer > MoveTimeout)
@@ -697,7 +705,7 @@ namespace Companions
 
             bool isForage = _targetType == "Pickable";
             float range = isForage ? 1.5f : GetAttackRange();
-            Vector3 targetPos = _target.transform.position;
+            Vector3 targetPos = GetEffectiveTargetPosition();
             float distToTarget = Vector3.Distance(transform.position, targetPos);
 
             // Use MoveToPoint (pathfinding) for all distances. This handles
@@ -723,17 +731,18 @@ namespace Companions
             else if (IsLowTarget())
             {
                 moveGoal = range * 0.3f;
-                // Walk when close to avoid overshooting low targets
-                runToTarget = distToTarget > range * 2f;
+                // Walk when within 8m to avoid overshooting low targets
+                runToTarget = distToTarget > 8f;
             }
             else
             {
                 moveGoal = range * 0.5f;
-                // Walk when within 1.5x attack range to prevent momentum overshoot.
+                // Walk when within 8m to prevent momentum overshoot.
                 // Running at close range causes the companion to sprint past the
-                // target at ~1m and then turn around, creating visible jitter.
-                runToTarget = distToTarget > range * 1.5f;
+                // target and then turn around, creating visible jitter.
+                runToTarget = distToTarget > 8f;
             }
+            _shouldRun = runToTarget;
             bool moveResult = _ai.MoveToPoint(dt, targetPos, moveGoal, runToTarget);
 
             // When navmesh genuinely can't path to the target (ctx-steer or "claimed
@@ -743,14 +752,14 @@ namespace Companions
             {
                 _ai.StopMoving();
             }
-            // Pathfinding failed at close range — fall back to direct push.
+            // Pathfinding failed at close range — fall back to direct walk push.
             // This handles cases where the navmesh has gaps near the target.
             else if (!moveResult && distToTarget < 4f)
             {
                 Vector3 dir = (targetPos - transform.position);
                 dir.y = 0f;
                 if (dir.sqrMagnitude > 0.01f)
-                    _ai.MoveTowards(dir.normalized, true);
+                    _ai.MoveTowards(dir.normalized, false);
             }
             // Pathfinding "completed" but we haven't actually arrived — height
             // differences or navmesh edges cause MoveTo to return true while the
@@ -763,7 +772,7 @@ namespace Companions
                     Vector3 dir = (targetPos - transform.position);
                     dir.y = 0f;
                     if (dir.sqrMagnitude > 0.01f)
-                        _ai.MoveTowards(dir.normalized, true);
+                        _ai.MoveTowards(dir.normalized, false);
                 }
             }
 
@@ -841,7 +850,9 @@ namespace Companions
             {
                 // Forage: walk for natural picking look
                 bool forageWalk = _targetType == "Pickable" && _state == State_Moving;
-                _character.SetRun(!forageWalk);
+                // Respect the run/walk decision from UpdateMoving — forcing run at close
+                // range causes momentum overshoot, making the companion sprint past stones.
+                _character.SetRun(!forageWalk && _shouldRun);
             }
 
             // During attack, shuffle closer if beyond actual hit range.
@@ -850,13 +861,14 @@ namespace Companions
             // After 2+ swings (likely whiffing), get much more aggressive about closing distance.
             if (_state == State_Attacking && _target != null && _ai != null)
             {
-                float dist = Vector3.Distance(transform.position, _target.transform.position);
+                Vector3 effectivePos = GetEffectiveTargetPosition();
+                float dist = Vector3.Distance(transform.position, effectivePos);
                 float range = GetAttackRange();
                 bool needsCloser = _swingCount >= 2 || _totalAttempts >= 2 || IsLowTarget();
                 float shuffleThreshold = needsCloser ? range * 0.5f : range * 0.8f;
                 float shuffleGoal     = needsCloser ? range * 0.15f : range * 0.5f;
                 if (dist > shuffleThreshold)
-                    _ai.MoveToPoint( Time.deltaTime, _target.transform.position, shuffleGoal, false);
+                    _ai.MoveToPoint(Time.deltaTime, effectivePos, shuffleGoal, false);
             }
         }
 
@@ -920,13 +932,17 @@ namespace Companions
 
             FaceTarget();
 
-            // Check distance — may have drifted or never been close enough
-            float dist = Vector3.Distance(transform.position, _target.transform.position);
+            // Check distance — may have drifted or never been close enough.
+            // Use range + 1.5f (not +0.5f) to add hysteresis vs the arrival threshold
+            // (range + 0.5f). Without this gap, the companion oscillates at the boundary:
+            // arrive at 2.4m → Attacking → momentum to 2.6m → Moving → repeat.
+            Vector3 effectivePos = GetEffectiveTargetPosition();
+            float dist = Vector3.Distance(transform.position, effectivePos);
             float range = GetAttackRange();
-            if (dist > range + 0.5f)
+            if (dist > range + 1.5f)
             {
                 Log($"Too far from target: dist={dist:F1}m " +
-                    $"(range={range:F1} + 0.5) — returning to Moving state");
+                    $"(range={range:F1} + 1.5) — returning to Moving state");
                 _reapproach = true;
                 _moveTimer = 0f;
                 _moveLogTimer = 0f;
@@ -1911,10 +1927,57 @@ namespace Companions
         private void FaceTarget()
         {
             if (_target == null) return;
-            Vector3 dir = _target.transform.position - transform.position;
+            Vector3 dir = GetEffectiveTargetPosition() - transform.position;
             dir.y = 0f;
             if (dir.sqrMagnitude > 0.01f)
                 transform.rotation = Quaternion.LookRotation(dir);
+        }
+
+        /// <summary>
+        /// Returns the nearest reachable point on the target's surface.
+        /// Uses Collider.ClosestPoint so the companion pathfinds to the rock's
+        /// face instead of its center (which is inside the geometry, causing the
+        /// companion to run around/over the rock trying to reach an unreachable point).
+        /// </summary>
+        private Vector3 GetEffectiveTargetPosition()
+        {
+            if (_target == null) return transform.position;
+
+            if (_targetType == "MineRock5")
+            {
+                var rock5 = _target.GetComponent<MineRock5>();
+                if (rock5 != null)
+                {
+                    float bestDist = float.MaxValue;
+                    Vector3 bestPos = _target.transform.position;
+                    bool found = false;
+                    foreach (Transform child in _target.transform)
+                    {
+                        if (!child.gameObject.activeSelf) continue;
+                        var col = child.GetComponent<Collider>();
+                        if (col == null) continue;
+                        Vector3 surfacePoint = col.ClosestPoint(transform.position);
+                        float dist = Vector3.Distance(transform.position, surfacePoint);
+                        if (dist < bestDist)
+                        {
+                            bestDist = dist;
+                            bestPos = surfacePoint;
+                            found = true;
+                        }
+                    }
+                    if (found) return bestPos;
+                }
+            }
+
+            // For MineRock and Destructible, use collider surface point
+            if (_targetType == "MineRock" || _targetType == "Destructible")
+            {
+                var col = _target.GetComponent<Collider>();
+                if (col != null)
+                    return col.ClosestPoint(transform.position);
+            }
+
+            return _target.transform.position;
         }
 
         private static bool IsTargetValid(GameObject target)

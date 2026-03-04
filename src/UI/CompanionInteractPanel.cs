@@ -157,7 +157,7 @@ namespace Companions
                 var currentContainer = _currentContainerField.GetValue(invGui) as Container;
                 if (currentContainer == null || currentContainer != _companionContainer)
                 {
-                    CompanionsPlugin.Log.LogDebug(
+                    CompanionsPlugin.Log.LogInfo(
                         $"[UI] Update hide: current container mismatch current={ContainerName(currentContainer)} " +
                         $"companion={ContainerName(_companionContainer)}");
                     Hide();
@@ -267,7 +267,7 @@ namespace Companions
             var inv = _companionHumanoid?.GetInventory();
             int itemCount = inv?.NrOfItems() ?? -1;
             float totalWeight = inv?.GetTotalWeight() ?? -1f;
-            CompanionsPlugin.Log.LogDebug(
+            CompanionsPlugin.Log.LogInfo(
                 $"[UI] Show â€” companion=\"{companion.name}\" id={companion.GetInstanceID()} " +
                 $"char={_companionChar != null} humanoid={_companionHumanoid != null} " +
                 $"food={_companionFood != null} nview={_companionNview != null} " +
@@ -362,9 +362,12 @@ namespace Companions
 
         private void HideInternal(bool closeInventoryGuiIfNoTakeover, string reason)
         {
-            if (!_visible) return;
+            bool panelActive = _root != null && _root.activeSelf;
+            if (!_visible && !panelActive && !_gamepadInjected)
+                return;
+
             _visible = false;
-            CompanionsPlugin.Log.LogDebug(
+            CompanionsPlugin.Log.LogInfo(
                 $"[UI] HideInternal reason={reason} closeGui={closeInventoryGuiIfNoTakeover} " +
                 $"companionContainer={ContainerName(_companionContainer)}");
 
@@ -408,7 +411,7 @@ namespace Companions
                 InventoryGui.IsVisible())
                 InventoryGui.instance.Hide();
 
-            CompanionsPlugin.Log.LogDebug(
+            CompanionsPlugin.Log.LogInfo(
                 $"[UI] HideInternal done reason={reason} anotherContainerOpen={anotherContainerOpen} " +
                 $"guiVisible={(InventoryGui.instance != null && InventoryGui.IsVisible())}");
         }
@@ -1159,7 +1162,7 @@ namespace Companions
             _setActiveGroupMethod?.Invoke(gui, new object[] { 0, false });
 
             _gamepadInjected = true;
-            CompanionsPlugin.Log.LogDebug(
+            CompanionsPlugin.Log.LogInfo(
                 $"[UI] Gamepad injected group0Old={(_savedVanillaGroup != null)} " +
                 $"containerGridOld={(_savedContainerGrid != null)} " +
                 $"companionContainer={ContainerName(_companionContainer)}");
@@ -1191,7 +1194,7 @@ namespace Companions
             Container currentContainer = null;
             if (_currentContainerField != null)
                 currentContainer = _currentContainerField.GetValue(gui) as Container;
-            CompanionsPlugin.Log.LogDebug(
+            CompanionsPlugin.Log.LogInfo(
                 $"[UI] Gamepad restored currentContainer={ContainerName(currentContainer)}");
         }
 
@@ -1522,7 +1525,7 @@ namespace Companions
                     container != null &&
                     Instance._companionContainer != null &&
                     container == Instance._companionContainer;
-                CompanionsPlugin.Log.LogDebug(
+                CompanionsPlugin.Log.LogInfo(
                     $"[UI] InventoryGui.Show prefix container={ContainerName(container)} " +
                     $"needsCleanup={needsCleanup} visible={Instance._visible} panelActive={panelActive} " +
                     $"gamepadInjected={Instance._gamepadInjected} sameCompanion={sameCompanionContainer} " +

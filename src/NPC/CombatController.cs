@@ -48,6 +48,7 @@ namespace Companions
         private CompanionSetup   _setup;
         private CompanionStamina _stamina;
         private HarvestController _harvest;
+        private CompanionTalk    _talk;
         private ZNetView         _nview;
 
         // ── State ───────────────────────────────────────────────────────────
@@ -62,6 +63,7 @@ namespace Companions
         private Vector3 _lastStuckPos;
         private bool  _initialized;
         private bool  _bowEquipped;
+        private float _noBowWarnTimer;   // throttle "no bow" speech/log to once per 30s
 
         // Bow draw state (manual — vanilla ChargeStart doesn't work for player bows)
         private float _bowDrawTimer;
@@ -132,6 +134,7 @@ namespace Companions
             _setup    = GetComponent<CompanionSetup>();
             _stamina  = GetComponent<CompanionStamina>();
             _harvest  = GetComponent<HarvestController>();
+            _talk     = GetComponent<CompanionTalk>();
             _nview    = GetComponent<ZNetView>();
         }
 
@@ -451,6 +454,17 @@ namespace Companions
             // and the companion stood still getting hit. Now we just fight in melee.
             if (forceRanged && !hasBow)
             {
+                // Warn the user — throttled to once per 30s to avoid spam
+                _noBowWarnTimer -= dt;
+                if (_noBowWarnTimer <= 0f)
+                {
+                    _noBowWarnTimer = 30f;
+                    CompanionsPlugin.Log.LogInfo(
+                        $"[Combat] Ranged stance but no bow/arrows — falling back to melee " +
+                        $"(companion=\"{_character.m_name}\")");
+                    _talk?.Say(ModLocalization.Loc("hc_speech_no_bow"));
+                }
+
                 if (_phase == CombatPhase.Ranged)
                 {
                     RestoreMeleeLoadout();
@@ -707,6 +721,8 @@ namespace Companions
                     _dodgeDuration = DodgeDurationTime;
                     float cooldown = stance == CompanionSetup.StanceDefensive
                         ? DodgeCooldownTime * 0.6f
+                        : stance == CompanionSetup.StanceAggressive
+                        ? DodgeCooldownTime * 2f   // dodge less — focus on attacking
                         : DodgeCooldownTime;
                     _dodgeCooldown = cooldown;
                     _stamina?.UseStamina(DodgeStaminaCost);

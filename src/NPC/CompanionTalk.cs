@@ -29,6 +29,11 @@ namespace Companions
         private static float SayCooldown    => ModConfig.SpeechSayCooldown.Value;
         private float _lastSayTime = float.NegativeInfinity;
 
+        // Global cooldown shared across ALL companions. When any companion speaks,
+        // all others wait before speaking again. Prevents speech spam with multiple
+        // companions where N independent timers fire N times as often.
+        private static float _globalLastSpeechTime = float.NegativeInfinity;
+
         // ── Text pools (loaded from speech.json) ─────────────────────────
         private static string[] ActionLines    => SpeechConfig.Instance.Action;
         private static string[] GatherLines    => SpeechConfig.Instance.Gather;
@@ -73,7 +78,10 @@ namespace Companions
                 }
             }
 
+            // Stagger initial timers so multiple companions don't all speak at once
+            // when they spawn/load in the same frame.
             ResetTimer();
+            _talkTimer += Random.Range(0f, MaxInterval * 0.5f);
         }
 
         private void Update()
@@ -110,8 +118,11 @@ namespace Companions
         public void Say(string text, string audioCategory = null)
         {
             if (string.IsNullOrEmpty(text)) return;
-            if (Time.time - _lastSayTime < SayCooldown) return;
-            _lastSayTime = Time.time;
+            float now = Time.time;
+            if (now - _lastSayTime < SayCooldown) return;
+            if (now - _globalLastSpeechTime < SayCooldown) return;
+            _lastSayTime = now;
+            _globalLastSpeechTime = now;
             CompanionsPlugin.Log.LogDebug($"[Talk] \"{text}\"");
 
             bool isMale = _voicePack == "MaleCompanion";

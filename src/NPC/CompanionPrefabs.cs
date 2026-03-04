@@ -387,10 +387,10 @@ namespace Companions
 
             // Pathfinding — HumanoidAvoidWater uses a separate navmesh that
             // excludes water areas, routing the companion around water instead of
-            // through it. m_moveMinAngle=10 lets companion start moving while
-            // still turning (was 90f which froze movement until fully rotated).
+            // through it. m_moveMinAngle=90 matches MonsterAI (RenegadeVikings):
+            // the AI faces the target before moving, which looks more deliberate.
             ai.m_pathAgentType        = Pathfinding.AgentType.HumanoidAvoidWater;
-            ai.m_moveMinAngle         = 10f;
+            ai.m_moveMinAngle         = 90f;
             ai.m_smoothMovement       = true;
             ai.m_serpentMovement      = false;
             ai.m_jumpInterval         = 0f;

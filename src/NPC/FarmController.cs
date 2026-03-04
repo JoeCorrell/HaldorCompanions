@@ -70,6 +70,7 @@ namespace Companions
         private bool        _chestOpened;
         private bool        _allDoneNotified;
         private float       _moveLogTimer;
+        private bool        _shouldRun;        // run decision from movement — LateUpdate respects this
 
         // ── Harvest/Plant rotation ─────────────────────────────────────────
         // Forces alternation between harvesting and planting on a 30s cycle
@@ -104,7 +105,7 @@ namespace Companions
         private static float ScanInterval  => ModConfig.FarmScanInterval.Value;
         private static float PlantSpacing  => ModConfig.FarmPlantSpacing.Value;
         private static float UseDistance   => ModConfig.FarmUseDistance.Value;
-        private const float MoveTimeout   = 2f;
+        private const float MoveTimeout   = 10f;
         private const float StuckCheckPeriod = 1f;
         private const float StuckMinDistance = 0.5f;
 
@@ -177,14 +178,14 @@ namespace Companions
         private void LateUpdate()
         {
             if (_character == null) return;
-            // Force run during movement phases
+            // Walk when close, run when far — prevents overshooting targets
             if (_phase == FarmPhase.MovingToPickable ||
                 _phase == FarmPhase.MovingToSeedChest ||
                 _phase == FarmPhase.MovingToPlantSpot ||
                 _phase == FarmPhase.MovingToOutputChest ||
                 _phase == FarmPhase.CollectingDrops)
             {
-                _character.SetRun(true);
+                _character.SetRun(_shouldRun);
             }
         }
 
@@ -430,7 +431,8 @@ namespace Companions
                 return;
             }
 
-            bool moveOk = _ai.MoveToPoint(dt, _targetPickable.transform.position, UseDistance, true);
+            _shouldRun = dist > 8f;
+            bool moveOk = _ai.MoveToPoint(dt, _targetPickable.transform.position, UseDistance, _shouldRun);
             LogMovement(dt, "pickable", dist, moveOk);
             UpdateStuckDetection(dt, "pickable");
         }
@@ -514,7 +516,8 @@ namespace Companions
                 return;
             }
 
-            bool moveOk = _ai.MoveToPoint(dt, _targetChest.transform.position, UseDistance, true);
+            _shouldRun = dist > 8f;
+            bool moveOk = _ai.MoveToPoint(dt, _targetChest.transform.position, UseDistance, _shouldRun);
             LogMovement(dt, "seed chest", dist, moveOk);
             UpdateStuckDetection(dt, "seed chest");
         }
@@ -611,7 +614,8 @@ namespace Companions
                 return;
             }
 
-            bool moveOk = _ai.MoveToPoint(dt, _plantPosition, UseDistance, true);
+            _shouldRun = dist > 8f;
+            bool moveOk = _ai.MoveToPoint(dt, _plantPosition, UseDistance, _shouldRun);
             LogMovement(dt, "plant spot", dist, moveOk);
             UpdateStuckDetection(dt, "plant spot");
         }
@@ -692,7 +696,8 @@ namespace Companions
                 return;
             }
 
-            bool moveOk = _ai.MoveToPoint(dt, _outputChest.transform.position, UseDistance, true);
+            _shouldRun = dist > 8f;
+            bool moveOk = _ai.MoveToPoint(dt, _outputChest.transform.position, UseDistance, _shouldRun);
             LogMovement(dt, "output chest", dist, moveOk);
             UpdateStuckDetection(dt, "output chest");
         }

@@ -344,6 +344,7 @@ namespace Companions
                 { "hc_speech_farm_no_seeds", "I need seeds to plant." },
                 { "hc_speech_farm_no_cultivator", "I need a cultivator to plant." },
                 { "hc_speech_no_chest", "No chest nearby to unload!" },
+                { "hc_speech_no_bow", "I need a bow and arrows to shoot!" },
                 { "hc_speech_overweight", "My back is hurting from all this weight!" },
 
                 // ── Speech: CompanionAI ──
