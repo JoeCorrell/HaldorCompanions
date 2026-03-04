@@ -73,6 +73,10 @@ namespace Companions
         private float m_updateTargetTimer;
         private float _attackRetryTime;      // cooldown after failed DoAttack (stamina, etc.)
         private bool  _inCombatStopRange;    // hysteresis flag — prevents stop-range oscillation
+        private float _gatherThreatScanTimer;
+        private bool _gatherEnemyNearby;
+        private Character _gatherNearestEnemy;
+        private float _gatherNearestEnemyDist = float.MaxValue;
 
         /// <summary>
         /// When > 0, all AI movement is suppressed. Used to hold position
@@ -89,10 +93,13 @@ namespace Companions
         private float _healScanTimer;
         private float _healEquipTimer;
         private float _healLogTimer;
+        private float _healUnreachableTimer;
+        private float _healLastDistance = -1f;
         private const float HealThreshold = 0.7f;
         private const float HealScanInterval = 1f;
         private const float HealLogInterval = 3f;
         private const float HealRange = 50f;
+        private const float HealUnreachableTimeout = 6f;
 
         // ══════════════════════════════════════════════════════════════════════
         //  Ship Attachment
@@ -191,6 +198,7 @@ namespace Companions
         private static float UpdateTargetIntervalNear => ModConfig.UpdateTargetIntervalNear.Value;
         private static float UpdateTargetIntervalFar => ModConfig.UpdateTargetIntervalFar.Value;
         private static float SelfDefenseRange => ModConfig.SelfDefenseRange.Value;
+        private const float GatherThreatScanInterval = 0.25f;
         private const float AlertRange = 9999f;
 
         // Combat: intercept prediction (lead running targets) + circling
@@ -204,6 +212,7 @@ namespace Companions
         // Formation follow hysteresis: once in formation, stay until FormationCatchupDist;
         // once in catchup, stay until distToTarget drops below FormationCatchupDist-2f.
         private bool _wasInFormation;
+        private int  _lastFollowMode; // 0=catchup, 1=close, 2=formation  (for transition logging)
 
         // ══════════════════════════════════════════════════════════════════════
         //  Debug Logging
@@ -377,6 +386,10 @@ namespace Companions
         // True when MoveToPoint is using context steering fallback (pathfinding failed).
         // Prevents stuck recovery and proactive jump from fighting the fallback system.
         private bool _inContextSteerFallback;
+        // World position when ctx-steer fallback was last activated.
+        // Fallback exits once the companion has moved 2m from this point
+        // (proves it got past the obstacle), at which point NavMesh is tried again.
+        private Vector3 _ctxFallbackStartPos;
 
         // Frame count when MoveToPoint last returned false (actively navigating).
         // Stuck recovery only fires when this is recent — prevents false positives
@@ -501,13 +514,9 @@ namespace Companions
             if (m_character.m_flying)
                 return MoveTo(dt, point, dist, run);
 
-            _inContextSteerFallback = false;
-
             float distXZ = Utils.DistanceXZ(point, transform.position);
 
-            // Already close enough — use caller's dist directly (no floor).
-            // Combat passes dist=0 to get right on top of the target; a floor
-            // would cause the companion to stop too early for melee range.
+            // Already close enough — clear all fallback state and stop.
             if (distXZ < dist)
             {
                 StopMoving();
@@ -515,12 +524,48 @@ namespace Companions
                 _avoidStuckTimer = 0f;
                 _pathStuckTimer = 0f;
                 _ctxSmoothedDir = Vector3.zero;
+                _inContextSteerFallback = false;
                 return true;
             }
 
             Vector3 goalDir = point - transform.position;
             goalDir.y = 0f;
             goalDir.Normalize();
+
+            // If context steer was active last frame, continue it without calling MoveTo.
+            // Problem: calling MoveTo while in ctx-steer causes BaseAI to rotate the companion
+            // toward the NavMesh path waypoint on the SAME frame that ctx-steer rotates it
+            // elsewhere → visible oscillation ("companion jitters left-right at wall").
+            // Solution: stay in ctx-steer until the companion has physically moved 2m from
+            // where it got stuck (proving it navigated around the obstacle), then retry NavMesh.
+            if (_inContextSteerFallback)
+            {
+                float movedFromStuck = Vector3.Distance(transform.position, _ctxFallbackStartPos);
+                if (movedFromStuck < 2f)
+                {
+                    // Still near the stuck point — continue ctx-steer, skip NavMesh entirely.
+                    _moveToPointActiveFrame = Time.frameCount;
+                    Vector3 ctxDir = ContextSteer(goalDir, "fallback_cont", _ctxSteerPieceMask);
+                    MoveTowards(ctxDir, run);
+                    UpdateFallbackStuck(dt, goalDir, run);
+
+                    // Periodic progress log (every 2s) so it's visible in logs without spam
+                    _ctxLogTimer -= dt;
+                    if (_ctxLogTimer <= 0f)
+                    {
+                        _ctxLogTimer = 2f;
+                        CompanionsPlugin.Log.LogDebug(
+                            $"[AI:Path] ctx-steer active — moved={movedFromStuck:F1}m/2m " +
+                            $"goal={distXZ:F1}m away pos={transform.position:F1}");
+                    }
+                    return false;
+                }
+                // Moved 2m — likely past the obstacle; exit fallback and try NavMesh.
+                CompanionsPlugin.Log.LogDebug(
+                    $"[AI:Path] ctx-steer exit — moved {movedFromStuck:F1}m, retrying NavMesh " +
+                    $"goal={distXZ:F1}m pos={transform.position:F1}");
+                _inContextSteerFallback = false;
+            }
 
             // Try pathfinded movement
             bool result = MoveTo(dt, point, dist, run);
@@ -529,7 +574,12 @@ namespace Companions
             // Navigate with context steering directly toward the goal.
             if (result && distXZ > dist + 0.5f)
             {
+                CompanionsPlugin.Log.LogDebug(
+                    $"[AI:Path] NavMesh claimed done but {distXZ:F1}m away — " +
+                    $"ctx-steer fallback. pos={transform.position:F1}");
                 _inContextSteerFallback = true;
+                _ctxFallbackStartPos = transform.position;
+                _ctxLogTimer = 0f;
                 _moveToPointActiveFrame = Time.frameCount;
                 Vector3 bestDir = ContextSteer(goalDir, "fallback");
                 MoveTowards(bestDir, run);
@@ -553,6 +603,8 @@ namespace Companions
                     // force the stuck timer to threshold immediately instead of waiting
                     // up to PathStuckThreshold seconds. This is the main reason companions
                     // stand still at walls — the stuck timer adds a long visible pause.
+                    bool stuckTimerWasZero = _pathStuckTimer == 0f;
+
                     if (_pathStuckTimer < PathStuckThreshold)
                     {
                         Vector3 moveDir = m_character.GetMoveDir();
@@ -561,9 +613,22 @@ namespace Companions
                         {
                             moveDir.Normalize();
                             Vector3 probeOrigin = m_character.GetCenterPoint();
-                            if (Physics.SphereCast(probeOrigin, 0.35f, moveDir, out _, 2f, _ctxSteerMask))
+                            if (Physics.SphereCast(probeOrigin, 0.35f, moveDir, out RaycastHit sphereHit, 2f, _ctxSteerMask))
+                            {
+                                CompanionsPlugin.Log.LogDebug(
+                                    $"[AI:Path] Proactive wall detect — " +
+                                    $"hit={sphereHit.collider?.name ?? "?"} dist={sphereHit.distance:F1}m — " +
+                                    $"forcing ctx-steer. goal={distXZ:F1}m pos={transform.position:F1}");
                                 _pathStuckTimer = PathStuckThreshold; // wall directly ahead — react now
+                            }
                         }
+                    }
+
+                    // Log the first frame we start accumulating (vel dropped, not yet stuck)
+                    if (stuckTimerWasZero && _pathStuckTimer < PathStuckThreshold)
+                    {
+                        CompanionsPlugin.Log.LogDebug(
+                            $"[AI:Path] Stuck timer starting — vel={vel:F2} goal={distXZ:F1}m pos={transform.position:F1}");
                     }
 
                     _pathStuckTimer += dt;
@@ -572,6 +637,12 @@ namespace Companions
                         // NavMesh path goes through an obstacle — use context steer
                         // with "piece" layer so half-walls are detected and avoided.
                         _inContextSteerFallback = true;
+                        _ctxFallbackStartPos = transform.position;
+                        _ctxLogTimer = 0f; // immediate log next ctx-steer iteration
+                        CompanionsPlugin.Log.LogDebug(
+                            $"[AI:Path] Wall detected — switching to ctx-steer " +
+                            $"goal={distXZ:F1}m pos={transform.position:F1} " +
+                            $"vel={vel:F2}");
                         Vector3 bestDir = ContextSteer(goalDir, "pathstuck", _ctxSteerPieceMask);
                         MoveTowards(bestDir, run);
                         UpdateFallbackStuck(dt, goalDir, run);
@@ -604,13 +675,27 @@ namespace Companions
         {
             if (m_character.InAttack()) return;
 
+            bool escapeWasActive = _avoidCornerTimer > 0f;
             _avoidCornerTimer -= dt;
+
             if (_avoidCornerTimer > 0f)
             {
-                // Actively escaping a corner — override direction
-                Vector3 escapeDir = Quaternion.Euler(0f, _avoidCornerAngle, 0f) * -goalDir;
+                // Actively escaping — move perpendicular to the obstacle.
+                // Angle is relative to transform.forward (same convention as FindBestStrafeAngle).
+                Vector3 escapeDir = Quaternion.Euler(0f, _avoidCornerAngle, 0f) * transform.forward;
                 MoveTowards(escapeDir, run);
                 return;
+            }
+
+            // Corner escape just finished this frame (exactly once) — update start pos so the
+            // 2m exit condition measures from here, not from the original wall. Reset smoothed
+            // direction so ctx-steer resumes fresh, not pointing at the obstacle.
+            if (escapeWasActive)
+            {
+                _ctxFallbackStartPos = transform.position;
+                _ctxSmoothedDir = Vector3.zero;
+                CompanionsPlugin.Log.LogDebug(
+                    $"[AI:CtxSteer] Escape complete — reset origin pos={transform.position:F1}");
             }
 
             _avoidStuckTimer += dt;
@@ -618,12 +703,15 @@ namespace Companions
             {
                 if (Vector3.Distance(transform.position, _avoidLastPos) < 0.3f)
                 {
-                    // Haven't moved — trigger corner escape
-                    _avoidCornerTimer = 2f;
-                    _avoidCornerAngle = UnityEngine.Random.Range(-60f, 60f);
+                    // Haven't moved — use best strafe angle (sideways around obstacle, not backward).
+                    // Random backward escapes cause a forward-backward loop: ctx-steer drives into
+                    // the wall, escape reverses, ctx-steer drives in again. Sideways gets around.
+                    _avoidCornerTimer = 2.5f;
+                    _avoidCornerAngle = FindBestStrafeAngle();
+                    _ctxSmoothedDir = Vector3.zero; // reset so ctx-steer doesn't fight escape
                     _avoidStuckTimer = 0f;
                     CompanionsPlugin.Log.LogDebug(
-                        $"[AI:CtxSteer] Corner escape — backing up at {_avoidCornerAngle:F0}° " +
+                        $"[AI:CtxSteer] Corner escape — strafe at {_avoidCornerAngle:F0}° " +
                         $"pos={transform.position:F1}");
                     return;
                 }
@@ -1401,7 +1489,7 @@ namespace Companions
                 return true; // survival overrides all other AI
 
             // Periodic blacklist cleanup
-            CleanupBlacklist();
+            CleanupBlacklist(dt);
 
             // Proactive water avoidance — if on dry ground heading toward water
             // with insufficient stamina, stop moving and let pathfinding re-route
@@ -1822,12 +1910,14 @@ namespace Companions
                         CompanionsPlugin.Log.LogDebug(
                             $"[CompanionAI:Heal] Target \"{_healTarget.m_name}\" recovered or died — clearing");
                         _healTarget = null;
+                        ResetHealReachabilityTracking();
                     }
                 }
 
                 // Log target transitions
                 if (_healTarget != prevHealTarget)
                 {
+                    ResetHealReachabilityTracking();
                     if (_healTarget != null)
                     {
                         float htMax2 = _healTarget.GetMaxHealth();
@@ -1944,7 +2034,7 @@ namespace Companions
             // ── UI open → suppress targeting completely ──
             if (CompanionInteractPanel.IsOpenFor(_setup) || CompanionRadialMenu.IsOpenFor(_setup))
             {
-                ThrottledTargetLog("UIOpen");
+                ThrottledTargetLog("UIOpen", dt);
                 ClearTargets();
                 return;
             }
@@ -1956,7 +2046,7 @@ namespace Companions
             {
                 if (m_timeSinceHurt > 10f)
                 {
-                    ThrottledTargetLog("StayHome(peaceful)");
+                    ThrottledTargetLog("StayHome(peaceful)", dt);
                     ClearTargets();
                     if (IsAlerted()) SetAlerted(false);
                     return;
@@ -1969,30 +2059,11 @@ namespace Companions
 
             if (gathering)
             {
-                bool enemyNearby = false;
-                Character nearestEnemy = null;
-                float nearestDist = float.MaxValue;
+                UpdateGatherThreatScan(dt);
 
-                foreach (Character c in Character.GetAllCharacters())
+                if (!_gatherEnemyNearby)
                 {
-                    if (c == m_character || c.IsDead()) continue;
-                    if (c.GetHealth() <= 0f) continue;
-                    if (!IsEnemy(c)) continue;
-                    float d = Vector3.Distance(transform.position, c.transform.position);
-                    if (d < SelfDefenseRange)
-                    {
-                        enemyNearby = true;
-                        if (d < nearestDist)
-                        {
-                            nearestDist = d;
-                            nearestEnemy = c;
-                        }
-                    }
-                }
-
-                if (!enemyNearby)
-                {
-                    ThrottledTargetLog("Gathering(safe)");
+                    ThrottledTargetLog("Gathering(safe)", dt);
                     ClearTargets();
                     if (IsAlerted()) SetAlerted(false);
                     return;
@@ -2004,8 +2075,8 @@ namespace Companions
                 {
                     _targetLogTimer = 2f;
                     CompanionsPlugin.Log.LogDebug(
-                        $"[CompanionAI] SELF-DEFENSE ALLOW — nearest enemy \"{nearestEnemy?.m_name ?? "?"}\" " +
-                        $"at {nearestDist:F1}m — currentTarget=\"{m_targetCreature?.m_name ?? "null"}\"");
+                        $"[CompanionAI] SELF-DEFENSE ALLOW — nearest enemy \"{_gatherNearestEnemy?.m_name ?? "?"}\" " +
+                        $"at {_gatherNearestEnemyDist:F1}m — currentTarget=\"{m_targetCreature?.m_name ?? "null"}\"");
                 }
             }
 
@@ -2107,6 +2178,8 @@ namespace Companions
                     m_targetCreature = null;
                 else if (!IsEnemy(m_targetCreature))
                     m_targetCreature = null;
+                else if (m_skipLavaTargets && m_targetCreature.AboveOrInLava())
+                    m_targetCreature = null;
             }
 
             // ── Sense tracking ──
@@ -2147,10 +2220,44 @@ namespace Companions
             }
         }
 
-        private float _suppressLogTimer;
-        private void ThrottledTargetLog(string reason)
+        private void UpdateGatherThreatScan(float dt)
         {
-            _suppressLogTimer -= Time.deltaTime;
+            _gatherThreatScanTimer -= dt;
+            if (_gatherThreatScanTimer > 0f) return;
+            _gatherThreatScanTimer = GatherThreatScanInterval;
+
+            _gatherEnemyNearby = false;
+            _gatherNearestEnemy = null;
+            _gatherNearestEnemyDist = float.MaxValue;
+
+            float maxDistSqr = SelfDefenseRange * SelfDefenseRange;
+            float nearestSqr = float.MaxValue;
+            Vector3 myPos = transform.position;
+
+            foreach (Character c in Character.GetAllCharacters())
+            {
+                if (c == null || c == m_character || c.IsDead()) continue;
+                if (c.GetHealth() <= 0f || !IsEnemy(c)) continue;
+
+                float distSqr = (c.transform.position - myPos).sqrMagnitude;
+                if (distSqr > maxDistSqr) continue;
+
+                _gatherEnemyNearby = true;
+                if (distSqr < nearestSqr)
+                {
+                    nearestSqr = distSqr;
+                    _gatherNearestEnemy = c;
+                }
+            }
+
+            if (_gatherNearestEnemy != null)
+                _gatherNearestEnemyDist = Mathf.Sqrt(nearestSqr);
+        }
+
+        private float _suppressLogTimer;
+        private void ThrottledTargetLog(string reason, float dt)
+        {
+            _suppressLogTimer -= dt;
             if (_suppressLogTimer <= 0f)
             {
                 _suppressLogTimer = 3f;
@@ -2800,7 +2907,7 @@ namespace Companions
             }
 
             transform.position = spawnPos;
-            var body = GetComponent<Rigidbody>();
+            var body = _body;
             if (body != null)
             {
                 body.position = spawnPos;
@@ -2810,6 +2917,8 @@ namespace Companions
             // Reset context steer state — after a teleport the old direction is invalid.
             _ctxSmoothedDir = Vector3.zero;
             _pathStuckTimer = 0f;
+            _inContextSteerFallback = false;
+            _ctxFallbackStartPos = Vector3.zero;
 
             // Sync position to ZDO so other clients see the teleport
             if (m_nview?.GetZDO() != null)
@@ -2845,7 +2954,7 @@ namespace Companions
             }
 
             transform.position = spawnPos;
-            var body = GetComponent<Rigidbody>();
+            var body = _body;
             if (body != null)
             {
                 body.position = spawnPos;
@@ -2895,6 +3004,12 @@ namespace Companions
             float catchupEnterDist = _wasInFormation ? FormationCatchupDist : FormationCatchupDist - 2f;
             if (distToTarget > catchupEnterDist || _formationSlot < 0)
             {
+                if (_lastFollowMode != 0)
+                {
+                    _lastFollowMode = 0;
+                    CompanionsPlugin.Log.LogDebug(
+                        $"[AI:Follow] → CATCHUP (dist={distToTarget:F1}m threshold={catchupEnterDist:F1}m slot={_formationSlot})");
+                }
                 _wasInFormation = false;
                 Follow(target, dt);
                 ClearFollowMovementOverrides();
@@ -2905,6 +3020,12 @@ namespace Companions
             // Close to target → vanilla follow (stops at ~3m, no formation jitter)
             if (distToTarget < 5f)
             {
+                if (_lastFollowMode != 1)
+                {
+                    _lastFollowMode = 1;
+                    CompanionsPlugin.Log.LogDebug(
+                        $"[AI:Follow] → CLOSE-FOLLOW (dist={distToTarget:F1}m)");
+                }
                 Follow(target, dt);
                 ApplyPlayerMovementMatch(playerSneaking, playerWalking, playerRunning);
                 return;
@@ -2924,6 +3045,13 @@ namespace Companions
             // Within 2m of formation point → use vanilla follow for smooth behavior
             if (distToSlot < 2f)
             {
+                if (_lastFollowMode != 2)
+                {
+                    _lastFollowMode = 2;
+                    CompanionsPlugin.Log.LogDebug(
+                        $"[AI:Follow] → FORMATION slot={_formationSlot} " +
+                        $"dist={distToTarget:F1}m slotDist={distToSlot:F1}m");
+                }
                 Follow(target, dt);
                 ApplyPlayerMovementMatch(playerSneaking, playerWalking, playerRunning);
                 return;
@@ -2999,10 +3127,45 @@ namespace Companions
         /// Scans for hurt player or player-owned companions within view range.
         /// Returns the lowest-HP-ratio valid ally, or null if none below threshold.
         /// </summary>
+        private string GetCompanionOwnerId()
+        {
+            var zdo = m_nview?.GetZDO();
+            if (zdo == null) return string.Empty;
+            return zdo.GetString(CompanionSetup.OwnerHash, string.Empty);
+        }
+
+        private bool IsHealCandidateOwnedByCompanionOwner(Character candidate, string ownerId)
+        {
+            if (candidate == null || string.IsNullOrEmpty(ownerId)) return false;
+
+            if (candidate.IsPlayer())
+            {
+                var player = candidate as Player;
+                if (player == null) return false;
+                return player.GetPlayerID().ToString() == ownerId;
+            }
+
+            var candidateSetup = candidate.GetComponent<CompanionSetup>();
+            if (candidateSetup == null) return false;
+
+            var candidateZdo = candidateSetup.GetComponent<ZNetView>()?.GetZDO();
+            if (candidateZdo == null) return false;
+            return candidateZdo.GetString(CompanionSetup.OwnerHash, string.Empty) == ownerId;
+        }
+
+        private void ResetHealReachabilityTracking()
+        {
+            _healUnreachableTimer = 0f;
+            _healLastDistance = -1f;
+        }
+
         private Character FindHurtAlly()
         {
             Character best = null;
             float bestRatio = HealThreshold;
+            string ownerId = GetCompanionOwnerId();
+            if (string.IsNullOrEmpty(ownerId) && Player.m_localPlayer != null)
+                ownerId = Player.m_localPlayer.GetPlayerID().ToString();
 
             foreach (Character c in Character.GetAllCharacters())
             {
@@ -3017,10 +3180,8 @@ namespace Companions
                 float dist = Vector3.Distance(transform.position, c.transform.position);
                 if (dist > HealRange) continue;
 
-                // Only heal the player or player-owned companions
-                bool isPlayer = c.IsPlayer();
-                bool isCompanion = c.GetComponent<CompanionSetup>() != null;
-                if (!isPlayer && !isCompanion) continue;
+                // Only heal the companion owner or companions owned by that player.
+                if (!IsHealCandidateOwnedByCompanionOwner(c, ownerId)) continue;
 
                 if (ratio < bestRatio)
                 {
@@ -3037,10 +3198,18 @@ namespace Companions
         /// </summary>
         private void UpdateHealBehavior(Humanoid humanoid, float dt)
         {
-            if (_healTarget == null || _healTarget.IsDead()) return;
+            if (_healTarget == null || _healTarget.IsDead())
+            {
+                ResetHealReachabilityTracking();
+                return;
+            }
 
             ItemDrop.ItemData weapon = humanoid.GetCurrentWeapon();
-            if (weapon == null) return;
+            if (weapon == null)
+            {
+                ResetHealReachabilityTracking();
+                return;
+            }
 
             float dist = Vector3.Distance(transform.position, _healTarget.transform.position)
                          - _healTarget.GetRadius();
@@ -3060,6 +3229,7 @@ namespace Companions
 
             if (dist < attackRange)
             {
+                ResetHealReachabilityTracking();
                 StopMoving();
                 LookAt(_healTarget.GetTopPoint());
 
@@ -3090,6 +3260,25 @@ namespace Companions
             {
                 // Move toward heal target — run if far
                 MoveToPoint(dt, _healTarget.transform.position, 0f, dist > 10f);
+
+                bool pathOk = FoundPath();
+                bool makingProgress = _healLastDistance < 0f || dist < _healLastDistance - 0.2f;
+                float vel = m_character.GetVelocity().magnitude;
+                _healLastDistance = dist;
+
+                if (!pathOk || (vel < GroundStuckVelThreshold && !makingProgress))
+                    _healUnreachableTimer += dt;
+                else
+                    _healUnreachableTimer = 0f;
+
+                if (_healUnreachableTimer >= HealUnreachableTimeout)
+                {
+                    CompanionsPlugin.Log.LogDebug(
+                        $"[CompanionAI:Heal] Target unreachable \"{_healTarget.m_name}\" " +
+                        $"for {_healUnreachableTimer:F1}s — clearing");
+                    _healTarget = null;
+                    ResetHealReachabilityTracking();
+                }
             }
         }
 
@@ -3458,9 +3647,9 @@ namespace Companions
             return false;
         }
 
-        private void CleanupBlacklist()
+        private void CleanupBlacklist(float dt)
         {
-            _blacklistCleanupTimer += Time.deltaTime;
+            _blacklistCleanupTimer += dt;
             if (_blacklistCleanupTimer < 30f) return;
             _blacklistCleanupTimer = 0f;
             if (_targetBlacklist.Count == 0) return;
