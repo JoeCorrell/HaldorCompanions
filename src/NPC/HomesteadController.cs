@@ -67,6 +67,10 @@ namespace Companions
         internal bool IsSmeltTurn => _currentSlot == TaskSlot.Smelt;  // read by SmeltController
         internal bool IsFarmTurn  => _currentSlot == TaskSlot.Farm;   // read by FarmController
 
+        // Shared across all HomesteadController instances — prevents multiple companions targeting same piece
+        private static readonly HashSet<int> s_claimedPieces = new HashSet<int>();
+        private int _claimedPieceId;
+
         // ── Refuel task ─────────────────────────────────────────────────────
         private Fireplace _targetFireplace;
         private Container _supplyChest;
@@ -330,6 +334,7 @@ namespace Companions
                 }
 
                 if (IsBlacklisted(fp.gameObject)) continue;
+                if (s_claimedPieces.Contains(fp.GetInstanceID())) continue;
 
                 lowFuelCount++;
                 float dist = Vector3.Distance(transform.position, fp.transform.position);
@@ -347,6 +352,7 @@ namespace Companions
             if (bestFire == null) return false;
 
             _targetFireplace = bestFire;
+            ClaimPiece(bestFire.GetInstanceID());
             _fuelItemPrefab = bestFire.m_fuelItem.gameObject.name;
             _fuelItemName = bestFire.m_fuelItem.m_itemData.m_shared.m_name;
 
@@ -587,10 +593,27 @@ namespace Companions
                 FinishRefuel();
         }
 
+        private void ClaimPiece(int id)
+        {
+            UnclaimPiece();
+            _claimedPieceId = id;
+            if (_claimedPieceId != 0) s_claimedPieces.Add(_claimedPieceId);
+        }
+
+        private void UnclaimPiece()
+        {
+            if (_claimedPieceId != 0)
+            {
+                s_claimedPieces.Remove(_claimedPieceId);
+                _claimedPieceId = 0;
+            }
+        }
+
         private void FinishRefuel()
         {
             Log($"Finished refueling \"{_targetFireplace?.m_name ?? "?"}\"");
             if (_talk != null) _talk.Say(ModLocalization.Loc("hc_speech_homestead_stoked"), "Action");
+            UnclaimPiece();
             _targetFireplace = null;
             _supplyChest = null;
             _fuelItemPrefab = null;
@@ -642,6 +665,7 @@ namespace Companions
                 if (hp >= 1f) continue;
 
                 if (IsBlacklisted(wnt.gameObject)) continue;
+                if (s_claimedPieces.Contains(wnt.GetInstanceID())) continue;
 
                 // Prefer closest first — repair nearby before running far
                 if (dist < bestDist)
@@ -655,6 +679,7 @@ namespace Companions
             if (bestPiece == null) return false;
 
             _targetPiece = bestPiece;
+            ClaimPiece(bestPiece.GetInstanceID());
             _lastScanEmpty = false;
             ResetStuck();
             _phase = HomesteadPhase.MovingToRepairTarget;
@@ -773,6 +798,7 @@ namespace Companions
                 // Keep hammer equipped — if next scan finds another damaged piece,
                 // this avoids a pointless unequip→re-equip cycle. Weapon restoration
                 // happens in Abort() or when the Repair slot ends.
+                UnclaimPiece();
                 _targetPiece = null;
                 _phase = HomesteadPhase.Idle;
                 _scanTimer = 0f; // immediate rescan for next damaged piece
@@ -1111,6 +1137,7 @@ namespace Companions
         private void Abort(string reason)
         {
             Log($"Aborted — {reason} (phase was {_phase})");
+            UnclaimPiece();
             CloseAnyOpenChest();
             RestoreWeaponAfterRepair();
             _targetFireplace = null;

@@ -28,6 +28,10 @@ namespace Companions
         private DoorHandler       _doorHandler;
         private SmeltController   _smelt;
 
+        // Shared across all RepairController instances — prevents multiple companions targeting same station
+        private static readonly HashSet<int> s_claimedStations = new HashSet<int>();
+        private int _claimedStationId;
+
         // ── State ───────────────────────────────────────────────────────────
         private RepairPhase     _phase;
         private CraftingStation _targetStation;
@@ -181,6 +185,7 @@ namespace Companions
 
                 if (canRepairAny && dist < bestDist)
                 {
+                    if (s_claimedStations.Contains(station.GetInstanceID())) continue;
                     if (_ai != null && _ai.IsPositionBlacklisted(station.transform.position))
                     {
                         Log($"Scan: skipping \"{station.m_name}\" — position blacklisted");
@@ -217,6 +222,7 @@ namespace Companions
             }
 
             _targetStation = bestStation;
+            ClaimStation();
             _stuckTimer = 0f;
             _stuckCheckTimer = 0f;
             _stuckCheckPos = transform.position;
@@ -402,6 +408,7 @@ namespace Companions
             }
 
             _targetStation = station;
+            ClaimStation();
             _stuckTimer = 0f;
             _stuckCheckTimer = 0f;
             _stuckCheckPos = transform.position;
@@ -415,11 +422,28 @@ namespace Companions
             return true;
         }
 
+        private void ClaimStation()
+        {
+            UnclaimStation();
+            _claimedStationId = _targetStation?.GetInstanceID() ?? 0;
+            if (_claimedStationId != 0) s_claimedStations.Add(_claimedStationId);
+        }
+
+        private void UnclaimStation()
+        {
+            if (_claimedStationId != 0)
+            {
+                s_claimedStations.Remove(_claimedStationId);
+                _claimedStationId = 0;
+            }
+        }
+
         private void FinishRepair()
         {
             if (_zanim != null && _setup != null && _setup.CanWearArmor()) _zanim.SetInt("crafting", 0);
             Log($"All items repaired at \"{_targetStation?.m_name ?? "?"}\"");
             if (_talk != null) _talk.Say(ModLocalization.Loc("hc_speech_repair_done"), "Repair");
+            UnclaimStation();
             _targetStation = null;
             _repairQueue.Clear();
             _phase = RepairPhase.Idle;
@@ -440,6 +464,7 @@ namespace Companions
         {
             if (_zanim != null && _setup != null && _setup.CanWearArmor()) _zanim.SetInt("crafting", 0);
             Log($"Aborted — {reason} (phase was {_phase})");
+            UnclaimStation();
             _targetStation = null;
             _repairQueue.Clear();
             _phase = RepairPhase.Idle;

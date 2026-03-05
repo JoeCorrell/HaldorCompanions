@@ -59,6 +59,10 @@ namespace Companions
         private bool        _allDoneNotified; // suppress repeated "All done" log/speech
         private float       _insertTimer;
 
+        // Shared across all SmeltController instances — prevents multiple companions targeting same smelter
+        private static readonly HashSet<int> s_claimedSmelters = new HashSet<int>();
+        private int _claimedSmelterId;
+
         // Current task tracking
         private Smelter     _targetSmelter;
         private Container   _targetChest;
@@ -192,6 +196,7 @@ namespace Companions
             foreach (var smelter in _nearbySmelters)
             {
                 if (smelter == null) continue;
+                if (s_claimedSmelters.Contains(smelter.GetInstanceID())) continue;
                 var snview = smelter.GetComponent<ZNetView>();
                 if (snview == null || snview.GetZDO() == null) continue;
 
@@ -210,6 +215,7 @@ namespace Companions
                 if (processed > 0)
                 {
                     _targetSmelter = smelter;
+                    ClaimSmelter();
                     ClearFollowForMovement();
                     ResetStuck();
                     _phase = SmeltPhase.CollectingOutput;
@@ -221,6 +227,7 @@ namespace Companions
                 if (groundDrops > 0)
                 {
                     _targetSmelter = smelter;
+                    ClaimSmelter();
                     ClearFollowForMovement();
                     ResetStuck();
                     _collectTriggered = true;    // skip RPC_EmptyProcessed, go straight to pickup
@@ -261,6 +268,7 @@ namespace Companions
             {
                 if (smelter == null) continue;
                 if (smelter.m_maxFuel > 0) continue; // skip furnaces in kiln pass
+                if (s_claimedSmelters.Contains(smelter.GetInstanceID())) continue;
                 _tempKilns.Add(smelter);
             }
             _tempKilns.Sort((a, b) =>
@@ -303,6 +311,7 @@ namespace Companions
             {
                 if (smelter == null) continue;
                 if (smelter.m_maxFuel == 0) continue; // skip kilns
+                if (s_claimedSmelters.Contains(smelter.GetInstanceID())) continue;
                 _tempFurnaces.Add(smelter);
             }
             _tempFurnaces.Sort((a, b) =>
@@ -884,6 +893,7 @@ namespace Companions
                 if (!accepts) continue;
 
                 _targetSmelter = smelter;
+                ClaimSmelter();
                 _carryingAmount = Mathf.Min(have, Mathf.Max(0, roomNeeded));
                 ClearFollowForMovement();
                 ResetStuck();
@@ -1015,6 +1025,7 @@ namespace Companions
                 {
                     int toUse = Mathf.Min(needed, have, MaxCarryFuel);
                     _targetSmelter = smelter;
+                    ClaimSmelter();
                     _targetChest = null;
                     _carryingItemPrefab = fuelPrefab;
                     _carryingIsFuel = true;
@@ -1079,6 +1090,7 @@ namespace Companions
 
             int toTake = Mathf.Min(totalFuelNeeded, bestCount, Mathf.Max(1, canCarryFuelByWeight));
             _targetSmelter = smelter;
+            ClaimSmelter();
             _targetChest = bestChest;
             _carryingItemPrefab = fuelPrefab;
             _carryingIsFuel = true;
@@ -1120,6 +1132,7 @@ namespace Companions
                     {
                         int toUse = Mathf.Min(needed, have, MaxCarryOre);
                         _targetSmelter = smelter;
+                        ClaimSmelter();
                         _targetChest = null;
                         _carryingItemPrefab = inputPrefab;
                         _carryingIsFuel = false;
@@ -1195,6 +1208,7 @@ namespace Companions
 
             int toTake = Mathf.Min(totalNeeded, bestCount, Mathf.Max(1, canCarryByWeight));
             _targetSmelter = smelter;
+            ClaimSmelter();
             _targetChest = bestChest;
             _carryingItemPrefab = bestPrefab;
             _carryingIsFuel = false;
@@ -1381,9 +1395,26 @@ namespace Companions
             return false;
         }
 
+        private void ClaimSmelter()
+        {
+            UnclaimSmelter();
+            _claimedSmelterId = _targetSmelter?.GetInstanceID() ?? 0;
+            if (_claimedSmelterId != 0) s_claimedSmelters.Add(_claimedSmelterId);
+        }
+
+        private void UnclaimSmelter()
+        {
+            if (_claimedSmelterId != 0)
+            {
+                s_claimedSmelters.Remove(_claimedSmelterId);
+                _claimedSmelterId = 0;
+            }
+        }
+
         private void Finish()
         {
             Log("Finish — restoring follow target");
+            UnclaimSmelter();
             CloseAnyOpenChest();
             _targetSmelter = null;
             _targetChest = null;
@@ -1401,6 +1432,7 @@ namespace Companions
         private void Abort(string reason)
         {
             Log($"Aborted — {reason} (phase was {_phase})");
+            UnclaimSmelter();
             CloseAnyOpenChest();
             _targetSmelter = null;
             _targetChest = null;

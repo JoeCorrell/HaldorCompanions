@@ -211,7 +211,7 @@ namespace Companions
             StaminaRetreatPct       = Bind(cfg, "Combat", "StaminaRetreatPct", 0.15f, "Retreat when stamina drops below this %", new AcceptableValueRange<float>(0.05f, 0.90f));
             HealthRecoverPct        = Bind(cfg, "Combat", "HealthRecoverPct", 0.50f, "Re-engage when HP recovers to this %", new AcceptableValueRange<float>(0.10f, 1.0f));
             StaminaRecoverPct       = Bind(cfg, "Combat", "StaminaRecoverPct", 0.30f, "Re-engage when stamina recovers to this %", new AcceptableValueRange<float>(0.10f, 1.0f));
-            AttackCooldown          = Bind(cfg, "Combat", "AttackCooldown", 0.3f, "Seconds between melee attacks", new AcceptableValueRange<float>(0.1f, 2.0f));
+            AttackCooldown          = Bind(cfg, "Combat", "AttackCooldown", 0.225f, "Seconds between melee attacks", new AcceptableValueRange<float>(0.1f, 2.0f));
             PowerAttackCooldown     = Bind(cfg, "Combat", "PowerAttackCooldown", 3.0f, "Seconds between power attacks", new AcceptableValueRange<float>(0.5f, 10f));
             BowMaxRange             = Bind(cfg, "Combat", "BowMaxRange", 30f, "Maximum bow engagement range", new AcceptableValueRange<float>(10f, 80f));
             BowMinRange             = Bind(cfg, "Combat", "BowMinRange", 10f, "Always use melee below this distance", new AcceptableValueRange<float>(1f, 30f));

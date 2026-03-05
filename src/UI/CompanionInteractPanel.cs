@@ -1294,6 +1294,8 @@ namespace Companions
         /// </summary>
         private void InjectGamepadGroups()
         {
+            if (_gamepadInjected) return;
+
             var gui = InventoryGui.instance;
             if (gui == null || _uiGroup == null) return;
 

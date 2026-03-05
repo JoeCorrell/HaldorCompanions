@@ -16,7 +16,7 @@
 </p>
 
 <p align="center">
-<a href="https://discord.gg/rBbcrpT2Vq"><img src="https://img.shields.io/badge/Discord-Join_Server-5865F2?style=for-the-badge&logo=discord&logoColor=white&labelColor=0d1117" alt="Discord"></a>
+<a href="https://discord.gg/Nw6tQtsUKQ"><img src="https://img.shields.io/badge/Discord-Join_Server-5865F2?style=for-the-badge&logo=discord&logoColor=white&labelColor=0d1117" alt="Discord"></a>
 </p>
 
 <p align="center">
@@ -814,7 +814,7 @@ Optionally integrates with [Trader Overhaul](https://github.com/JoeCorrell/Trade
 
 <p align="center">
 <a href="https://github.com/JoeCorrell/OfflineCompanions/issues"><img src="https://img.shields.io/badge/GitHub-Issues-181717?style=for-the-badge&logo=github&labelColor=0d1117" alt="GitHub Issues"></a>
-<a href="https://discord.gg/rBbcrpT2Vq"><img src="https://img.shields.io/badge/Discord-@profmags-5865F2?style=for-the-badge&logo=discord&logoColor=white&labelColor=0d1117" alt="Discord"></a>
+<a href="https://discord.gg/Nw6tQtsUKQ"><img src="https://img.shields.io/badge/Discord-@profmags-5865F2?style=for-the-badge&logo=discord&logoColor=white&labelColor=0d1117" alt="Discord"></a>
 </p>
 
 <p align="center">

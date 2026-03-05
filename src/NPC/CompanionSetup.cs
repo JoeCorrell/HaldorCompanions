@@ -1133,7 +1133,14 @@ namespace Companions
                 $"current=\"{curRight?.m_shared?.m_name ?? "none"}\" " +
                 $"needsSwap={desiredRight != null && curRight != desiredRight}");
 
-            if (desiredRight != null && curRight != desiredRight)
+            // If stance is Ranged and a bow is currently equipped, don't override —
+            // combat AI manages the weapon slot for ranged stance.
+            // Note: vanilla equips bows in m_leftItem, not m_rightItem.
+            bool bowEquipped = (curRight != null && curRight.m_shared.m_itemType == ItemDrop.ItemData.ItemType.Bow)
+                            || (curLeft  != null && curLeft.m_shared.m_itemType  == ItemDrop.ItemData.ItemType.Bow);
+            bool skipWeaponSwap = bowEquipped && GetCombatStance() == StanceRanged;
+
+            if (!skipWeaponSwap && desiredRight != null && curRight != desiredRight)
             {
                 if (curRight != null)
                 {
@@ -1158,9 +1165,10 @@ namespace Companions
             }
 
             bool rightIs2H = curRight != null && IsTwoHandedWeapon(curRight);
+            bool leftIs2H  = curLeft  != null && IsTwoHandedWeapon(curLeft);
 
-            // Shield: only if left hand is free and no 2H in right
-            if (!rightIs2H && bestShield != null)
+            // Shield: only if neither hand has a 2H weapon (bows are 2H in left hand)
+            if (!rightIs2H && !leftIs2H && bestShield != null)
             {
                 if (curLeft != bestShield)
                 {

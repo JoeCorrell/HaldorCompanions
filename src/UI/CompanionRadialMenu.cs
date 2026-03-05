@@ -61,14 +61,14 @@ namespace Companions
         private static readonly Color ActiveDot        = new Color(0.40f, 0.85f, 0.40f, 1f);
         private static readonly Color InactiveDot      = new Color(0.5f, 0.5f, 0.5f, 0.5f);
 
-        private const float RingRadius     = 270f;
+        private const float RingRadius     = 290f;
         private const float SegSize        = 115f;
         private const float HighlightSize  = 90f;
         private const float IconSize       = 87f;
         private const float DeadZonePx     = 30f;
         private const float DeadZoneStick  = 0.3f;
 
-        // Inner ring (combat stances + despawn)
+        // Inner ring (combat stances)
         private const float InnerRingRadius = 120f;
         private const float InnerSegSize    = 80f;
         private const float InnerIconSize   = 58f;
@@ -761,6 +761,9 @@ namespace Companions
                 case ActionCommand:
                     ToggleCommandable();
                     break;
+                case ActionDespawn:
+                    DoDespawn();
+                    return;
             }
 
             // Overhead speech on any action
@@ -1258,6 +1261,11 @@ namespace Companions
                 IsToggle = true, IsActive = commandable,
                 IconColor = new Color(0.80f, 0.35f, 0.35f)
             });
+            _segments.Add(new Segment {
+                Label = ModLocalization.Loc("hc_radial_despawn"), ActionId = ActionDespawn,
+                IsActive = false,
+                IconColor = new Color(0.90f, 0.20f, 0.20f)
+            });
 
             // Utility modes — persistent periodic actions
             _segments.Add(new Segment {
@@ -1272,7 +1280,7 @@ namespace Companions
             });
 
 
-            // Inner ring: combat stances + despawn
+            // Inner ring: combat stances
             _innerSegments.Clear();
             int currentStance = _companion.GetCombatStance();
             _innerSegments.Add(new Segment {
@@ -1294,11 +1302,6 @@ namespace Companions
                 Label = ModLocalization.Loc("hc_radial_melee"), ActionId = ActionStanceMelee,
                 IsActive = currentStance == CompanionSetup.StanceMelee,
                 IconColor = new Color(0.85f, 0.35f, 0.30f)
-            });
-            _innerSegments.Add(new Segment {
-                Label = ModLocalization.Loc("hc_radial_despawn"), ActionId = ActionDespawn,
-                IsActive = false,
-                IconColor = new Color(0.90f, 0.20f, 0.20f)
             });
 
         }
@@ -1680,6 +1683,7 @@ namespace Companions
                 case ActionStancePassive:    return "Passive";
                 case ActionStanceRanged:     return "Ranged";
                 case ActionStanceMelee:      return "Melee";
+                case ActionDespawn:          return "Despawn";
                 default:                     return null;
             }
         }

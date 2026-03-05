@@ -1512,6 +1512,14 @@ namespace Companions
                 return true;
             }
 
+            // UI freeze — stop all movement while companion panel or radial menu is open
+            if (_setup != null &&
+                (CompanionInteractPanel.IsOpenFor(_setup) || CompanionRadialMenu.IsOpenFor(_setup)))
+            {
+                StopMoving();
+                return true;
+            }
+
             // Drowning — damage companion when swimming with no stamina
             UpdateDrowning(dt);
 
@@ -1851,7 +1859,8 @@ namespace Companions
                             if (compInv != null)
                             {
                                 foreach (var item in compInv.GetAllItems())
-                                    _depositQueue.Add(item);
+                                    if (!CompanionInteract.ShouldKeep(item, depositHumanoid))
+                                        _depositQueue.Add(item);
                             }
                         }
 
@@ -1948,18 +1957,22 @@ namespace Companions
                 }
                 else
                 {
-                    // No hurt ally — re-equip enemy weapon if needed
-                    _healEquipTimer -= dt;
-                    if (_healEquipTimer <= 0f && !m_character.InAttack())
+                    // No hurt ally — re-equip enemy weapon if needed (skip for Ranged stance; SelectBestAttack handles it)
+                    int healStance = _setup?.GetCombatStance() ?? CompanionSetup.StanceBalanced;
+                    if (healStance != CompanionSetup.StanceRanged)
                     {
-                        _healEquipTimer = 1f;
-                        var prevWeapon = humanoid.GetCurrentWeapon();
-                        humanoid.EquipBestWeapon(m_targetCreature, m_targetStatic, null, null);
-                        var newWeapon = humanoid.GetCurrentWeapon();
-                        if (prevWeapon != newWeapon)
-                            CompanionsPlugin.Log.LogDebug(
-                                $"[CompanionAI:Heal] Weapon switch back \"{prevWeapon?.m_shared?.m_name ?? "none"}\" " +
-                                $"→ \"{newWeapon?.m_shared?.m_name ?? "none"}\"");
+                        _healEquipTimer -= dt;
+                        if (_healEquipTimer <= 0f && !m_character.InAttack())
+                        {
+                            _healEquipTimer = 1f;
+                            var prevWeapon = humanoid.GetCurrentWeapon();
+                            humanoid.EquipBestWeapon(m_targetCreature, m_targetStatic, null, null);
+                            var newWeapon = humanoid.GetCurrentWeapon();
+                            if (prevWeapon != newWeapon)
+                                CompanionsPlugin.Log.LogDebug(
+                                    $"[CompanionAI:Heal] Weapon switch back \"{prevWeapon?.m_shared?.m_name ?? "none"}\" " +
+                                    $"→ \"{newWeapon?.m_shared?.m_name ?? "none"}\"");
+                        }
                     }
                 }
             }

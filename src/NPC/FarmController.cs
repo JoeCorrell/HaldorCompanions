@@ -79,6 +79,10 @@ namespace Companions
         private float       _rotationTimer;          // time spent in current phase
         private const float RotationInterval = 30f;  // switch every 30 seconds
 
+        // Shared across all FarmController instances — prevents multiple companions targeting same crop
+        private static readonly HashSet<int> s_claimedPickables = new HashSet<int>();
+        private int _claimedPickableId;
+
         // Current task tracking
         private Pickable    _targetPickable;
         private Container   _targetChest;
@@ -302,6 +306,7 @@ namespace Companions
             if (pickable != null)
             {
                 _targetPickable = pickable;
+                ClaimPickable();
                 ClearFollowForMovement();
                 ResetStuck();
                 _phase = FarmPhase.MovingToPickable;
@@ -906,6 +911,7 @@ namespace Companions
                 pickableCount++;
 
                 if (IsPicked(pickable)) continue;
+                if (s_claimedPickables.Contains(pickable.GetInstanceID())) continue;
 
                 // Only harvest crops on cultivated ground (not wild pickables).
                 // Check if this pickable drops a known crop output (e.g. "Carrot"),
@@ -1365,9 +1371,26 @@ namespace Companions
             }
         }
 
+        private void ClaimPickable()
+        {
+            UnclaimPickable();
+            _claimedPickableId = _targetPickable?.GetInstanceID() ?? 0;
+            if (_claimedPickableId != 0) s_claimedPickables.Add(_claimedPickableId);
+        }
+
+        private void UnclaimPickable()
+        {
+            if (_claimedPickableId != 0)
+            {
+                s_claimedPickables.Remove(_claimedPickableId);
+                _claimedPickableId = 0;
+            }
+        }
+
         private void Finish()
         {
             Log("Finish — immediate re-scan for next task");
+            UnclaimPickable();
             CloseAnyOpenChest();
             RestoreCombatLoadout();
             _targetPickable = null;
@@ -1385,6 +1408,7 @@ namespace Companions
         private void Abort(string reason)
         {
             Log($"Aborted — {reason} (phase was {_phase})");
+            UnclaimPickable();
             CloseAnyOpenChest();
             RestoreCombatLoadout();
             _targetPickable = null;

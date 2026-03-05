@@ -318,6 +318,7 @@ namespace Companions
                 { "hc_msg_tools_weak", "{0}'s tools are not strong enough" },
                 { "hc_msg_reposition_on", "UI Reposition Mode — drag to move, F7 to confirm" },
                 { "hc_msg_reposition_off", "UI position saved" },
+                { "hc_msg_commanded", "Moving to position." },
 
                 // ── Speech: Controllers ──
                 { "hc_speech_repair_start", "Time for repairs." },
