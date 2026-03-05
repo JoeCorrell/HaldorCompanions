@@ -845,8 +845,27 @@ namespace Companions
         {
             Vector3 pos = _companion.transform.position;
             _companion.SetHomePosition(pos);
-            if (_companion.GetStayHome() && _companionAI != null)
+
+            // Auto-enable StayHome if not already active
+            if (!_companion.GetStayHome())
+            {
+                _companion.SetStayHome(true);
+                if (_companionAI != null && !_companion.GetFollow())
+                {
+                    _companionAI.SetFollowTarget(null);
+                    _companionAI.SetPatrolPointAt(pos);
+                }
+            }
+            else if (_companionAI != null)
+            {
                 _companionAI.SetPatrolPointAt(pos);
+            }
+
+            // Close radial, then open the home zone radius panel
+            var companionRef = _companion; // capture before Hide clears refs
+            Hide();
+            HomeZonePanel.EnsureInstance();
+            HomeZonePanel.Instance.Show(companionRef);
         }
 
         private void ToggleWander()

@@ -204,7 +204,7 @@ namespace Companions
 
         // Combat: intercept prediction (lead running targets) + circling
         // Tuned to match RenegadeVikings/MonsterAI combat feel.
-        private const float InterceptTime = 2f;            // seconds of velocity to lead by (was 1.5)
+        private float _interceptTime = 2f;                 // randomized per-instance in Awake (1.5–2.5s)
         private const float CircleInterval = 3f;           // seconds between circle repositions (was 4)
         private const float CircleDuration = 2f;           // seconds spent circling per cycle
         private const float CircleDistance = 5f;            // radius of circle around target (was 4.5)
@@ -306,6 +306,9 @@ namespace Companions
             // Setup wake delay
             if (m_wakeUpDelayMin > 0f || m_wakeUpDelayMax > 0f)
                 m_sleepDelay = UnityEngine.Random.Range(m_wakeUpDelayMin, m_wakeUpDelayMax);
+
+            // Randomize intercept time for organic feel (matches MonsterAI)
+            _interceptTime = UnityEngine.Random.Range(1.5f, 2.5f);
 
             // Register sleep RPCs
             m_nview.Register("RPC_Wakeup", new Action<long>(RPC_Wakeup));
@@ -450,6 +453,13 @@ namespace Companions
         /// avoid pushing toward unreachable targets.
         /// </summary>
         internal bool IsNavMeshFailing => _inContextSteerFallback || _navClaimedDoneCount > 0;
+
+        /// <summary>
+        /// True only during the brief NavMesh retry phase (claimed done but still far).
+        /// Unlike IsNavMeshFailing, this does NOT include ctx-steer fallback — ctx-steer
+        /// is active navigation and should not be suppressed by callers.
+        /// </summary>
+        internal bool IsNavMeshRetrying => _navClaimedDoneCount > 0;
 
         // Logging throttle — context steer decisions are per-frame, throttle to every 2s
         private float _ctxLogTimer;
@@ -2587,9 +2597,9 @@ namespace Companions
                         Vector3 targetVel = m_targetCreature.GetVelocity();
                         if (targetVel.magnitude > 0.5f)
                         {
-                            float interceptMag = targetVel.magnitude * InterceptTime;
+                            float interceptMag = targetVel.magnitude * _interceptTime;
                             if (dist > interceptMag * 0.25f)
-                                moveTarget += targetVel * InterceptTime;
+                                moveTarget += targetVel * _interceptTime;
                         }
                     }
 
@@ -3026,6 +3036,7 @@ namespace Companions
         ///
         /// Triggers:
         /// - In tar (always dangerous)
+        /// - In lava (always dangerous)
         /// - Swimming AND stamina below 30% (drowning risk)
         /// - Swimming AND health below 50% (taking heavy damage)
         /// - Swimming for 5+ continuous seconds without a follow target in water
@@ -3036,6 +3047,7 @@ namespace Companions
         private bool UpdateHazardRecovery(float dt)
         {
             bool inTar = m_character.GetSEMan().HaveStatusEffect(s_taredHash);
+            bool inLava = m_character.InLava();
             bool isSwimming = m_character.IsSwimming();
 
             // Proactive water escape — trigger BEFORE stamina runs out
@@ -3081,7 +3093,7 @@ namespace Companions
                 }
             }
 
-            if (!inTar && !waterDanger)
+            if (!inTar && !waterDanger && !inLava)
             {
                 _hazardRecoveryTimer = 0f;
                 return false;
@@ -3092,7 +3104,7 @@ namespace Companions
             // Log periodically (every 2s)
             if (_hazardRecoveryTimer < 0.1f || (int)(_hazardRecoveryTimer * 10) % 20 == 0)
             {
-                string hazard = inTar ? "TAR" : waterReason;
+                string hazard = inTar ? "TAR" : (inLava ? "LAVA" : waterReason);
                 CompanionsPlugin.Log.LogDebug(
                     $"[AI] Hazard recovery — {hazard} — seeking land " +
                     $"(t={_hazardRecoveryTimer:F1}s swimT={_continuousSwimTimer:F1}s) " +

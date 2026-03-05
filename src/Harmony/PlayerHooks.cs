@@ -37,6 +37,9 @@ namespace Companions
             { __result = false; return; }
             var radial = CompanionRadialMenu.Instance;
             if (radial != null && radial.IsVisible)
+            { __result = false; return; }
+            var hz = HomeZonePanel.Instance;
+            if (hz != null && hz.IsVisible)
                 __result = false;
         }
     }
@@ -62,6 +65,9 @@ namespace Companions
             { __result = false; return; }
             var radial = CompanionRadialMenu.Instance;
             if (radial != null && radial.IsVisible)
+            { __result = false; return; }
+            var hz = HomeZonePanel.Instance;
+            if (hz != null && hz.IsVisible)
                 __result = false;
         }
     }
@@ -81,6 +87,9 @@ namespace Companions
             { __result = true; return; }
             var cfg = ConfigPanel.Instance;
             if (cfg != null && cfg.IsVisible)
+            { __result = true; return; }
+            var hz = HomeZonePanel.Instance;
+            if (hz != null && hz.IsVisible)
                 __result = true;
         }
     }

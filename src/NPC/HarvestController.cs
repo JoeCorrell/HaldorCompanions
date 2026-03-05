@@ -38,6 +38,15 @@ namespace Companions
         private int          _consecutiveFailures; // consecutive StartAttack failures (not animation-blocked)
         private bool         _reapproach;      // true = return to Moving used tighter approach distance
         private bool         _shouldRun;       // run decision from UpdateMoving — LateUpdate respects this
+        private Vector3      _lockedMoveTarget;   // cached target pos for current Moving phase
+        private bool         _moveTargetLocked;   // when true, use _lockedMoveTarget not live ClosestPoint
+        private Vector3      _attackNodePos;       // MineRock5: position of active node when Attacking started
+        private Vector3      _lockedAttackFaceTarget; // stable facing point for rock targets during Attacking
+        private bool         _attackFaceLocked;
+        private int          _claimedTargetId;     // GetInstanceID() of currently claimed target, or 0
+
+        // Shared across all HarvestController instances — prevents multiple companions targeting same resource
+        private static readonly HashSet<int> s_claimedTargets = new HashSet<int>();
         private float        _selfDefenseLogTimer;
         private bool         _wasInSelfDefense;  // true last frame when combat target was present
         private ItemDrop.ItemData _pendingToolReequip; // deferred equip when EquipItem fails mid-animation
@@ -411,8 +420,10 @@ namespace Companions
             _targetType = ClassifyTargetType(target, harvestMode);
             _state = State_Moving;
             _moveTimer = 0f;
+            _moveTargetLocked = false;
             _swingCount = 0;
             _totalAttempts = 0;
+            ClaimTarget();
             _scanTimer = ScanInterval; // don't auto-scan while directed
 
             // Equip the right tool
@@ -530,6 +541,9 @@ namespace Companions
             _reapproach    = false;
             _scanTimer     = 0f;
             _pendingToolReequip = null;
+            _moveTargetLocked = false;
+            _attackFaceLocked = false;
+            UnclaimTarget();
 
             // If this was a directed harvest, clean up and restore loadout
             if (_isDirectedHarvest)
@@ -604,6 +618,7 @@ namespace Companions
                 _targetType = "Pickable";
                 _swingCount = 0;
                 _totalAttempts = 0;
+                ClaimTarget();
             }
             else
             {
@@ -628,6 +643,7 @@ namespace Companions
                 _swingCount = 0;
                 _totalAttempts = 0;
                 EquipTool(tool);
+                ClaimTarget();
             }
 
             // Clear follow target — HarvestController owns movement exclusively
@@ -642,6 +658,8 @@ namespace Companions
 
             _moveTimer = 0f;
             _moveLogTimer = 0f;
+            _moveTargetLocked = false;
+            _attackFaceLocked = false;
             _state = State_Moving;
         }
 
@@ -705,7 +723,18 @@ namespace Companions
 
             bool isForage = _targetType == "Pickable";
             float range = isForage ? 1.5f : GetAttackRange();
-            Vector3 targetPos = GetEffectiveTargetPosition();
+
+            // Cache the target position for the duration of this Moving phase.
+            // GetEffectiveTargetPosition() uses Collider.ClosestPoint, which shifts
+            // each frame as the companion moves around the rock — this causes NavMesh
+            // to continuously recalculate the path, making the companion oscillate
+            // left-right near mineral rocks (MineRock5/MineRock).
+            if (!_moveTargetLocked)
+            {
+                _lockedMoveTarget = GetEffectiveTargetPosition();
+                _moveTargetLocked = true;
+            }
+            Vector3 targetPos = _lockedMoveTarget;
             float distToTarget = Vector3.Distance(transform.position, targetPos);
 
             // Use MoveToPoint (pathfinding) for all distances. This handles
@@ -718,6 +747,7 @@ namespace Companions
             // get genuinely close to the target.
             float moveGoal;
             bool runToTarget;
+            bool rockLikeTarget = IsRockLikeTarget();
             if (isForage)
             {
                 moveGoal = 1.2f;           // tight arrival for picking
@@ -734,6 +764,15 @@ namespace Companions
                 // Walk when within 8m to avoid overshooting low targets
                 runToTarget = distToTarget > 8f;
             }
+            else if (rockLikeTarget)
+            {
+                // Rocks are frequently "reachable but not center-reachable". Asking MoveToPoint
+                // for a very tight stop (<1m) causes repeated NavMesh-done retries and ping-pong.
+                // Use range - 0.2f so that NavMesh's natural overstopping (~0.1-0.3m) lands the
+                // companion inside weapon range rather than outside it (prevents digging into ground).
+                moveGoal = range - 0.2f;
+                runToTarget = distToTarget > 6f;
+            }
             else
             {
                 moveGoal = range * 0.5f;
@@ -745,21 +784,29 @@ namespace Companions
             _shouldRun = runToTarget;
             bool moveResult = _ai.MoveToPoint(dt, targetPos, moveGoal, runToTarget);
 
-            // When navmesh genuinely can't path to the target (ctx-steer or "claimed
-            // done" retries active), don't push directly — stop and let the MoveTimeout
-            // blacklist the target. Pushing against walls makes the companion look broken.
-            if (_ai.IsNavMeshFailing)
+            // When navmesh is retrying (claimed done but still far), stop and wait —
+            // the tiles may not be built yet and ctx-steer hasn't activated yet.
+            // Do NOT stop during ctx-steer fallback — ctx-steer IS the wall avoidance
+            // and calling StopMoving() on the same frame cancels its MoveTowards output.
+            if (_ai.IsNavMeshRetrying)
             {
                 _ai.StopMoving();
             }
-            // Pathfinding failed at close range — fall back to direct walk push.
-            // This handles cases where the navmesh has gaps near the target.
-            else if (!moveResult && distToTarget < 4f)
+            // Direct walk push — only when NavMesh is NOT actively handling navigation
+            // (ctx-steer or retry state) AND the companion isn't already moving.
+            // Guarding with IsNavMeshFailing prevents overriding ctx-steer's direction;
+            // guarding with vel < 1f prevents overriding a live NavMesh path that curves
+            // around small terrain rocks (which would cause left-right oscillation).
+            else if (!moveResult && distToTarget < 4f && !_ai.IsNavMeshFailing)
             {
-                Vector3 dir = (targetPos - transform.position);
-                dir.y = 0f;
-                if (dir.sqrMagnitude > 0.01f)
-                    _ai.MoveTowards(dir.normalized, false);
+                float pushVel = _character?.GetVelocity().magnitude ?? 0f;
+                if (pushVel < 1f)
+                {
+                    Vector3 dir = (targetPos - transform.position);
+                    dir.y = 0f;
+                    if (dir.sqrMagnitude > 0.01f)
+                        _ai.MoveTowards(dir.normalized, false);
+                }
             }
             // Pathfinding "completed" but we haven't actually arrived — height
             // differences or navmesh edges cause MoveTo to return true while the
@@ -824,10 +871,22 @@ namespace Companions
             if (distToTarget <= arrivalDist || horizDist <= arrivalDist)
             {
                 if (_ai != null) _ai.StopMoving();
+                if (rockLikeTarget)
+                {
+                    _lockedAttackFaceTarget = targetPos;
+                    _attackFaceLocked = true;
+                }
+                else
+                {
+                    _attackFaceLocked = false;
+                }
                 FaceTarget();
                 _reapproach = false;  // consumed
                 _attackTimer = 0.3f; // brief pause before first swing
                 _state = State_Attacking;
+                // Cache the active node position so we detect when it dies (node shifts > 1.5m)
+                if (_targetType == "MineRock5")
+                    _attackNodePos = GetEffectiveTargetPosition();
 
                 Log($"ARRIVED at \"{_target.name}\" dist={distToTarget:F1}m " +
                     $"(threshold={arrivalDist:F1} isLow={isLow}) — switching to Attacking");
@@ -859,7 +918,7 @@ namespace Companions
             // Follow() stops at ~3m but weapon range is ~2.2m — the gap means
             // small targets get missed. LateUpdate overrides Follow's StopMoving.
             // After 2+ swings (likely whiffing), get much more aggressive about closing distance.
-            if (_state == State_Attacking && _target != null && _ai != null)
+            if (_state == State_Attacking && _target != null && _ai != null && IsLowTarget())
             {
                 Vector3 effectivePos = GetEffectiveTargetPosition();
                 float dist = Vector3.Distance(transform.position, effectivePos);
@@ -919,6 +978,28 @@ namespace Companions
                 Log($"Target DESTROYED after {_swingCount} hits, {_totalAttempts} attempts " +
                     $"— entering drop collection");
                 _lastDestroyPos = transform.position;
+
+                // Tree just fell — try to immediately claim the spawned log before
+                // another companion's next scan can grab it.
+                if (_targetType == "TreeBase")
+                {
+                    var log = TryFindNearbyLog(transform.position);
+                    if (log != null && !s_claimedTargets.Contains(log.GetInstanceID()))
+                    {
+                        UnclaimTarget();
+                        _target = log;
+                        _targetType = ClassifyTargetType(log, CompanionSetup.ModeGatherWood);
+                        _swingCount = 0; _totalAttempts = 0;
+                        ClaimTarget();
+                        _moveTargetLocked = false;
+                        _moveTimer = 0f;
+                        _state = State_Moving;
+                        Log($"Tree fell — immediately targeting fallen log \"{log.name}\"");
+                        if (_ai != null) _ai.StopMoving();
+                        return;
+                    }
+                }
+
                 _currentDrop = null;
                 _dropTimer = 0f;
                 _dropScanDelayTimer = DropScanDelay;
@@ -944,8 +1025,10 @@ namespace Companions
                 Log($"Too far from target: dist={dist:F1}m " +
                     $"(range={range:F1} + 1.5) — returning to Moving state");
                 _reapproach = true;
+                _attackFaceLocked = false;
                 _moveTimer = 0f;
                 _moveLogTimer = 0f;
+                _moveTargetLocked = false;
                 _state = State_Moving;
                 return;
             }
@@ -1028,6 +1111,23 @@ namespace Companions
             {
                 _swingCount++;
                 _consecutiveFailures = 0;
+
+                // MineRock5: detect when the active node dies (effective position shifts
+                // significantly = that node was destroyed, next closest node is elsewhere).
+                if (_targetType == "MineRock5" && _target != null)
+                {
+                    Vector3 nowNode = GetEffectiveTargetPosition();
+                    if (Vector3.Distance(nowNode, _attackNodePos) > 1.5f)
+                    {
+                        Log("MineRock5 node destroyed — repositioning to next node");
+                        _reapproach = true;
+                        _attackFaceLocked = false;
+                        _moveTimer = 0f; _moveLogTimer = 0f; _moveTargetLocked = false;
+                        _attackNodePos = nowNode;
+                        _state = State_Moving;
+                        return;
+                    }
+                }
             }
             else
             {
@@ -1039,9 +1139,11 @@ namespace Companions
                     LogWarn($"Re-approach — {_consecutiveFailures} consecutive attack failures at dist={dist:F1}m " +
                         $"range={range:F1} — moving closer");
                     _reapproach = true;
+                    _attackFaceLocked = false;
                     _consecutiveFailures = 0;
                     _moveTimer = 0f;
                     _moveLogTimer = 0f;
+                    _moveTargetLocked = false;
                     _state = State_Moving;
                     return;
                 }
@@ -1059,8 +1161,10 @@ namespace Companions
                 LogWarn($"Re-approach — {_swingCount} swings without destroy at dist={dist:F1}m " +
                     $"range={range:F1} — moving closer");
                 _reapproach = true;
+                _attackFaceLocked = false;
                 _moveTimer = 0f;
                 _moveLogTimer = 0f;
+                _moveTargetLocked = false;
                 _state = State_Moving;
                 return;
             }
@@ -1285,6 +1389,7 @@ namespace Companions
             _currentDrop = null;
             _state = State_Idle;
             _scanTimer = 0f; // scan immediately for next harvest target
+            UnclaimTarget();
 
             // Restore follow target based on Follow toggle
             bool follow = _setup != null && _setup.GetFollow();
@@ -1358,12 +1463,16 @@ namespace Companions
                     continue;
                 }
 
-                // StayHome leash: skip targets beyond 50m from home position
+                // Skip targets already claimed by another companion
+                if (s_claimedTargets.Contains(candidate.GetInstanceID())) continue;
+
+                // StayHome leash: skip targets outside the configured home zone radius
                 if (_setup != null && _setup.GetStayHome() && _setup.HasHomePosition())
                 {
                     float distFromHome = Vector3.Distance(
                         _setup.GetHomePosition(), candidate.transform.position);
-                    if (distFromHome > 50f) continue;
+                    float homeRadius = _setup.GetHomeRadius();
+                    if (distFromHome > homeRadius) continue;
                 }
 
                 // Player leash: skip targets beyond 40m from the player
@@ -1820,7 +1929,9 @@ namespace Companions
 
         private bool IsCompanionUIOpen()
         {
-            return CompanionInteractPanel.IsOpenFor(_setup) || CompanionRadialMenu.IsOpenFor(_setup);
+            return CompanionInteractPanel.IsOpenFor(_setup)
+                || CompanionRadialMenu.IsOpenFor(_setup)
+                || HomeZonePanel.IsOpenFor(_setup);
         }
 
         private float GetCurrentWeight()
@@ -1924,11 +2035,24 @@ namespace Companions
             return "Unknown";
         }
 
+        private bool IsRockLikeTarget()
+        {
+            return _targetType == "MineRock5" || _targetType == "MineRock" || _targetType == "Destructible";
+        }
+
         private void FaceTarget()
         {
             if (_target == null) return;
-            Vector3 dir = GetEffectiveTargetPosition() - transform.position;
+            Vector3 facePoint = (_state == State_Attacking && _attackFaceLocked && IsRockLikeTarget())
+                ? _lockedAttackFaceTarget
+                : GetEffectiveTargetPosition();
+            Vector3 dir = facePoint - transform.position;
             dir.y = 0f;
+            if (dir.sqrMagnitude <= 0.01f)
+            {
+                dir = _target.transform.position - transform.position;
+                dir.y = 0f;
+            }
             if (dir.sqrMagnitude > 0.01f)
                 transform.rotation = Quaternion.LookRotation(dir);
         }
@@ -2005,6 +2129,46 @@ namespace Companions
                     $"slash={dmg.m_slash:F0} pierce={dmg.m_pierce:F0} " +
                     $"equipped={_humanoid.IsItemEquiped(item)}");
             }
+        }
+
+        // ── Target claim helpers ────────────────────────────────────────────
+
+        /// <summary>
+        /// Claims _target so other companions skip it during their scan.
+        /// Releases any previously held claim first.
+        /// </summary>
+        private void ClaimTarget()
+        {
+            UnclaimTarget();
+            _claimedTargetId = _target?.GetInstanceID() ?? 0;
+            if (_claimedTargetId != 0) s_claimedTargets.Add(_claimedTargetId);
+        }
+
+        private void UnclaimTarget()
+        {
+            if (_claimedTargetId != 0)
+            {
+                s_claimedTargets.Remove(_claimedTargetId);
+                _claimedTargetId = 0;
+            }
+        }
+
+        /// <summary>
+        /// Scans for a recently spawned TreeLog near the given position (tree just fell).
+        /// Uses the shared _scanBuffer to avoid allocation.
+        /// </summary>
+        private GameObject TryFindNearbyLog(Vector3 center)
+        {
+            int count = Physics.OverlapSphereNonAlloc(center, 12f, _scanBuffer);
+            for (int i = 0; i < count; i++)
+            {
+                if (_scanBuffer[i] == null) continue;
+                var go = _scanBuffer[i].gameObject;
+                if (go.GetComponent<TreeLog>() == null) continue;
+                if (_blacklist.ContainsKey(go.GetInstanceID())) continue;
+                return go;
+            }
+            return null;
         }
 
         // ── Logging helpers with per-companion tag ─────────────────────────

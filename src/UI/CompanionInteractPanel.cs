@@ -107,6 +107,12 @@ namespace Companions
         private TMP_Text _weightText;
         private TMP_Text _armorText;
 
+        // Home zone radius slider (only visible when StayHome is enabled)
+        private GameObject      _homeZoneRow;
+        private Slider          _homeRadiusSlider;
+        private TextMeshProUGUI _homeRadiusLabel;
+        private HomeZoneVisual  _homeZoneVisual;
+
         private bool _built;
         private bool _visible;
         private bool _builtForDverger;
@@ -346,6 +352,9 @@ namespace Companions
 
             UpdateGrid();
 
+            // Update home zone slider visibility and visual ring
+            UpdateHomeZoneUI();
+
             // Inject our UIGroupHandler into vanilla's group system for gamepad support
             InjectGamepadGroups();
         }
@@ -370,6 +379,9 @@ namespace Companions
             CompanionsPlugin.Log.LogInfo(
                 $"[UI] HideInternal reason={reason} closeGui={closeInventoryGuiIfNoTakeover} " +
                 $"companionContainer={ContainerName(_companionContainer)}");
+
+            // Hide home zone visual ring
+            _homeZoneVisual?.Hide();
 
             // Restore vanilla gamepad groups before hiding
             RestoreGamepadGroups();
@@ -599,6 +611,9 @@ namespace Companions
 
             // Build food slots at the bottom (expand panel height to fit)
             BuildFoodSlots();
+
+            // Build home zone radius slider (below food slots)
+            BuildHomeZoneSlider();
 
             // Fix any broken TMP fonts in the cloned hierarchy
             TMP_FontAsset font = GetFont();
@@ -889,6 +904,145 @@ namespace Companions
         // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
         //  Weight & armor display
         // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+
+        private void BuildHomeZoneSlider()
+        {
+            TMP_FontAsset font = GetFont();
+            float rowH = 28f;
+
+            // Expand panel to make room
+            var rootRT = _root.GetComponent<RectTransform>();
+            if (rootRT != null)
+            {
+                var sd = rootRT.sizeDelta;
+                sd.y += rowH + 4f;
+                rootRT.sizeDelta = sd;
+            }
+
+            // Row container anchored to bottom of panel
+            _homeZoneRow = new GameObject("HomeZoneRow", typeof(RectTransform));
+            _homeZoneRow.transform.SetParent(_root.transform, false);
+            var rowRT = _homeZoneRow.GetComponent<RectTransform>();
+            rowRT.anchorMin = new Vector2(0f, 0f);
+            rowRT.anchorMax = new Vector2(1f, 0f);
+            rowRT.pivot     = new Vector2(0.5f, 0f);
+            rowRT.sizeDelta = new Vector2(-20f, rowH);
+            rowRT.anchoredPosition = new Vector2(0f, 2f);
+
+            // Label: "Home zone: XXm"
+            var labelGO = new GameObject("HomeRadiusLabel", typeof(RectTransform));
+            labelGO.transform.SetParent(_homeZoneRow.transform, false);
+            _homeRadiusLabel = labelGO.AddComponent<TextMeshProUGUI>();
+            if (font != null) _homeRadiusLabel.font = font;
+            _homeRadiusLabel.text      = "Home zone: 50m";
+            _homeRadiusLabel.fontSize  = 12f;
+            _homeRadiusLabel.color     = new Color(1f, 0.9f, 0.5f, 1f);
+            _homeRadiusLabel.alignment = TextAlignmentOptions.Left;
+            _homeRadiusLabel.raycastTarget = false;
+            var lblRT = labelGO.GetComponent<RectTransform>();
+            lblRT.anchorMin = new Vector2(0f, 0f);
+            lblRT.anchorMax = new Vector2(0.35f, 1f);
+            lblRT.offsetMin = Vector2.zero;
+            lblRT.offsetMax = Vector2.zero;
+
+            // Slider GO
+            var sliderGO = new GameObject("HomeRadiusSlider", typeof(RectTransform));
+            sliderGO.transform.SetParent(_homeZoneRow.transform, false);
+
+            // Background track
+            var bgGO = new GameObject("Background", typeof(RectTransform), typeof(Image));
+            bgGO.transform.SetParent(sliderGO.transform, false);
+            bgGO.GetComponent<Image>().color = new Color(0.15f, 0.15f, 0.15f, 0.6f);
+            var bgRT = bgGO.GetComponent<RectTransform>();
+            bgRT.anchorMin = Vector2.zero; bgRT.anchorMax = Vector2.one;
+            bgRT.offsetMin = new Vector2(0f, 10f); bgRT.offsetMax = new Vector2(0f, -10f);
+
+            // Fill area + fill image
+            var fillAreaGO = new GameObject("Fill Area", typeof(RectTransform));
+            fillAreaGO.transform.SetParent(sliderGO.transform, false);
+            var fillAreaRT = fillAreaGO.GetComponent<RectTransform>();
+            fillAreaRT.anchorMin = Vector2.zero; fillAreaRT.anchorMax = Vector2.one;
+            fillAreaRT.offsetMin = new Vector2(5f, 10f); fillAreaRT.offsetMax = new Vector2(-5f, -10f);
+
+            var fillGO = new GameObject("Fill", typeof(RectTransform), typeof(Image));
+            fillGO.transform.SetParent(fillAreaGO.transform, false);
+            fillGO.GetComponent<Image>().color = new Color(1f, 0.85f, 0.2f, 0.7f);
+            var fillRT = fillGO.GetComponent<RectTransform>();
+            fillRT.anchorMin = Vector2.zero; fillRT.anchorMax = new Vector2(0f, 1f);
+            fillRT.offsetMin = Vector2.zero; fillRT.offsetMax = Vector2.zero;
+
+            // Handle slide area + handle
+            var handleAreaGO = new GameObject("Handle Slide Area", typeof(RectTransform));
+            handleAreaGO.transform.SetParent(sliderGO.transform, false);
+            var handleAreaRT = handleAreaGO.GetComponent<RectTransform>();
+            handleAreaRT.anchorMin = Vector2.zero; handleAreaRT.anchorMax = Vector2.one;
+            handleAreaRT.offsetMin = new Vector2(5f, 8f); handleAreaRT.offsetMax = new Vector2(-5f, -8f);
+
+            var handleGO = new GameObject("Handle", typeof(RectTransform), typeof(Image));
+            handleGO.transform.SetParent(handleAreaGO.transform, false);
+            var handleImg = handleGO.GetComponent<Image>();
+            handleImg.color = new Color(1f, 0.95f, 0.6f, 1f);
+            var handleRT = handleGO.GetComponent<RectTransform>();
+            handleRT.sizeDelta = new Vector2(10f, 0f);
+            handleRT.anchorMin = new Vector2(0f, 0f); handleRT.anchorMax = new Vector2(0f, 1f);
+
+            _homeRadiusSlider = sliderGO.AddComponent<Slider>();
+            _homeRadiusSlider.fillRect      = fillRT;
+            _homeRadiusSlider.handleRect    = handleRT;
+            _homeRadiusSlider.targetGraphic = handleImg;
+            _homeRadiusSlider.direction     = Slider.Direction.LeftToRight;
+            _homeRadiusSlider.minValue      = 5f;
+            _homeRadiusSlider.maxValue      = 200f;
+            _homeRadiusSlider.wholeNumbers  = true;
+            _homeRadiusSlider.value         = ModConfig.HomeZoneRadius.Value;
+
+            var sliderRT = sliderGO.GetComponent<RectTransform>();
+            sliderRT.anchorMin = new Vector2(0.35f, 0f);
+            sliderRT.anchorMax = new Vector2(1f, 1f);
+            sliderRT.offsetMin = Vector2.zero;
+            sliderRT.offsetMax = Vector2.zero;
+
+            _homeRadiusSlider.onValueChanged.AddListener(OnHomeRadiusChanged);
+
+            // Start hidden — only shown when StayHome is active
+            _homeZoneRow.SetActive(false);
+        }
+
+        private void OnHomeRadiusChanged(float value)
+        {
+            if (_companion == null) return;
+            _companion.SetHomeRadius(value);
+            if (_homeRadiusLabel != null)
+                _homeRadiusLabel.text = $"Home zone: {value:F0}m";
+            if (_homeZoneVisual != null && _companion.HasHomePosition())
+                _homeZoneVisual.Show(_companion.GetHomePosition(), value);
+        }
+
+        private void UpdateHomeZoneUI()
+        {
+            if (_companion == null || _homeZoneRow == null) return;
+
+            bool showRow = _companion.GetStayHome() && _companion.HasHomePosition();
+            _homeZoneRow.SetActive(showRow);
+
+            if (showRow)
+            {
+                float radius = _companion.GetHomeRadius();
+                if (_homeRadiusSlider != null)
+                    _homeRadiusSlider.SetValueWithoutNotify(radius);
+                if (_homeRadiusLabel != null)
+                    _homeRadiusLabel.text = $"Home zone: {radius:F0}m";
+
+                if (_homeZoneVisual == null)
+                    _homeZoneVisual = _companion.gameObject.GetComponent<HomeZoneVisual>()
+                        ?? _companion.gameObject.AddComponent<HomeZoneVisual>();
+                _homeZoneVisual.Show(_companion.GetHomePosition(), radius);
+            }
+            else
+            {
+                _homeZoneVisual?.Hide();
+            }
+        }
 
         private void BuildWeightAndArmor(InventoryGui gui)
         {

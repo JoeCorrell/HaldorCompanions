@@ -24,9 +24,10 @@ namespace Companions
         internal static readonly int WanderHash = StringExtensionMethods.GetStableHashCode("HC_Wander");
         internal static readonly int FormationSlotHash = StringExtensionMethods.GetStableHashCode("HC_FormationSlot");
         internal static readonly int IsCommandableHash = StringExtensionMethods.GetStableHashCode("HC_IsCommandable");
-        internal static readonly int StayHomeHash  = StringExtensionMethods.GetStableHashCode("HC_StayHome");
-        internal static readonly int HomePosHash    = StringExtensionMethods.GetStableHashCode("HC_HomePos");
-        internal static readonly int HomePosSetHash = StringExtensionMethods.GetStableHashCode("HC_HomePosSet");
+        internal static readonly int StayHomeHash    = StringExtensionMethods.GetStableHashCode("HC_StayHome");
+        internal static readonly int HomePosHash     = StringExtensionMethods.GetStableHashCode("HC_HomePos");
+        internal static readonly int HomePosSetHash  = StringExtensionMethods.GetStableHashCode("HC_HomePosSet");
+        internal static readonly int HomeRadiusHash  = StringExtensionMethods.GetStableHashCode("HC_HomeRadius");
         private  static readonly int StarterGearHash = StringExtensionMethods.GetStableHashCode("HC_StarterGear");
         internal static readonly int FollowHash     = StringExtensionMethods.GetStableHashCode("HC_Follow");
         internal static readonly int CombatStanceHash = StringExtensionMethods.GetStableHashCode("HC_CombatStance");
@@ -1320,6 +1321,13 @@ namespace Companions
             }
             return false;
         }
+
+        internal float GetHomeRadius() =>
+            _nview?.GetZDO()?.GetFloat(HomeRadiusHash, ModConfig.HomeZoneRadius.Value)
+            ?? ModConfig.HomeZoneRadius.Value;
+
+        internal void SetHomeRadius(float r) =>
+            _nview?.GetZDO()?.Set(HomeRadiusHash, Mathf.Clamp(r, 5f, 200f));
 
         /// <summary>
         /// Returns false for Dverger companions — they cannot equip armor.
