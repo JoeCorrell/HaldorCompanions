@@ -89,7 +89,6 @@ namespace Companions
             public string Name;
             public string AppearanceSerialized;
             public string OwnerId;
-            public int CombatStance;
             public int ActionMode;
             public int ActionModeSchema;
             public bool Follow;
@@ -220,7 +219,6 @@ namespace Companions
             zdo.Set(CompanionSetup.AppearanceHash, data.AppearanceSerialized);
             zdo.Set(CompanionSetup.OwnerHash, data.OwnerId);
             zdo.Set(CompanionSetup.NameHash, data.Name);
-            zdo.Set(CompanionSetup.CombatStanceHash, data.CombatStance);
             zdo.Set(CompanionSetup.TombstoneIdHash, data.TombstoneId);
             // Restore companion settings from before death
             zdo.Set(CompanionSetup.FollowHash, data.Follow);

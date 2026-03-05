@@ -24,7 +24,6 @@ namespace Companions
         private ZNetView         _nview;
         private ZSyncAnimation   _zanim;
         private CompanionTalk    _talk;
-        private CombatController  _combat;
         private HarvestController _harvest;
         private DoorHandler       _doorHandler;
         private SmeltController   _smelt;
@@ -69,7 +68,6 @@ namespace Companions
             _nview     = GetComponent<ZNetView>();
             _zanim     = GetComponent<ZSyncAnimation>();
             _talk      = GetComponent<CompanionTalk>();
-            _combat      = GetComponent<CombatController>();
             _harvest     = GetComponent<HarvestController>();
             _doorHandler = GetComponent<DoorHandler>();
             _smelt       = GetComponent<SmeltController>();
@@ -450,8 +448,8 @@ namespace Companions
 
         private bool ShouldAbort()
         {
-            // Skip during active combat
-            if (_combat != null && _combat.Phase != CombatController.CombatPhase.Idle)
+            // Skip during combat — combat AI owns movement
+            if (_ai != null && _ai.IsInCombat)
                 return true;
 
             // Skip during active harvest (moving/attacking/collecting, not idle scanning)

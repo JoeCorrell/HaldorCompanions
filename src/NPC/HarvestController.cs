@@ -47,8 +47,6 @@ namespace Companions
 
         // Shared across all HarvestController instances — prevents multiple companions targeting same resource
         private static readonly HashSet<int> s_claimedTargets = new HashSet<int>();
-        private float        _selfDefenseLogTimer;
-        private bool         _wasInSelfDefense;  // true last frame when combat target was present
         private ItemDrop.ItemData _pendingToolReequip; // deferred equip when EquipItem fails mid-animation
 
         // ── Directed harvest (one-shot from hotkey, works outside gather mode) ─
@@ -225,6 +223,10 @@ namespace Companions
             }
             _overweightMsgTimer -= Time.deltaTime;
 
+            // Pause harvesting while combat AI is active — it owns movement
+            if (_ai != null && _ai.IsInCombat)
+                return;
+
             // Pause harvesting while UI is open — companion should stand still
             if (IsCompanionUIOpen())
             {
@@ -238,74 +240,6 @@ namespace Companions
             {
                 _heartbeatTimer = HeartbeatInterval;
                 LogHeartbeat();
-            }
-
-            // Check for nearby enemies — if any are close, pause gathering and
-            // let CombatController handle self-defense. Must match TargetPatches
-            // SelfDefenseRange so the two systems agree.
-            if (_ai != null && _character != null)
-            {
-                var creature = _ai.m_targetCreature;
-
-                // Detect dead enemies that IsDead() hasn't caught yet (hp=0, m_dead not set)
-                if (creature != null && !creature.IsDead() && creature.GetHealth() <= 0f)
-                {
-                    Log($"DEAD ENEMY detected by health guard — \"{creature.m_name}\" " +
-                        $"isDead=False hp={creature.GetHealth():F0} — clearing target");
-                    _ai.ClearTargets();
-                    creature = null; // fall through to resume harvest
-                }
-
-                if (creature != null && !creature.IsDead() && creature.GetHealth() > 0f)
-                {
-                    // CompanionAI has a target — let combat handle it, pause harvest
-                    float enemyDist = Vector3.Distance(transform.position, creature.transform.position);
-                    if (enemyDist < 10f)
-                    {
-                        // Throttle this log — fires every frame during combat
-                        _selfDefenseLogTimer -= Time.deltaTime;
-                        if (_selfDefenseLogTimer <= 0f)
-                        {
-                            _selfDefenseLogTimer = 3f;
-                            Log($"SELF-DEFENSE — pausing harvest state={_state} enemy \"{creature.m_name}\" " +
-                                $"at {enemyDist:F1}m — CombatController will engage");
-                        }
-                        _wasInSelfDefense = true;
-                        // Don't clear the target! Let combat run.
-                        return;
-                    }
-                    else
-                    {
-                        // Enemy is far away — clear and continue gathering
-                        Log($"Clearing distant combat target \"{creature.m_name}\" " +
-                            $"dist={enemyDist:F1}m — too far for self-defense");
-                        _ai.ClearTargets();
-                    }
-                }
-
-                // Log when transitioning back from self-defense to harvest
-                if (_wasInSelfDefense)
-                {
-                    _wasInSelfDefense = false;
-
-                    // Clear alert state — m_alerted persists after enemies die and causes
-                    // CompanionAI.UpdateAI to override movement with alert-scanning behavior,
-                    // preventing the companion from reaching harvest targets.
-                    _ai.SetAlerted(false);
-
-                    var rightItem = ReflectionHelper.GetRightItem(_humanoid);
-                    Log($"SELF-DEFENSE ended — resuming harvest state={_state} " +
-                        $"tool=\"{rightItem?.m_shared?.m_name ?? "NONE"}\" " +
-                        $"toolEquipped={_toolEquipped} suppress={_setup?.SuppressAutoEquip ?? false}");
-                }
-
-                // Also clear static targets that might have been set
-                var staticT = _ai.m_targetStatic;
-                if (staticT != null)
-                {
-                    Log($"Clearing static combat target \"{staticT.name}\"");
-                    _ai.m_targetStatic = null;
-                }
             }
 
             switch (_state)

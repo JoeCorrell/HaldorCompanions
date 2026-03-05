@@ -226,10 +226,9 @@ namespace Companions
 
         private bool ShouldAbort()
         {
-            if (CompanionInteractPanel.IsOpenFor(_setup) || CompanionRadialMenu.IsOpenFor(_setup))
+            if (_ai != null && _ai.IsInCombat)
                 return true;
-            var combat = GetComponent<CombatController>();
-            if (combat != null && combat.Phase != CombatController.CombatPhase.Idle)
+            if (CompanionInteractPanel.IsOpenFor(_setup) || CompanionRadialMenu.IsOpenFor(_setup))
                 return true;
             return false;
         }

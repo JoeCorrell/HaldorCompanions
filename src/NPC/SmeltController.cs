@@ -1370,13 +1370,12 @@ namespace Companions
 
         private bool ShouldAbort()
         {
-            // UI open — pause
-            if (CompanionInteractPanel.IsOpenFor(_setup) || CompanionRadialMenu.IsOpenFor(_setup))
+            // Combat AI owns movement
+            if (_ai != null && _ai.IsInCombat)
                 return true;
 
-            // Active combat
-            var combat = GetComponent<CombatController>();
-            if (combat != null && combat.Phase != CombatController.CombatPhase.Idle)
+            // UI open — pause
+            if (CompanionInteractPanel.IsOpenFor(_setup) || CompanionRadialMenu.IsOpenFor(_setup))
                 return true;
 
             return false;

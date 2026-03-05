@@ -41,7 +41,6 @@ namespace Companions
         private ZNetView          _nview;
         private ZSyncAnimation    _zanim;
         private CompanionTalk     _talk;
-        private CombatController  _combat;
         private HarvestController _harvest;
         private RepairController  _repair;
         private SmeltController   _smelt;
@@ -124,7 +123,6 @@ namespace Companions
             _nview     = GetComponent<ZNetView>();
             _zanim     = GetComponent<ZSyncAnimation>();
             _talk      = GetComponent<CompanionTalk>();
-            _combat    = GetComponent<CombatController>();
             _harvest   = GetComponent<HarvestController>();
             _repair    = GetComponent<RepairController>();
             _smelt     = GetComponent<SmeltController>();
@@ -164,8 +162,7 @@ namespace Companions
                 if (_phase != HomesteadPhase.Idle)
                 {
                     string reason = "unknown";
-                    if (_combat != null && _combat.Phase != CombatController.CombatPhase.Idle) reason = $"combat(phase={_combat.Phase})";
-                    else if (_harvest != null && _harvest.IsActive) reason = "harvest";
+                    if (_harvest != null && _harvest.IsActive) reason = "harvest";
                     else if (_repair != null && _repair.IsActive) reason = "itemRepair";
                     else if (_rest != null && (_rest.IsResting || _rest.IsNavigating)) reason = "rest";
                     else if (CompanionInteractPanel.IsOpenFor(_setup)) reason = "UI panel";
@@ -236,7 +233,7 @@ namespace Companions
 
         private bool ShouldAbort()
         {
-            if (_combat != null && _combat.Phase != CombatController.CombatPhase.Idle)
+            if (_ai != null && _ai.IsInCombat)
                 return true;
             if (_harvest != null && _harvest.IsActive)
                 return true;

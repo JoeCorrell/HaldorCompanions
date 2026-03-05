@@ -277,13 +277,12 @@ namespace Companions
             // Skill system (mirrors vanilla Skills formula, ZDO persistence)
             go.AddComponent<CompanionSkills>();
 
+            // Combat AI — MonsterAI-style combat loop, activated by CompanionAI on threat
+            go.AddComponent<CompanionCombatAI>();
+
             // Resource harvesting AI (active in Gather modes 1-3)
             go.AddComponent<HarvestController>();
             CompanionsPlugin.Log.LogInfo($"[CompanionPrefabs]   + HarvestController ({def.PrefabName})");
-
-            // Advanced combat AI (active in Follow/Stay modes)
-            go.AddComponent<CombatController>();
-            CompanionsPlugin.Log.LogInfo($"[CompanionPrefabs]   + CombatController ({def.PrefabName})");
 
             // Overhead speech text (context-aware lines like Haldor)
             go.AddComponent<CompanionTalk>();
@@ -375,31 +374,28 @@ namespace Companions
         {
             CompanionsPlugin.Log.LogInfo("[CompanionPrefabs] Setting up CompanionAI...");
 
-            // BaseAI perception
-            ai.m_viewRange            = ModConfig.ViewRange.Value;
-            ai.m_viewAngle            = ModConfig.ViewAngle.Value;
-            ai.m_hearRange            = 9999f;
+            // BaseAI perception — matches RenegadeVikings SetupMonsterAI exactly
+            ai.m_viewRange            = 30f;
+            ai.m_viewAngle            = 120f;
+            ai.m_hearRange            = 30f;
             ai.m_mistVision           = true;
             ai.m_alertedEffects       = new EffectList();
             ai.m_idleSound            = new EffectList();
             ai.m_idleSoundInterval    = 10f;
             ai.m_idleSoundChance      = 0f;
 
-            // Pathfinding — HumanoidAvoidWater uses a separate navmesh that
-            // excludes water areas, routing the companion around water instead of
-            // through it. m_moveMinAngle=90 matches MonsterAI (RenegadeVikings):
-            // the AI faces the target before moving, which looks more deliberate.
+            // Pathfinding — matches RV: moveMinAngle=90, smoothMovement=true
             ai.m_pathAgentType        = Pathfinding.AgentType.HumanoidAvoidWater;
             ai.m_moveMinAngle         = 90f;
             ai.m_smoothMovement       = true;
             ai.m_serpentMovement      = false;
             ai.m_jumpInterval         = 0f;
             ai.m_randomCircleInterval = 2f;
-            ai.m_randomMoveInterval   = 9999f;
-            ai.m_randomMoveRange      = 0f;
+            ai.m_randomMoveInterval   = 10f;
+            ai.m_randomMoveRange      = 10f;
             ai.m_avoidFire            = false;
             ai.m_afraidOfFire         = false;
-            ai.m_avoidWater           = true;   // BaseAI soft preference — avoids water when idle/patrolling
+            ai.m_avoidWater           = true;
             ai.m_aggravatable         = false;
 
             CompanionsPlugin.Log.LogInfo(

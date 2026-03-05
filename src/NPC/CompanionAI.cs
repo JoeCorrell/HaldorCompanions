@@ -11,7 +11,6 @@ namespace Companions
     /// weapon selection, or attack suppression.
     ///
     /// Keeps: sleep/wakeup, follow, targeting with harvest suppression,
-    ///        combat movement + DoAttack with SuppressAttack.
     /// Drops: despawn, item consumption, circle target, flee behaviors,
     ///        hunt player, attack player objects.
     /// </summary>
@@ -52,32 +51,6 @@ namespace Companions
 
         private GameObject m_follow;
 
-        // ══════════════════════════════════════════════════════════════════════
-        //  Combat State
-        // ══════════════════════════════════════════════════════════════════════
-
-        /// <summary>
-        /// When true, DoAttack is suppressed. Set by CombatController's
-        /// blocking system so the companion doesn't attack while parrying.
-        /// </summary>
-        internal bool SuppressAttack;
-
-        /// <summary>
-        /// When > 0, UpdateTarget skips FindEnemy — player directed this
-        /// companion to attack a specific target via hotkey.
-        /// </summary>
-        internal float DirectedTargetLockTimer;
-
-        private float m_timeSinceAttacking;
-        private float m_timeSinceSensedTargetCreature;
-        private float m_updateTargetTimer;
-        private float _attackRetryTime;      // cooldown after failed DoAttack (stamina, etc.)
-        private bool  _inCombatStopRange;    // hysteresis flag — prevents stop-range oscillation
-        private bool  _wasPassiveStance;    // tracks Passive→other stance transition for SuppressAttack
-        private float _gatherThreatScanTimer;
-        private bool _gatherEnemyNearby;
-        private Character _gatherNearestEnemy;
-        private float _gatherNearestEnemyDist = float.MaxValue;
 
         /// <summary>
         /// When > 0, all AI movement is suppressed. Used to hold position
@@ -196,27 +169,6 @@ namespace Companions
         // ══════════════════════════════════════════════════════════════════════
 
         private static float GiveUpTime => ModConfig.GiveUpTime.Value;
-        private static float UpdateTargetIntervalNear => ModConfig.UpdateTargetIntervalNear.Value;
-        private static float UpdateTargetIntervalFar => ModConfig.UpdateTargetIntervalFar.Value;
-        private static float SelfDefenseRange => ModConfig.SelfDefenseRange.Value;
-        private const float GatherThreatScanInterval = 0.25f;
-        private const float AlertRange = 9999f;
-
-        // Combat: intercept prediction (lead running targets) + circling
-        // Tuned to match RenegadeVikings/MonsterAI combat feel.
-        private float _interceptTime = 2f;                 // randomized per-instance in Awake (1.5–2.5s)
-        private const float CircleInterval = 3f;           // seconds between circle repositions (was 4)
-        private const float CircleDuration = 2f;           // seconds spent circling per cycle
-        private const float CircleDistance = 5f;            // radius of circle around target (was 4.5)
-
-        // MonsterAI port: if companion hasn't landed a hit in this long,
-        // the current target is likely unreachable — allow target switching.
-        private const float UnableToAttackDuration = 15f;
-        // MonsterAI port: if can't attack for 30s AND recently hurt, retreat.
-        private const float FleeUnreachableSinceAttacking = 30f;
-        private const float FleeUnreachableSinceHurt = 20f;
-        private float _circleTimer;
-        private Vector3 _circleTargetPos;    // circle phase: target point (re-picked each phase)
 
         // Formation follow hysteresis: once in formation, stay until FormationCatchupDist;
         // once in catchup, stay until distToTarget drops below FormationCatchupDist-2f.
@@ -230,7 +182,6 @@ namespace Companions
         private float _debugLogTimer;
         private float _stuckDetectTimer;
         private Vector3 _lastDebugPos;
-        private float _targetLogTimer;
         private bool _lastPathOk = true;  // track path result transitions for one-shot logging
 
         private const float DebugLogInterval = 3f;
@@ -257,8 +208,8 @@ namespace Companions
         // ══════════════════════════════════════════════════════════════════════
 
         private CompanionSetup _setup;
+        private CompanionCombatAI _combatAI;
         private HarvestController _harvest;
-        private CombatController _combat;
         private RepairController _repair;
         private SmeltController _smelt;
         private FarmController _farm;
@@ -277,8 +228,8 @@ namespace Companions
             base.Awake();
 
             _setup = GetComponent<CompanionSetup>();
+            _combatAI = GetComponent<CompanionCombatAI>();
             _harvest = GetComponent<HarvestController>();
-            _combat = GetComponent<CombatController>();
             _repair = GetComponent<RepairController>();
             _smelt = GetComponent<SmeltController>();
             _farm = GetComponent<FarmController>();
@@ -300,15 +251,9 @@ namespace Companions
                     m_animator.SetBool(s_sleeping, IsSleeping());
             }
 
-            // Randomize initial target scan delay
-            m_updateTargetTimer = UnityEngine.Random.Range(0f, 2f);
-
             // Setup wake delay
             if (m_wakeUpDelayMin > 0f || m_wakeUpDelayMax > 0f)
                 m_sleepDelay = UnityEngine.Random.Range(m_wakeUpDelayMin, m_wakeUpDelayMax);
-
-            // Randomize intercept time for organic feel (matches MonsterAI)
-            _interceptTime = UnityEngine.Random.Range(1.5f, 2.5f);
 
             // Register sleep RPCs
             m_nview.Register("RPC_Wakeup", new Action<long>(RPC_Wakeup));
@@ -364,23 +309,12 @@ namespace Companions
             }
             m_targetCreature = null;
             m_targetStatic = null;
-            _inCombatStopRange = false;
-            _attackRetryTime = 0f;
-            _circleTimer = 0f;
             _navClaimedDoneCount = 0;
         }
 
-        /// <summary>
-        /// Clears only the creature target and resets combat phase state.
-        /// Used in UpdateTarget wherever m_targetCreature is invalidated directly —
-        /// ensures _inCombatStopRange and _circleTimer never linger from a previous
-        /// fight into the next target acquisition.
-        /// </summary>
         private void ClearCreatureTarget()
         {
             m_targetCreature = null;
-            _inCombatStopRange = false;
-            _circleTimer = 0f;
         }
 
         // ══════════════════════════════════════════════════════════════════════
@@ -460,6 +394,12 @@ namespace Companions
         /// is active navigation and should not be suppressed by callers.
         /// </summary>
         internal bool IsNavMeshRetrying => _navClaimedDoneCount > 0;
+
+        /// <summary>
+        /// True when the combat AI is actively engaged with a target.
+        /// Worker controllers should pause while this is true.
+        /// </summary>
+        internal bool IsInCombat => _combatAI != null && _combatAI.IsEngaged;
 
         // Logging throttle — context steer decisions are per-frame, throttle to every 2s
         private float _ctxLogTimer;
@@ -793,16 +733,41 @@ namespace Companions
 
         internal new void SetAlerted(bool alert)
         {
-            if (alert)
-                m_timeSinceSensedTargetCreature = 0f;
             base.SetAlerted(alert);
         }
 
         internal Character FindNearbyEnemy() => FindEnemy();
 
+        private static bool IsPassiveAnimal(Character c)
+        {
+            string name = c.gameObject.name;
+            return name.StartsWith("Deer") || name.StartsWith("Hare") || name.StartsWith("Chicken");
+        }
+
         internal void FollowObject(GameObject go, float dt) => Follow(go, dt);
 
         internal void PushDirection(Vector3 dir, bool run) => MoveTowards(dir, run);
+
+        // Wrappers for protected BaseAI methods — used by CompanionCombatAI
+        internal void RandomMovement(float dt, Vector3 center)
+            => base.RandomMovement(dt, center);
+
+        internal void RandomMovementAroundPoint(float dt, Vector3 point, float distance, bool run)
+            => RandomMovementArroundPoint(dt, point, distance, run);
+
+        internal new bool GetPatrolPoint(out Vector3 point)
+            => base.GetPatrolPoint(out point);
+
+        internal new Character HaveFriendInRange(float range)
+            => base.HaveFriendInRange(range);
+
+        internal new Character HaveHurtFriendInRange(float range)
+            => base.HaveHurtFriendInRange(range);
+
+        internal new void HaveFriendsInRange(float range, out Character hurtFriend, out Character friend)
+            => base.HaveFriendsInRange(range, out hurtFriend, out friend);
+
+        internal new bool IsTakingOff() => base.IsTakingOff();
 
         internal void SetFormationSlot(int slot) { _formationSlot = slot; }
 
@@ -1886,10 +1851,7 @@ namespace Companions
                             if (compInv != null)
                             {
                                 foreach (var item in compInv.GetAllItems())
-                                {
-                                    if (!DirectedTargetPatch.ShouldKeep(item, depositHumanoid))
-                                        _depositQueue.Add(item);
-                                }
+                                    _depositQueue.Add(item);
                             }
                         }
 
@@ -1921,76 +1883,7 @@ namespace Companions
             if (UpdateTombstoneRecovery(dt))
                 return true;
 
-            // Directed target lock countdown
-            if (DirectedTargetLockTimer > 0f)
-                DirectedTargetLockTimer -= dt;
-
-            // Read combat stance
-            int stance = _setup != null ? _setup.GetCombatStance() : CompanionSetup.StanceBalanced;
-
-            // Passive stance: never target, never attack, just follow
-            // Exception: self-defense for 10s after being hit (same as StayHome mode)
-            if (stance == CompanionSetup.StancePassive)
-            {
-                _wasPassiveStance = true;
-
-                if (m_timeSinceHurt > 10f)
-                {
-                    ClearTargets();
-                    if (IsAlerted()) SetAlerted(false);
-                    SuppressAttack = true;
-
-                    // Gathering/farming/smelting controllers manage their own mode checks
-                    // in their Update() loops — don't call NotifyActionModeChanged every frame
-                    // as it resets scan timers, rotation, and spams logs.
-
-                    // Repair/Restock modes also run in passive stance — dispatch FIRST
-                    // so the state machine advances before the controller-active guard
-                    var passiveZdo = m_nview?.GetZDO();
-                    if (passiveZdo != null)
-                    {
-                        int passiveMode = passiveZdo.GetInt(CompanionSetup.ActionModeHash, CompanionSetup.ModeFollow);
-                        if (passiveMode == CompanionSetup.ModeRepairBuildings)
-                            UpdateRepairBuildingsMode(dt);
-                        else if (passiveMode == CompanionSetup.ModeRestock)
-                            UpdateRestockMode(dt);
-                    }
-
-                    if ((_harvest != null && _harvest.IsActive) ||
-                        (_repair != null && _repair.IsActive) ||
-                        (_smelt != null && _smelt.IsActive) ||
-                        (_farm != null && _farm.IsActive) ||
-                        (_homestead != null && _homestead.IsActive) ||
-                        (_doorHandler != null && _doorHandler.IsActive) ||
-                        IsRepairBuildActive ||
-                        IsRestockActive)
-                        return true;
-
-                    if (m_follow != null)
-                        FollowWithFormation(m_follow, dt);
-                    else
-                    {
-                        if (!EnforceHomePatrol(dt))
-                            IdleMovement(dt);
-                    }
-                    return true;
-                }
-                // Recently hurt — fall through to normal targeting for self-defense
-            }
-
-            // Clear SuppressAttack only on the frame transitioning OUT of Passive stance.
-            // Passive sets SuppressAttack=true; we must clear it once when switching
-            // to another stance. But we must NOT clear it every frame — CombatController
-            // sets SuppressAttack=true during shield blocking, and UpdateAI runs in
-            // FixedUpdate BEFORE CombatController.Update(), so clearing it every frame
-            // would override the blocking flag and cause attack/block spazzing.
-            if (_wasPassiveStance)
-            {
-                _wasPassiveStance = false;
-                SuppressAttack = false;
-            }
-
-            // Humanoid ref needed by heal check and combat below
+            // Humanoid ref needed by heal check below
             Humanoid humanoid = m_character as Humanoid;
 
             // ── Support Dverger healing — prioritize hurt allies over enemies ──
@@ -2071,751 +1964,83 @@ namespace Companions
                 }
             }
 
-            // Target acquisition with companion-specific suppression
-            UpdateTarget(humanoid, dt, stance);
-
-            // Debug logging (replaces TargetPatches.UpdateAI_DebugLog)
+            // Debug logging
             UpdateDebugLog(dt);
 
-            // No combat target — follow or idle
-            if (m_targetCreature == null && m_targetStatic == null)
+            // ── Combat AI — engage on threat, delegate loop while active ──
+            if (_combatAI != null)
             {
-                // Repair Buildings / Restock modes — dispatch state machine FIRST
-                // so the state machine advances before the controller-active guard
-                // (otherwise IsRepairBuildActive/IsRestockActive early-returns before
-                // the state machine gets its dt tick → companion freezes)
-                var zdo = m_nview?.GetZDO();
-                if (zdo != null)
+                if (_combatAI.IsEngaged)
                 {
-                    int actionMode = zdo.GetInt(CompanionSetup.ActionModeHash, CompanionSetup.ModeFollow);
-                    if (actionMode == CompanionSetup.ModeRepairBuildings)
-                        UpdateRepairBuildingsMode(dt);
-                    else if (actionMode == CompanionSetup.ModeRestock)
-                        UpdateRestockMode(dt);
+                    // Combat AI owns the loop — let it run
+                    if (_combatAI.UpdateCombat(dt))
+                        return true;
+                    // UpdateCombat returned false → disengaged, fall through to normal AI
                 }
-
-                // When a controller is actively moving to a target, it owns
-                // movement exclusively. Letting Follow() or IdleMovement() run
-                // here causes dual-control jitter — Follow's internal stop
-                // distance (~3m) cancels the controller's movement commands.
-                if ((_harvest != null && _harvest.IsActive) ||
-                    (_repair != null && _repair.IsActive) ||
-                    (_smelt != null && _smelt.IsActive) ||
-                    (_farm != null && _farm.IsActive) ||
-                    (_homestead != null && _homestead.IsActive) ||
-                    (_doorHandler != null && _doorHandler.IsActive) ||
-                    IsRepairBuildActive ||
-                    IsRestockActive)
-                    return true;
-
-                if (m_follow != null)
-                    FollowWithFormation(m_follow, dt);
                 else
                 {
-                    if (!EnforceHomePatrol(dt))
-                        IdleMovement(dt);
-                }
-                return true;
-            }
-
-            // Has target — combat movement + attack (clear sneak/walk overrides)
-            ClearFollowMovementOverrides();
-            if (humanoid != null)
-                UpdateCombat(humanoid, dt, stance);
-
-            return true;
-        }
-
-        // ══════════════════════════════════════════════════════════════════════
-        //  Target Acquisition
-        //  Replaces MonsterAI.UpdateTarget + TargetPatches
-        // ══════════════════════════════════════════════════════════════════════
-
-        private void UpdateTarget(Humanoid humanoid, float dt, int stance = CompanionSetup.StanceBalanced)
-        {
-            m_updateTargetTimer -= dt;
-
-            // ── UI open → suppress targeting completely ──
-            if (CompanionInteractPanel.IsOpenFor(_setup) || CompanionRadialMenu.IsOpenFor(_setup))
-            {
-                ThrottledTargetLog("UIOpen", dt);
-                ClearTargets();
-                return;
-            }
-
-            // ── StayHome mode → only fight if physically hit (self-defense) ──
-            bool stayHome = _setup != null && _setup.GetStayHome()
-                         && _setup.HasHomePosition() && !_setup.GetFollow();
-            if (stayHome)
-            {
-                if (m_timeSinceHurt > 10f)
-                {
-                    ThrottledTargetLog("StayHome(peaceful)", dt);
-                    ClearTargets();
-                    if (IsAlerted()) SetAlerted(false);
-                    return;
-                }
-                // Recently hit — allow targeting for self-defense
-            }
-
-            // ── Harvest mode → suppress unless enemy nearby (self-defense) ──
-            bool gathering = _harvest != null && _harvest.IsInGatherMode;
-
-            if (gathering)
-            {
-                UpdateGatherThreatScan(dt);
-
-                if (!_gatherEnemyNearby)
-                {
-                    ThrottledTargetLog("Gathering(safe)", dt);
-                    ClearTargets();
-                    if (IsAlerted()) SetAlerted(false);
-                    return;
-                }
-
-                // Enemy nearby — log and allow targeting for self-defense
-                _targetLogTimer -= dt;
-                if (_targetLogTimer <= 0f)
-                {
-                    _targetLogTimer = 2f;
-                    CompanionsPlugin.Log.LogDebug(
-                        $"[CompanionAI] SELF-DEFENSE ALLOW — nearest enemy \"{_gatherNearestEnemy?.m_name ?? "?"}\" " +
-                        $"at {_gatherNearestEnemyDist:F1}m — currentTarget=\"{m_targetCreature?.m_name ?? "null"}\"");
-                }
-            }
-
-            // ── Directed target lock — player pressed hotkey, hold this target ──
-            if (DirectedTargetLockTimer > 0f && m_targetCreature != null &&
-                !m_targetCreature.IsDead() && m_targetCreature.GetHealth() > 0f)
-            {
-                // Skip FindEnemy — keep directed target
-                m_updateTargetTimer = Mathf.Max(m_updateTargetTimer, 1f);
-            }
-            // ── Target stickiness — finish current enemy before switching ──
-            else if (m_targetCreature != null && !m_targetCreature.IsDead() &&
-                     m_targetCreature.GetHealth() > 0f)
-            {
-                // Already have a valid, living target — don't search for another.
-                // This prevents bouncing between multiple enemies. The companion
-                // commits to one target until it dies, escapes (give-up timer),
-                // or the player directs a new target via hotkey.
-                //
-                // MonsterAI port: after UnableToAttackDuration without landing
-                // a hit, the target is likely unreachable — break stickiness and
-                // let FindEnemy pick a closer/reachable alternative.
-                if (m_timeSinceAttacking > UnableToAttackDuration && m_updateTargetTimer <= 0f)
-                {
-                    bool playerNear = Player.IsPlayerInRange(transform.position, 50f);
-                    m_updateTargetTimer = playerNear ? UpdateTargetIntervalNear : UpdateTargetIntervalFar;
-
-                    Character alt = FindEnemy();
-                    if (alt != null && alt != m_targetCreature)
+                    // Passive stance: never scan for enemies
+                    int stance = _setup?.GetCombatStance() ?? CompanionSetup.StanceBalanced;
+                    if (stance != CompanionSetup.StancePassive)
                     {
-                        CompanionsPlugin.Log.LogDebug(
-                            $"[AI] Unable to attack \"{m_targetCreature.m_name}\" for " +
-                            $"{m_timeSinceAttacking:F0}s — switching to \"{alt.m_name}\"");
-                        m_targetCreature = alt;
-                        m_targetStatic = null;
-                        m_timeSinceAttacking = 0f;
-                    }
-                }
-            }
-            // ── Timer-based target scan — only when we have no target ──
-            else if (m_updateTargetTimer <= 0f && !m_character.InAttack())
-            {
-                bool playerNear = Player.IsPlayerInRange(transform.position, 50f);
-                m_updateTargetTimer = playerNear ? UpdateTargetIntervalNear : UpdateTargetIntervalFar;
-
-                // Aggressive: boost view range for wider scan
-                float savedRange = m_viewRange;
-                if (stance == CompanionSetup.StanceAggressive)
-                    m_viewRange = Mathf.Max(m_viewRange, 50f);
-
-                // FindEnemy returns the closest valid enemy within view/hear range.
-                // After finding it, check for a higher-priority target: enemies actively
-                // attacking the player or companion are preferred over the merely closest.
-                Character enemy = FindEnemy();
-
-                if (stance == CompanionSetup.StanceAggressive)
-                    m_viewRange = savedRange;
-
-                // Priority override: if an enemy is actively attacking the player or
-                // companion and we can perceive it, switch focus to that target instead.
-                Character priorityEnemy = FindAttackingPlayerEnemy(savedRange);
-                if (priorityEnemy != null && priorityEnemy != enemy)
-                {
-                    CompanionsPlugin.Log.LogDebug(
-                        $"[AI] Priority target switch: \"{enemy?.m_name ?? "null"}\" → " +
-                        $"\"{priorityEnemy.m_name}\" (attacking player/companion)");
-                    enemy = priorityEnemy;
-                }
-
-                if (enemy != null)
-                {
-                    // Defensive: only engage enemies targeting the companion or the player
-                    // (pure self-defense + player protection — never initiate aggression)
-                    if (stance == CompanionSetup.StanceDefensive)
-                    {
-                        bool threatsUs = false;
-                        var eAI = enemy.GetBaseAI();
-                        if (eAI != null)
-                        {
-                            var aiTarget = eAI.GetTargetCreature();
-                            if (aiTarget != null && (aiTarget == m_character || aiTarget.IsPlayer()))
-                                threatsUs = true;
-                        }
-                        // Also accept if actively attacking
-                        if (!threatsUs && enemy.InAttack())
-                        {
-                            float dToUs = Vector3.Distance(transform.position, enemy.transform.position);
-                            if (dToUs < SelfDefenseRange)
-                                threatsUs = true;
-                        }
-                        if (!threatsUs)
+                        // Scan for threats — engage if enemy found
+                        // SetAlerted(true) widens perception: when alerted, view angle
+                        // check is skipped so the companion detects enemies behind it.
+                        // This matches how MonsterAI.UpdateTarget auto-alerts on find.
+                        Character enemy = FindEnemy();
+                        if (enemy != null && IsPassiveAnimal(enemy))
                             enemy = null;
-                    }
-
-                    if (enemy != null)
-                    {
-                        m_targetCreature = enemy;
-                        m_targetStatic = null;
-                        if (stance == CompanionSetup.StanceAggressive)
+                        if (enemy != null)
+                        {
                             SetAlerted(true);
+                            _combatAI.Engage(enemy);
+                            if (_combatAI.UpdateCombat(dt))
+                                return true;
+                        }
+                        // Also engage if OnDamaged set a target creature
+                        else if (m_targetCreature != null)
+                        {
+                            SetAlerted(true);
+                            _combatAI.Engage(m_targetCreature);
+                            m_targetCreature = null;
+                            m_targetStatic = null;
+                            if (_combatAI.UpdateCombat(dt))
+                                return true;
+                        }
                     }
                 }
             }
 
-            // ── Alert range check (leash to follow target / home) ──
-            if (m_targetCreature != null)
+            // Repair Buildings / Restock modes — dispatch state machine FIRST
+            var zdo = m_nview?.GetZDO();
+            if (zdo != null)
             {
-                // StayHome companions: drop targets beyond 50m from home so they
-                // don't chase enemies across the map. The hard teleport in UpdateAI
-                // is a safety net; this prevents the chase from starting.
-                bool stayHomeLeash = _setup != null && _setup.GetStayHome()
-                    && _setup.HasHomePosition() && !_setup.GetFollow();
-                if (stayHomeLeash)
-                {
-                    float enemyDistFromHome = Utils.DistanceXZ(
-                        m_targetCreature.transform.position, _setup.GetHomePosition());
-                    if (enemyDistFromHome > CompanionSetup.MaxLeashDistance)
-                        ClearCreatureTarget();
-                }
-
-                if (m_targetCreature != null && GetPatrolPoint(out var point))
-                {
-                    // Patrol leash: drop target if it strays too far from patrol point.
-                    // Was AlertRange (9999f) — patrol companions were chasing enemies across
-                    // the entire map. Use SelfDefenseRange as a reasonable patrol leash.
-                    if (Vector3.Distance(m_targetCreature.transform.position, point) > SelfDefenseRange * 2f)
-                        ClearCreatureTarget();
-                }
-                else if (m_targetCreature != null && m_follow != null &&
-                         Vector3.Distance(m_targetCreature.transform.position,
-                             m_follow.transform.position) > AlertRange)
-                {
-                    ClearCreatureTarget();
-                }
+                int actionMode = zdo.GetInt(CompanionSetup.ActionModeHash, CompanionSetup.ModeFollow);
+                if (actionMode == CompanionSetup.ModeRepairBuildings)
+                    UpdateRepairBuildingsMode(dt);
+                else if (actionMode == CompanionSetup.ModeRestock)
+                    UpdateRestockMode(dt);
             }
 
-            // ── Target validation ──
-            if (m_targetCreature != null)
-            {
-                if (m_targetCreature.IsDead())
-                    ClearCreatureTarget();
-                else if (!IsEnemy(m_targetCreature))
-                    ClearCreatureTarget();
-                else if (m_skipLavaTargets && m_targetCreature.AboveOrInLava())
-                    ClearCreatureTarget();
-            }
+            // When a controller is actively moving to a target, it owns movement exclusively.
+            if ((_harvest != null && _harvest.IsActive) ||
+                (_repair != null && _repair.IsActive) ||
+                (_smelt != null && _smelt.IsActive) ||
+                (_farm != null && _farm.IsActive) ||
+                (_homestead != null && _homestead.IsActive) ||
+                (_doorHandler != null && _doorHandler.IsActive) ||
+                IsRepairBuildActive ||
+                IsRestockActive)
+                return true;
 
-            // ── Sense tracking ──
-            bool canHear = false;
-            bool canSee = false;
-            if (m_targetCreature != null)
-            {
-                canHear = CanHearTarget(m_targetCreature);
-                canSee = CanSeeTarget(m_targetCreature);
-                if (canSee || canHear)
-                    m_timeSinceSensedTargetCreature = 0f;
-
-                if (m_targetCreature.IsPlayer())
-                    m_targetCreature.OnTargeted(canSee || canHear, IsAlerted());
-
-                SetTargetInfo(m_targetCreature.GetZDOID());
-            }
+            if (m_follow != null)
+                FollowWithFormation(m_follow, dt);
             else
             {
-                SetTargetInfo(ZDOID.None);
+                if (!EnforceHomePatrol(dt))
+                    IdleMovement(dt);
             }
-
-            // ── Flee when hurt but can't reach target (MonsterAI port) ──
-            // If the companion hasn't attacked in 30s but has been hurt recently,
-            // it's stuck on an unreachable target taking damage. Disengage and
-            // return to the player instead of standing helplessly.
-            if (m_targetCreature != null && m_timeSinceAttacking > FleeUnreachableSinceAttacking
-                && m_timeSinceHurt < FleeUnreachableSinceHurt)
-            {
-                CompanionsPlugin.Log.LogDebug(
-                    $"[AI] FLEE — can't reach \"{m_targetCreature.m_name}\" for " +
-                    $"{m_timeSinceAttacking:F0}s, hurt {m_timeSinceHurt:F1}s ago — disengaging");
-                SetAlerted(false);
-                ClearTargets();
-                m_timeSinceAttacking = 0f;
-                m_updateTargetTimer = 5f;
-            }
-
-            // ── Give-up timer ──
-            m_timeSinceSensedTargetCreature += dt;
-            if (IsAlerted() || m_targetCreature != null)
-            {
-                m_timeSinceAttacking += dt;
-                if (m_timeSinceSensedTargetCreature > GiveUpTime ||
-                    m_timeSinceAttacking > 60f)
-                {
-                    SetAlerted(false);
-                    ClearTargets(); // clears both creature + static + combat phase state
-                    m_timeSinceAttacking = 0f;
-                    m_timeSinceSensedTargetCreature = 0f;
-                    m_updateTargetTimer = 5f;
-                }
-            }
-        }
-
-        private void UpdateGatherThreatScan(float dt)
-        {
-            _gatherThreatScanTimer -= dt;
-            if (_gatherThreatScanTimer > 0f) return;
-            _gatherThreatScanTimer = GatherThreatScanInterval;
-
-            _gatherEnemyNearby = false;
-            _gatherNearestEnemy = null;
-            _gatherNearestEnemyDist = float.MaxValue;
-
-            float maxDistSqr = SelfDefenseRange * SelfDefenseRange;
-            float nearestSqr = float.MaxValue;
-            Vector3 myPos = transform.position;
-
-            foreach (Character c in Character.GetAllCharacters())
-            {
-                if (c == null || c == m_character) continue;
-                // Distance check FIRST — cheap position compare before any method calls.
-                // Previously IsDead/GetHealth/IsEnemy were checked before distance, wasting
-                // time on far-away characters that would be rejected by the range anyway.
-                float distSqr = (c.transform.position - myPos).sqrMagnitude;
-                if (distSqr > maxDistSqr) continue;
-                if (c.IsDead() || c.GetHealth() <= 0f || !IsEnemy(c)) continue;
-
-                _gatherEnemyNearby = true;
-                if (distSqr < nearestSqr)
-                {
-                    nearestSqr = distSqr;
-                    _gatherNearestEnemy = c;
-                }
-            }
-
-            if (_gatherNearestEnemy != null)
-                _gatherNearestEnemyDist = Mathf.Sqrt(nearestSqr);
-        }
-
-        /// <summary>
-        /// Scans for an enemy that is actively attacking the player or companion.
-        /// Used to override FindEnemy()'s distance-only selection with threat priority.
-        /// Returns the closest such enemy within the given scan range, or null.
-        /// </summary>
-        private Character FindAttackingPlayerEnemy(float scanRange)
-        {
-            var player = Player.m_localPlayer;
-            float rangeSqr = scanRange * scanRange;
-            Vector3 myPos = transform.position;
-
-            Character best = null;
-            float bestDistSqr = rangeSqr;
-
-            foreach (Character c in Character.GetAllCharacters())
-            {
-                if (c == null || c == m_character || c.IsDead() || c.GetHealth() <= 0f) continue;
-                if (!IsEnemy(c)) continue;
-
-                float distSqr = (c.transform.position - myPos).sqrMagnitude;
-                if (distSqr > rangeSqr) continue;
-
-                // Prefer enemies actively attacking the player or companion
-                var cAI = c.GetBaseAI();
-                if (cAI == null) continue;
-                var cTarget = cAI.GetTargetCreature();
-                bool attackingUs = cTarget != null && (cTarget == m_character ||
-                    (player != null && cTarget == (Character)player));
-                if (!attackingUs) continue;
-
-                // Must be able to see or hear it
-                if (!CanSeeTarget(c) && !CanHearTarget(c)) continue;
-
-                if (distSqr < bestDistSqr)
-                {
-                    bestDistSqr = distSqr;
-                    best = c;
-                }
-            }
-            return best;
-        }
-
-        private float _suppressLogTimer;
-        private void ThrottledTargetLog(string reason, float dt)
-        {
-            _suppressLogTimer -= dt;
-            if (_suppressLogTimer <= 0f)
-            {
-                _suppressLogTimer = 3f;
-                CompanionsPlugin.Log.LogDebug(
-                    $"[CompanionAI] Suppressing targeting — reason={reason}");
-            }
-        }
-
-        // ══════════════════════════════════════════════════════════════════════
-        //  Combat Movement + Attack
-        // ══════════════════════════════════════════════════════════════════════
-
-        private void UpdateCombat(Humanoid humanoid, float dt, int stance = CompanionSetup.StanceBalanced)
-        {
-            if (m_targetCreature == null) return;
-
-            // CombatController owns movement during retreat — don't fight it
-            // with approach movement. Only keep the attack check alive so the
-            // companion can still swing if an enemy walks into range.
-            if (_combat != null && _combat.Phase == CombatController.CombatPhase.Retreat)
-            {
-                // Still allow attacks on enemies that wander into melee range
-                var retreatWeapon = humanoid.GetCurrentWeapon();
-                if (retreatWeapon != null)
-                {
-                    float retDist = Vector3.Distance(m_targetCreature.transform.position, transform.position)
-                                    - m_targetCreature.GetRadius();
-                    bool retInRange = retDist < retreatWeapon.m_shared.m_aiAttackRange;
-                    if (retInRange && CanSeeTarget(m_targetCreature) && IsAlerted()
-                        && Time.time >= _attackRetryTime)
-                    {
-                        LookAt(m_targetCreature.GetTopPoint());
-                        if (CanAttackNow(retreatWeapon) && IsLookingAt(m_lastKnownTargetPos,
-                                retreatWeapon.m_shared.m_aiAttackMaxAngle,
-                                retreatWeapon.m_shared.m_aiInvertAngleCheck))
-                        {
-                            if (!DoAttack(m_targetCreature))
-                                _attackRetryTime = Time.time + 0.5f;
-                        }
-                    }
-                }
-                return;
-            }
-
-            // CombatController owns ALL movement and aiming during ranged phase —
-            // it handles backing away at close range, standing still to aim, draw
-            // timer, and firing. Running melee approach/circle logic here would
-            // fight those commands every frame, causing spasm.
-            if (_combat != null && _combat.Phase == CombatController.CombatPhase.Ranged)
-                return;
-
-            // Ranged STANCE with Phase still Idle — CombatController.Update hasn't
-            // run yet this frame (AI runs in FixedUpdate, CombatController in Update).
-            // Without this guard, one AI tick of melee MoveToPoint fires before
-            // CombatController transitions to Ranged and calls StopMoving, causing
-            // a visible sprint toward the target on first engagement.
-            // Just face the target and wait for CombatController to set the phase.
-            if (_combat != null && stance == CompanionSetup.StanceRanged
-                && _combat.Phase == CombatController.CombatPhase.Idle)
-            {
-                if (m_targetCreature != null)
-                    LookAt(m_targetCreature.GetTopPoint());
-                return;
-            }
-
-            ItemDrop.ItemData weapon = humanoid.GetCurrentWeapon();
-
-            // If holding unarmed weapon or nothing, try to equip a real weapon first
-            bool isUnarmed = weapon != null && humanoid.m_unarmedWeapon != null &&
-                             weapon == humanoid.m_unarmedWeapon.m_itemData;
-            if (weapon == null || isUnarmed)
-            {
-                if (_setup != null) _setup.SuppressAutoEquip = false;
-                humanoid.EquipBestWeapon(m_targetCreature, m_targetStatic, null, null);
-                weapon = humanoid.GetCurrentWeapon();
-            }
-
-            if (weapon == null)
-            {
-                // Still no weapon after equip attempt — just follow
-                if (m_follow != null) Follow(m_follow, dt);
-                else IdleMovement(dt);
-                return;
-            }
-
-            bool canHear = CanHearTarget(m_targetCreature);
-            bool canSee = CanSeeTarget(m_targetCreature);
-
-            if (canHear || canSee)
-            {
-                m_beenAtLastPos = false;
-                m_lastKnownTargetPos = m_targetCreature.transform.position;
-
-                float dist = Vector3.Distance(m_lastKnownTargetPos, transform.position)
-                             - m_targetCreature.GetRadius();
-                float alertRange = AlertRange * m_targetCreature.GetStealthFactor();
-
-                if (canSee && dist < alertRange)
-                    SetAlerted(true);
-
-                float weaponRange = weapon.m_shared.m_aiAttackRange;
-                bool inAttackRange = dist < weaponRange;
-
-                // Stop range: keep closing distance past weaponRange to ensure
-                // melee swings actually connect. The AI's m_aiAttackRange is
-                // center-to-surface, but the melee sphere-cast originates from
-                // the weapon bone (offset from center), so stopping at
-                // weaponRange often leaves the companion swinging at air.
-                float stopRange = Mathf.Max(weaponRange * 0.5f, 1.5f);
-
-                // Hysteresis: once in stop range, require a larger distance
-                // before moving again. Prevents oscillation at boundary
-                // (which causes visible jitter when stuck at stop range).
-                float stopThreshold = _inCombatStopRange
-                    ? stopRange + 0.3f
-                    : stopRange;
-                bool shouldStop = dist < stopThreshold && canSee && IsAlerted();
-                bool inCirclePhase = false;
-
-                if (!shouldStop)
-                {
-                    _inCombatStopRange = false;
-                    _circleTimer = 0f;
-
-                    // Not close enough to stop — move toward target.
-                    // Lead the target using velocity prediction (vanilla technique
-                    // from MonsterAI) so the companion cuts off running enemies
-                    // instead of tail-chasing their current position.
-                    Vector3 moveTarget = m_lastKnownTargetPos;
-                    if (dist > 3f)
-                    {
-                        Vector3 targetVel = m_targetCreature.GetVelocity();
-                        if (targetVel.magnitude > 0.5f)
-                        {
-                            float interceptMag = targetVel.magnitude * _interceptTime;
-                            if (dist > interceptMag * 0.25f)
-                                moveTarget += targetVel * _interceptTime;
-                        }
-                    }
-
-                    // Flanking: approach from opposite side of player.
-                    // Uses the intercept-adjusted moveTarget so flanking leads the
-                    // target rather than flanking its current (stale) position.
-                    if (stance != CompanionSetup.StancePassive &&
-                        stance != CompanionSetup.StanceDefensive &&
-                        m_follow != null && dist > weaponRange * 2f)
-                    {
-                        float playerToTarget = Vector3.Distance(m_follow.transform.position, moveTarget);
-                        if (playerToTarget < 15f && playerToTarget > 1f)
-                        {
-                            Vector3 behindTarget = (moveTarget - m_follow.transform.position).normalized;
-                            float flankDist = stance == CompanionSetup.StanceAggressive
-                                ? weaponRange * 0.5f
-                                : weaponRange;
-                            moveTarget = moveTarget + behindTarget * flankDist;
-                        }
-                    }
-
-                    // Combat stuck detection: if velocity stays low while trying to
-                    // reach the enemy, the path is blocked. Try flanking offsets to
-                    // find a way around the obstacle, then disengage if all fail.
-                    float combatVel = m_character.GetVelocity().magnitude;
-                    if (combatVel < GroundStuckVelThreshold && !m_character.InAttack())
-                    {
-                        _combatMoveStuckTimer += dt;
-                        if (_combatMoveStuckTimer > 1.5f)
-                        {
-                            _combatMoveStuckTimer = 0f;
-
-                            // Try perpendicular flanking offset (alternating left/right)
-                            Vector3 toEnemy = (m_lastKnownTargetPos - transform.position);
-                            toEnemy.y = 0f;
-                            if (toEnemy.sqrMagnitude > 0.01f)
-                            {
-                                toEnemy.Normalize();
-                                // Alternate left and right on successive stuck detections
-                                float flankSign = (_groundStuckAttempts % 2 == 0) ? 1f : -1f;
-                                Vector3 perpendicular = new Vector3(-toEnemy.z, 0f, toEnemy.x) * flankSign;
-                                moveTarget = transform.position + perpendicular * 4f + toEnemy * 2f;
-
-                                CompanionsPlugin.Log.LogDebug(
-                                    $"[AI:Combat] Stuck moving to enemy — flanking " +
-                                    $"(side={flankSign:F0}) pos={transform.position:F1} " +
-                                    $"target=\"{m_targetCreature?.m_name ?? "?"}\" dist={dist:F1}");
-                            }
-                        }
-                    }
-                    else
-                    {
-                        _combatMoveStuckTimer = 0f;
-                    }
-
-                    // Stamina-aware approach: walk when stamina is low to
-                    // allow regen. Running at 0 stamina is wasteful and leads
-                    // to the retreat-loop (drain > regen → never recover).
-                    // Aggressive stance always sprints (matches MonsterAI aggression).
-                    bool runToTarget = IsAlerted();
-                    if (_companionStamina != null && _companionStamina.GetStaminaPercentage() < 0.25f
-                        && stance != CompanionSetup.StanceAggressive)
-                        runToTarget = false;
-                    MoveTo(dt, moveTarget, 0f, runToTarget);
-
-                    // Override path-following look direction with enemy position.
-                    // MoveTowards (called by MoveTo) sets look direction to the
-                    // movement path, which oscillates when pathing around obstacles.
-                    // Forcing LookAt(enemy) gives stable head tracking during approach.
-                    if (m_targetCreature != null)
-                        LookAt(m_targetCreature.GetTopPoint());
-                }
-                else
-                {
-                    _inCombatStopRange = true;
-
-                    // While blocking (SuppressAttack from CombatController), freeze
-                    // the circle timer and face the enemy. Don't reposition — the
-                    // companion should stand and block, not wander to random points.
-                    // Reset circleTimer so that when the block ends and counter
-                    // window opens, the companion pauses to attack instead of
-                    // immediately entering a stale circle phase.
-                    if (SuppressAttack)
-                    {
-                        _circleTimer = 0f;
-                        StopMoving();
-                        LookAt(m_targetCreature.GetTopPoint());
-                    }
-                    else
-                    {
-                    // Circulate-while-charging: ported from MonsterAI behavior.
-                    // Circle the target when weapon is on cooldown (can't attack yet).
-                    // Stand still when attack is ready OR mid-swing (InAttack).
-                    // MonsterAI explicitly stops during InAttack — circling mid-swing
-                    // causes the companion to slide around while swinging.
-                    _circleTimer += dt;
-
-                    // Stamina check: if the companion doesn't have enough stamina
-                    // for the weapon's attack cost, don't consider it "ready to attack".
-                    // Without this, the companion stands still thinking it can swing,
-                    // but StartAttack→HaveStamina fails and it just freezes.
-                    float attackStamCost = weapon.m_shared.m_attack?.m_attackStamina ?? 0f;
-                    bool hasStaminaToAttack = _companionStamina == null
-                        || _companionStamina.Stamina >= attackStamCost;
-
-                    bool canAttackRightNow = inAttackRange && canSee && !m_character.InAttack()
-                        && Time.time >= _attackRetryTime && hasStaminaToAttack;
-                    bool midSwing = m_character.InAttack();
-
-                    if (canAttackRightNow || midSwing)
-                    {
-                        // Attack ready or mid-swing: stop and face target
-                        StopMoving();
-                        if (m_targetCreature != null)
-                            LookAt(m_targetCreature.GetTopPoint());
-                    }
-                    else
-                    {
-                        // Weapon on cooldown — stance determines behavior:
-                        // Aggressive: stand ready, attack the instant cooldown expires
-                        // Defensive: circle at wider radius to maintain distance
-                        // Balanced: normal circling
-                        bool shouldCircle = stance != CompanionSetup.StanceAggressive;
-
-                        if (shouldCircle)
-                        {
-                            inCirclePhase = true;
-                            if (_circleTimer > CircleInterval + CircleDuration)
-                                _circleTimer = UnityEngine.Random.Range(0f, CircleInterval * 0.1f);
-
-                            float circleDist = stance == CompanionSetup.StanceDefensive
-                                ? CircleDistance * 1.4f
-                                : CircleDistance;
-
-                            // Smart circle point selection ported from MonsterAI's
-                            // RandomMovementArroundPoint. Picks a point by rotating the
-                            // current companion→target vector instead of a random angle.
-                            // Checks if the result is behind the companion and flips if so.
-                            // This ensures smooth orbital movement, not random teleports.
-                            bool needNewPoint = _circleTargetPos == Vector3.zero
-                                || _circleTimer <= dt * 2f
-                                || Vector3.Distance(transform.position, _circleTargetPos) < 1f;
-                            if (needNewPoint)
-                            {
-                                Vector3 awayFromTarget = transform.position - m_targetCreature.transform.position;
-                                awayFromTarget.y = 0f;
-                                if (awayFromTarget.sqrMagnitude > 0.01f)
-                                    awayFromTarget.Normalize();
-                                else
-                                    awayFromTarget = transform.forward;
-
-                                float distToTarget = Vector3.Distance(transform.position, m_targetCreature.transform.position);
-                                float turnAngle = distToTarget < circleDist * 0.5f
-                                    ? (UnityEngine.Random.value > 0.5f ? 90f : -90f)
-                                    : (UnityEngine.Random.value > 0.5f ? 40f : -40f);
-
-                                Vector3 rotated = Quaternion.Euler(0f, turnAngle, 0f) * awayFromTarget;
-                                _circleTargetPos = m_targetCreature.transform.position + rotated * circleDist;
-
-                                // If the chosen point is behind us (>90° from forward), flip it.
-                                // Prevents the companion from needing a 180° turn before moving.
-                                if (Vector3.Dot(transform.forward, _circleTargetPos - transform.position) < 0f)
-                                {
-                                    rotated = Quaternion.Euler(0f, -turnAngle, 0f) * awayFromTarget;
-                                    _circleTargetPos = m_targetCreature.transform.position + rotated * circleDist;
-                                }
-                            }
-                            // Use vanilla MoveTo for circling — no context steer needed
-                            // for nearby points. MonsterAI uses MoveTo for all combat.
-                            MoveTo(dt, _circleTargetPos, 0.5f, false);
-                            LookAt(m_targetCreature.transform.position);
-                        }
-                        else
-                        {
-                            // Aggressive: stand and face, ready to swing immediately
-                            StopMoving();
-                            if (m_targetCreature != null)
-                                LookAt(m_targetCreature.GetTopPoint());
-                        }
-                    }
-                    }
-                }
-
-                // Attack if in weapon range, can see, alerted, and not actively circling
-                if (!inCirclePhase && inAttackRange && canSee && IsAlerted())
-                {
-                    LookAt(m_targetCreature.GetTopPoint());
-
-                    // Retry cooldown: when DoAttack fails (e.g. insufficient
-                    // stamina), wait before retrying to prevent per-frame
-                    // attack spam that causes jitter and log noise.
-                    if (Time.time >= _attackRetryTime)
-                    {
-                        bool canAttack = CanAttackNow(weapon);
-                        if (canAttack && IsLookingAt(m_lastKnownTargetPos,
-                                weapon.m_shared.m_aiAttackMaxAngle,
-                                weapon.m_shared.m_aiInvertAngleCheck))
-                        {
-                            if (!DoAttack(m_targetCreature))
-                                _attackRetryTime = Time.time + 0.5f;
-                        }
-                    }
-                }
-            }
-            else
-            {
-                // Lost sight — search last known position
-                if (m_beenAtLastPos)
-                {
-                    RandomMovement(dt, m_lastKnownTargetPos);
-                }
-                else if (MoveToPoint(dt, m_lastKnownTargetPos, 0f, IsAlerted()))
-                {
-                    m_beenAtLastPos = true;
-                }
-            }
+            return true;
         }
 
         private bool CanAttackNow(ItemDrop.ItemData weapon)
@@ -2823,82 +2048,6 @@ namespace Companions
             if (weapon == null) return false;
             bool intervalOk = Time.time - weapon.m_lastAttackTime > weapon.m_shared.m_aiAttackInterval;
             return intervalOk && CanUseAttack(weapon) && !IsTakingOff();
-        }
-
-        // ══════════════════════════════════════════════════════════════════════
-        //  DoAttack — replaces MonsterAI.DoAttack + CombatPatches.DoAttack_Patch
-        // ══════════════════════════════════════════════════════════════════════
-
-        private bool DoAttack(Character target)
-        {
-            // CombatController blocking — suppress attack
-            if (SuppressAttack) return false;
-
-            // Preemptive block check: don't start attacks while nearby enemies are
-            // mid-swing. Valheim's IsBlocking() returns false when InAttack() is
-            // true, so starting an attack while an enemy swings means the shield
-            // can't block the incoming hit. This check runs before the attack to
-            // ensure the companion keeps its guard up in Defensive/Balanced stances.
-            //
-            // EXCEPTION: Skip this check during the counter window after a successful
-            // parry — the whole point of parrying is to create an opening to attack.
-            bool inCounterWindow = _combat != null && _combat.InCounterWindow;
-            if (!inCounterWindow && !m_character.InAttack() && _combat != null)
-            {
-                Humanoid h = m_character as Humanoid;
-                var blocker = h != null ? ReflectionHelper.GetLeftItem(h) : null;
-                if (blocker != null && blocker.m_shared.m_itemType == ItemDrop.ItemData.ItemType.Shield)
-                {
-                    int stance = _setup != null ? _setup.GetCombatStance() : CompanionSetup.StanceBalanced;
-                    if (stance != CompanionSetup.StanceAggressive)
-                    {
-                        foreach (Character c in Character.GetAllCharacters())
-                        {
-                            if (c == m_character || c.IsDead()) continue;
-                            if (!BaseAI.IsEnemy(m_character, c)) continue;
-                            if (!c.InAttack()) continue;
-                            if (Vector3.Distance(transform.position, c.transform.position) > 6f) continue;
-                            // Only suppress if this enemy is targeting us (not swinging at something else)
-                            var eAI = c.GetBaseAI();
-                            if (eAI != null)
-                            {
-                                var aiTarget = eAI.GetTargetCreature();
-                                if (aiTarget != null && aiTarget != m_character) continue;
-                            }
-                            return false;
-                        }
-                    }
-                }
-            }
-
-            Humanoid humanoid = m_character as Humanoid;
-            if (humanoid == null) return false;
-
-            ItemDrop.ItemData weapon = humanoid.GetCurrentWeapon();
-            if (weapon == null || !CanUseAttack(weapon)) return false;
-
-            // Don't attack if we don't have enough stamina for the swing.
-            // This mirrors the HaveStamina check that StartAttack does internally,
-            // preventing a wasted attack attempt + retry cooldown.
-            float atkCost = weapon.m_shared.m_attack?.m_attackStamina ?? 0f;
-            if (_companionStamina != null && atkCost > 0f && _companionStamina.Stamina < atkCost)
-                return false;
-
-            // Power attack on staggered target
-            bool secondary = target != null && target.IsStaggering()
-                             && weapon.HaveSecondaryAttack();
-
-            bool success = m_character.StartAttack(target, secondary);
-            if (success)
-            {
-                m_timeSinceAttacking = 0f;
-
-                if (secondary)
-                    CompanionsPlugin.Log.LogDebug(
-                        $"[CompanionAI] Power attack on staggered \"{target.m_name}\"");
-            }
-
-            return success;
         }
 
         // ══════════════════════════════════════════════════════════════════════
@@ -3115,8 +2264,6 @@ namespace Companions
             if (m_targetCreature != null)
             {
                 ClearTargets();
-                DirectedTargetLockTimer = 0f; // prevent UpdateTarget re-acquiring the cleared target
-                if (_combat != null) _combat.ForceExitCombat();
             }
 
             // Multi-radius land sampling: 3 radii × 12 directions = 36 samples.
@@ -3390,8 +2537,7 @@ namespace Companions
             // Compute formation offset relative to player's facing
             Vector3 playerFwd = target.transform.forward;
             Vector3 playerRight = target.transform.right;
-            int stance = _setup != null ? _setup.GetCombatStance() : CompanionSetup.StanceBalanced;
-            float offsetScale = stance == CompanionSetup.StanceDefensive ? 0.6f : 1f;
+            float offsetScale = 1f;
             Vector3 offset = GetFormationOffset(_formationSlot, playerFwd, playerRight) * offsetScale;
 
             Vector3 formationPos = target.transform.position + offset;
@@ -3604,26 +2750,22 @@ namespace Companions
                 StopMoving();
                 LookAt(_healTarget.GetTopPoint());
 
-                if (Time.time >= _attackRetryTime && CanAttackNow(weapon) &&
+                if (CanAttackNow(weapon) &&
                     IsLookingAt(_healTarget.transform.position,
                         weapon.m_shared.m_aiAttackMaxAngle,
                         weapon.m_shared.m_aiInvertAngleCheck))
                 {
-                    if (SuppressAttack) return;
-
                     bool success = m_character.StartAttack(_healTarget, false);
                     if (success)
                     {
-                        m_timeSinceAttacking = 0f;
                         CompanionsPlugin.Log.LogDebug(
                             $"[CompanionAI:Heal] Heal attack fired on \"{_healTarget.m_name}\" " +
                             $"(HP: {_healTarget.GetHealth():F0}/{_healTarget.GetMaxHealth():F0})");
                     }
                     else
                     {
-                        _attackRetryTime = Time.time + 0.5f;
                         CompanionsPlugin.Log.LogDebug(
-                            $"[CompanionAI:Heal] Heal attack FAILED on \"{_healTarget.m_name}\" — retrying in 0.5s");
+                            $"[CompanionAI:Heal] Heal attack FAILED on \"{_healTarget.m_name}\"");
                     }
                 }
             }
@@ -3661,15 +2803,33 @@ namespace Companions
         {
             base.OnDamaged(damage, attacker);
             Wakeup();
+
+            // Passive stance: never engage when hit
+            int stance = _setup?.GetCombatStance() ?? CompanionSetup.StanceBalanced;
+            if (stance == CompanionSetup.StancePassive) return;
+
             SetAlerted(true);
 
-            if (attacker != null && m_targetCreature == null &&
-                (!attacker.IsPlayer() || !m_character.IsTamed()))
+            if (attacker != null && (!attacker.IsPlayer() || !m_character.IsTamed()))
             {
-                m_targetCreature = attacker;
-                m_lastKnownTargetPos = attacker.transform.position;
-                m_beenAtLastPos = false;
-                m_targetStatic = null;
+                // If combat AI is active, forward the attacker to it
+                if (_combatAI != null && _combatAI.IsEngaged)
+                {
+                    _combatAI.OnDamaged(attacker);
+                }
+                else if (_combatAI != null && !_combatAI.IsEngaged)
+                {
+                    // Not yet in combat — engage immediately with the attacker
+                    _combatAI.Engage(attacker);
+                }
+                else if (m_targetCreature == null)
+                {
+                    // Fallback if no combat AI component
+                    m_targetCreature = attacker;
+                    m_lastKnownTargetPos = attacker.transform.position;
+                    m_beenAtLastPos = false;
+                    m_targetStatic = null;
+                }
             }
         }
 
@@ -3678,18 +2838,29 @@ namespace Companions
         {
             if (!m_nview.IsOwner()) return;
 
+            // Passive stance: ignore projectiles
+            int stance = _setup?.GetCombatStance() ?? CompanionSetup.StanceBalanced;
+            if (stance == CompanionSetup.StancePassive) return;
+
             SetAlerted(true);
 
             GameObject attackerGO = ZNetScene.instance.FindInstance(attackerID);
             if (attackerGO != null)
             {
                 Character attacker = attackerGO.GetComponent<Character>();
-                if (attacker != null && m_targetCreature == null)
+                if (attacker != null)
                 {
-                    m_targetCreature = attacker;
-                    m_lastKnownTargetPos = attacker.transform.position;
-                    m_beenAtLastPos = false;
-                    m_targetStatic = null;
+                    if (_combatAI != null && !_combatAI.IsEngaged)
+                        _combatAI.Engage(attacker);
+                    else if (_combatAI != null && _combatAI.IsEngaged)
+                        _combatAI.OnDamaged(attacker);
+                    else if (m_targetCreature == null)
+                    {
+                        m_targetCreature = attacker;
+                        m_lastKnownTargetPos = attacker.transform.position;
+                        m_beenAtLastPos = false;
+                        m_targetStatic = null;
+                    }
                 }
             }
         }
@@ -3874,11 +3045,6 @@ namespace Companions
             if (_groundStuckRecoveryTimer > 0f) return; // stuck recovery handles movement
             if (_inContextSteerFallback) return;         // context steer has its own stuck handling
 
-            // Ranged combat: companion is intentionally standing still to aim.
-            // Low velocity here is desired, not a sign of being stuck.
-            if (_combat != null && _combat.Phase == CombatController.CombatPhase.Ranged)
-                return;
-
             _proactiveJumpTimer -= dt;
             _proactiveJumpSuppressTimer -= dt;
 
@@ -4007,7 +3173,6 @@ namespace Companions
         private int   _groundStuckAttempts;         // escalating: 0-2 strafe, 3 jump+strafe, 4+ teleport
         private Vector3 _lastGroundStuckPos;        // position when first stuck detected (for reset)
         private float _continuousSwimTimer;         // time spent swimming (for proactive water escape)
-        private float _combatMoveStuckTimer;        // stuck while moving toward combat target
         private float _groundStuckSuppressTimer;    // when > 0, all stuck recovery suppressed
 
         private const float GroundStuckThreshold = 2.0f;     // seconds of low velocity before stuck
@@ -4988,10 +4153,6 @@ namespace Companions
                 if (_debugLogTimer <= 0f)
                 {
                     _debugLogTimer = 2f;
-                    float distToTarget = m_targetCreature != null
-                        ? Vector3.Distance(transform.position, m_targetCreature.transform.position)
-                        : -1f;
-
                     bool onGround = m_character != null && m_character.IsOnGround();
                     bool canMove = m_character != null && m_character.CanMove();
 
@@ -5004,7 +4165,6 @@ namespace Companions
                     CompanionsPlugin.Log.LogWarning(
                         $"[AI:STUCK] {_stuckDetectTimer:F1}s — " +
                         $"phase={GetAIPhase()} " +
-                        $"target=\"{m_targetCreature?.m_name ?? "null"}\" targetDist={distToTarget:F1} " +
                         $"follow=\"{follow?.name ?? "null"}\" followDist={distToFollow:F1} " +
                         $"inAttack={inAttack} isAlerted={IsAlerted()} " +
                         $"charging={IsCharging()} pos={transform.position:F1} " +
@@ -5028,35 +4188,17 @@ namespace Companions
                 _debugLogTimer = logInterval;
 
                 float vel = m_character?.GetVelocity().magnitude ?? 0f;
-                float distToTarget = m_targetCreature != null
-                    ? Vector3.Distance(transform.position, m_targetCreature.transform.position) : -1f;
                 var weapon = (m_character as Humanoid)?.GetCurrentWeapon();
-                var combat = _combat;
-
-                int curStance = _setup != null ? _setup.GetCombatStance() : CompanionSetup.StanceBalanced;
-                string stanceName;
-                switch (curStance)
-                {
-                    case CompanionSetup.StanceAggressive: stanceName = "Aggressive"; break;
-                    case CompanionSetup.StanceDefensive:  stanceName = "Defensive"; break;
-                    case CompanionSetup.StancePassive:    stanceName = "Passive"; break;
-                    case CompanionSetup.StanceMelee:      stanceName = "Melee"; break;
-                    case CompanionSetup.StanceRanged:     stanceName = "Ranged"; break;
-                    default:                              stanceName = "Balanced"; break;
-                }
 
                 CompanionsPlugin.Log.LogDebug(
                     $"[AI:State] phase={GetAIPhase()} " +
-                    $"target=\"{m_targetCreature?.m_name ?? "null"}\"({distToTarget:F1}) " +
                     $"follow=\"{follow?.name ?? "null"}\"({distToFollow:F1}) " +
                     $"weapon=\"{weapon?.m_shared?.m_name ?? "null"}\" " +
-                    $"combat={combat?.Phase} stance={stanceName} " +
                     $"vel={vel:F1} moved={moved:F2} pathOK={pathOk} " +
                     $"onGround={m_character?.IsOnGround() ?? false} " +
                     $"swimming={m_character?.IsSwimming() ?? false} swimTimer={_continuousSwimTimer:F1} " +
                     $"groundStuck={_groundStuckTimer:F1} stuckAttempts={_groundStuckAttempts} " +
-                    $"combatStuck={_combatMoveStuckTimer:F1} " +
-                    $"alerted={IsAlerted()} suppress={SuppressAttack} " +
+                    $"alerted={IsAlerted()} " +
                     $"pos={transform.position:F1}");
             }
         }

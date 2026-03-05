@@ -289,6 +289,7 @@ namespace Companions
                 { "hc_radial_fish", "Fish" },
                 { "hc_radial_repair", "Repair" },
                 { "hc_radial_restock", "Restock" },
+                { "hc_radial_despawn", "Despawn" },
                 { "hc_radial_active", "ACTIVE" },
                 { "hc_radial_on", "ON" },
                 { "hc_radial_off", "OFF" },

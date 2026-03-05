@@ -4,45 +4,12 @@ using UnityEngine;
 namespace Companions
 {
     /// <summary>
-    /// Perfect parry timing and food-based max health for companions.
-    /// Uses ReflectionHelper for safe block timer access.
-    ///
-    /// Note: EquipBestWeapon and DoAttack patches were removed — CompanionAI
-    /// owns weapon selection and attack logic directly (no MonsterAI).
+    /// Damage mitigation patches for companions.
     /// </summary>
     public static class CombatPatches
     {
         private static float _lastHealthLogTime;
         private const float HealthLogInterval = 5f;
-
-        [HarmonyPatch(typeof(Humanoid), "BlockAttack")]
-        private static class BlockAttack_Patch
-        {
-            static void Prefix(Humanoid __instance, HitData hit, Character attacker)
-            {
-                if (__instance.GetComponent<CompanionSetup>() == null) return;
-
-                float timer = ReflectionHelper.GetBlockTimer(__instance);
-                string attackerName = attacker != null ? attacker.m_name : "unknown";
-                float totalDmg = hit != null ? hit.GetTotalDamage() : 0f;
-
-                if (timer >= 0f)
-                {
-                    CompanionsPlugin.Log.LogDebug(
-                        $"[Combat] PARRY — BlockAttack fired! timer={timer:F3}→0 " +
-                        $"attacker=\"{attackerName}\" dmg={totalDmg:F0} " +
-                        $"companion=\"{__instance.m_name}\"");
-                    ReflectionHelper.TrySetBlockTimer(__instance, 0f);
-                }
-                else
-                {
-                    CompanionsPlugin.Log.LogWarning(
-                        $"[Combat] BlockAttack fired but timer={timer:F3} (not blocking?) " +
-                        $"attacker=\"{attackerName}\" dmg={totalDmg:F0} " +
-                        $"companion=\"{__instance.m_name}\"");
-                }
-            }
-        }
 
         /// <summary>
         /// Neutralize backstab damage multiplier on companions.
