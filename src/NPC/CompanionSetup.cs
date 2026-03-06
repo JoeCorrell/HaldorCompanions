@@ -81,6 +81,7 @@ namespace Companions
         private HarvestController _harvestCached;
         private CompanionRest     _restCached;
         private SmeltController   _smeltCached;
+        private HuntController    _huntCached;
         private bool           _initialized;
         private bool           _ownerMismatchLogged;
         private bool           _uiFrozen;
@@ -118,6 +119,7 @@ namespace Companions
             _harvestCached = GetComponent<HarvestController>();
             _restCached    = GetComponent<CompanionRest>();
             _smeltCached   = GetComponent<SmeltController>();
+            _huntCached    = GetComponent<HuntController>();
 
             CompanionsPlugin.Log.LogInfo(
                 $"[Setup] Awake — nview={_nview != null} visEquip={_visEquip != null} " +
@@ -201,6 +203,20 @@ namespace Companions
             // so the pin stays visible during harvest, smelt, rest, etc.
             UpdateMinimapPin();
 
+            // Encumbered status effect — mirrors Player.Update() logic
+            if (_nview != null && _nview.IsOwner() && _humanoid != null)
+            {
+                var inv  = _humanoid.GetInventory();
+                var seman = _humanoid.GetSEMan();
+                if (inv != null && seman != null)
+                {
+                    if (inv.GetTotalWeight() > CompanionTierData.MaxCarryWeight)
+                        seman.AddStatusEffect(SEMan.s_statusEffectEncumbered);
+                    else
+                        seman.RemoveStatusEffect(SEMan.s_statusEffectEncumbered);
+                }
+            }
+
             // Ensure follow target stays set for follow/gather modes.
             // It can be lost on zone reload, player respawn, or after combat.
             if (_ai != null && _ai.GetFollowTarget() == null && Player.m_localPlayer != null)
@@ -246,6 +262,9 @@ namespace Companions
 
                 if (_smeltCached != null && _smeltCached.IsActive)
                     return; // SmeltController is driving movement
+
+                if (_huntCached != null && _huntCached.IsActive)
+                    return; // HuntController (via CombatAI) is driving movement
 
                 if (_restCached != null && (_restCached.IsNavigating || _restCached.IsResting))
                     return; // CompanionRest is navigating to a bed/fire or resting
@@ -502,8 +521,9 @@ namespace Companions
                 case ModeForage:
                 case ModeSmelt:
                 case ModeFarm:
+                case ModeHunt:
                     // Don't override follow target if HarvestController, SmeltController,
-                    // or FarmController is actively driving movement.
+                    // FarmController, or HuntController is actively driving movement.
                     // Skip this guard when force=true (UI close restoration).
                     if (!force)
                     {
@@ -526,6 +546,13 @@ namespace Companions
                         {
                             CompanionsPlugin.Log.LogDebug(
                                 $"[Setup]   → Farm mode={mode}, farm active — skipping follow override");
+                            break;
+                        }
+                        var huntCheck = GetComponent<HuntController>();
+                        if (huntCheck != null && huntCheck.IsActive)
+                        {
+                            CompanionsPlugin.Log.LogDebug(
+                                $"[Setup]   → Hunt mode={mode}, hunt active — skipping follow override");
                             break;
                         }
                     }

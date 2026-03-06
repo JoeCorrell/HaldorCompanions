@@ -66,6 +66,9 @@ namespace Companions
         private bool _engaged;
         internal bool IsEngaged => _engaged;
 
+        // Hunt mode — set by HuntController to target prey animals with forced ranged stance
+        internal bool HuntMode { get; set; }
+
         // Combat stance — refreshed each Engage and frame from ZDO
         private int _stance;
 
@@ -118,7 +121,8 @@ namespace Companions
             _timeSinceAttacking = 0f;
             _timeSinceSensedTarget = 0f;
             _updateTargetTimer = 0f;
-            _updateWeaponTimer = 0f;
+            _updateWeaponTimer   = 0f;
+            _weaponSwitchCooldown = 0f;   // ensure bow equips on first frame of hunt
             _pauseTimer = Random.Range(0f, CircleTargetInterval);
             _interceptTime = Random.Range(InterceptTimeMin, InterceptTimeMax);
             _unableToAttackTargetTimer = 0f;
@@ -153,6 +157,7 @@ namespace Companions
             _ai.ChargeStop();
             ClearBlock();
             _parryAttackCount = 0;
+            HuntMode = false;
 
             CompanionsPlugin.Log.LogInfo(
                 $"[CombatAI] Disengaged — was targeting \"{targetName}\"");
@@ -249,7 +254,7 @@ namespace Companions
             // Suppressed during parry counter-attacks (press the advantage)
             bool isBlocking = ReflectionHelper.GetBlocking(_character);
             if (CircleTargetInterval > 0f && _targetCreature != null && !isBlocking
-                && _parryAttackCount <= 0)
+                && _parryAttackCount <= 0 && !HuntMode)
             {
                 _pauseTimer += dt;
                 if (_pauseTimer > CircleTargetInterval)
@@ -334,10 +339,18 @@ namespace Companions
                             _ai.SetAlerted(true);
                         }
 
-                        bool inRange = dist < weapon.m_shared.m_aiAttackRange;
+                        // Player items have m_aiAttackRange = 2f (player default, not useful for AI).
+                        // In HuntMode use a fixed bow range so the companion shoots from distance.
+                        const float HuntAttackRange = 15f;
+                        const float HuntStandoff    = 10f;
+                        float effectiveRange = HuntMode ? HuntAttackRange : weapon.m_shared.m_aiAttackRange;
+                        bool inRange = dist < effectiveRange;
 
-                        if (!inRange || !canSeeTarget ||
-                            weapon.m_shared.m_aiAttackRangeMin < 0f || !_ai.IsAlerted())
+                        float stopDist = HuntMode ? HuntStandoff : 0f;
+                        bool shouldApproach = !inRange || !canSeeTarget || !_ai.IsAlerted()
+                            || (!HuntMode && weapon.m_shared.m_aiAttackRangeMin < 0f);
+
+                        if (shouldApproach)
                         {
                             // Move toward target with intercept prediction
                             Vector3 velocity = _targetCreature.GetVelocity();
@@ -347,7 +360,7 @@ namespace Companions
                             {
                                 moveTarget += velocity * _interceptTime;
                             }
-                            _ai.MoveToPoint(dt, moveTarget, 0f, true);
+                            _ai.MoveToPoint(dt, moveTarget, stopDist, true);
 
                             if (_timeSinceAttacking > UnableToAttackDuration)
                             {
@@ -455,9 +468,9 @@ namespace Companions
                 _updateTargetTimer = nearPlayer
                     ? UpdateTargetIntervalNear : UpdateTargetIntervalFar;
 
-                // Find new enemy (skip deer)
+                // Find new enemy — skip passive animals unless we are in hunt mode
                 Character enemy = _ai.FindNearbyEnemy();
-                if (enemy != null && IsPassiveAnimal(enemy))
+                if (enemy != null && IsPassiveAnimal(enemy) && !HuntMode)
                     enemy = null;
                 if (enemy != null)
                 {
@@ -518,7 +531,7 @@ namespace Companions
                         $"[CombatAI] Target \"{_targetCreature.m_name}\" died");
                     _targetCreature = null;
                 }
-                else if (!_ai.IsEnemy(_targetCreature))
+                else if (!HuntMode && !_ai.IsEnemy(_targetCreature))
                 {
                     CompanionsPlugin.Log.LogInfo(
                         $"[CombatAI] Target \"{_targetCreature.m_name}\" no longer enemy");
@@ -588,7 +601,7 @@ namespace Companions
                     bool stanceForced = false;
                     var equipped = _humanoid.GetCurrentWeapon();
 
-                    if (_stance == CompanionSetup.StanceRanged)
+                    if (_stance == CompanionSetup.StanceRanged || HuntMode)
                     {
                         bool isRanged = equipped != null &&
                             equipped.m_shared.m_itemType == ItemDrop.ItemData.ItemType.Bow;
@@ -604,7 +617,7 @@ namespace Companions
                         }
                         // else: correct weapon already equipped, skip EquipBestWeapon
                     }
-                    else if (_stance == CompanionSetup.StanceMelee)
+                    else if (!HuntMode && _stance == CompanionSetup.StanceMelee)
                     {
                         bool isMelee = equipped != null &&
                             (equipped.m_shared.m_itemType == ItemDrop.ItemData.ItemType.OneHandedWeapon

@@ -573,10 +573,32 @@ namespace Companions
             // Null out the scrollbar (it references a sibling in the original container)
             _grid.m_scrollbar = null;
 
-            // Keep cloned UIGroupHandler â€” it's needed for gamepad input gating.
-            // We inject it into InventoryGui.m_uiGroups[0] when Show() is called
-            // so that RB/LB tab switching and D-pad navigation work correctly.
-            _uiGroup = _root.GetComponentInChildren<UIGroupHandler>(true);
+            // Do NOT trust cloned UIGroupHandler metadata; it can carry references
+            // that auto-activate unrelated grouped elements. Build a clean handler
+            // on the companion grid and disable all other cloned handlers.
+            _uiGroup = _grid.GetComponent<UIGroupHandler>();
+            if (_uiGroup == null)
+                _uiGroup = _grid.gameObject.AddComponent<UIGroupHandler>();
+
+            foreach (var group in _root.GetComponentsInChildren<UIGroupHandler>(true))
+            {
+                if (group == _uiGroup) continue;
+                group.SetActive(false);
+                if (group.m_enableWhenActiveAndGamepad != null)
+                    group.m_enableWhenActiveAndGamepad.SetActive(false);
+                group.enabled = false;
+            }
+
+            if (_uiGroup.m_enableWhenActiveAndGamepad != null)
+                _uiGroup.m_enableWhenActiveAndGamepad.SetActive(false);
+            _uiGroup.m_enableWhenActiveAndGamepad = null;
+            _uiGroup.m_defaultElement = _grid.gameObject;
+            _uiGroup.m_defaultElementFallbackMode = DefaultElementFallbackMode.NextBelow;
+            _uiGroup.m_setDefaultOnKBM = false;
+            _uiGroup.m_resetActiveElementOnStateChange = true;
+            // Critical: ensure InventoryGrid.UpdateGamepad gates off our dedicated
+            // companion group, not a cloned/shared reference from vanilla.
+            _grid.m_uiGroup = _uiGroup;
 
             // Wire D-pad edge navigation: pressing Up at top of companion grid â†’ player grid
             _grid.OnMoveToUpperInventoryGrid = OnMoveToUpperGrid;
@@ -794,13 +816,14 @@ namespace Companions
             float foodRowW = FoodSlotCount * slotSize + (FoodSlotCount - 1) * foodGap;
             float sectionH = slotSize + 16f;
 
-            // Expand panel to make room
+            // foodExpansion drives all grid/food-slot layout math — keep it at full size.
+            // The panel itself is expanded by 10px less so the final UI is shorter.
             float foodExpansion = sectionH + 4f;
             var rootRT = _root.GetComponent<RectTransform>();
             if (rootRT != null)
             {
                 var sd = rootRT.sizeDelta;
-                sd.y += foodExpansion;
+                sd.y += foodExpansion - 10f;   // panel 10px shorter; layout refs use full value
                 rootRT.sizeDelta = sd;
             }
 
@@ -812,10 +835,22 @@ namespace Companions
                 var gridRT = _grid.transform as RectTransform;
                 if (gridRT != null)
                 {
+                    const float gridYOffset = -10f;
                     gridRT.offsetMin = new Vector2(
                         gridRT.offsetMin.x,
-                        gridRT.offsetMin.y + foodExpansion);
+                        gridRT.offsetMin.y + foodExpansion + gridYOffset);
+
+                    // offsetMax (grid top) is left at its vanilla value — the name
+                    // input sits above and the vanilla padding already clears it.
                 }
+            }
+
+            // Center gridRoot in the viewport (0f). The old -2f shift was pushing
+            // content down and clipping the top row; 0f is the correct default.
+            if (_grid != null && _grid.m_gridRoot != null)
+            {
+                Vector2 p = _grid.m_gridRoot.anchoredPosition;
+                _grid.m_gridRoot.anchoredPosition = new Vector2(p.x, 0f);
             }
 
             _foodSlotsContainer = new GameObject("FoodSlots", typeof(RectTransform));
@@ -825,7 +860,19 @@ namespace Companions
             containerRT.anchorMax = new Vector2(1f, 0f);
             containerRT.pivot     = new Vector2(0.5f, 0f);
             containerRT.sizeDelta = new Vector2(0f, sectionH);
-            containerRT.anchoredPosition = new Vector2(0f, 4f);
+            float containerY = 4f;
+            if (_grid != null)
+            {
+                var gridRT = _grid.transform as RectTransform;
+                if (gridRT != null)
+                {
+                    // Anchor food row to the actual bottom of the grid area.
+                    // This removes large visual gaps caused by varying cloned panel padding.
+                    const float gap = 2f;
+                    containerY = gridRT.offsetMin.y - sectionH - gap;
+                }
+            }
+            containerRT.anchoredPosition = new Vector2(0f, containerY + 12f);
 
             // "Food" label
             var labelGO = new GameObject("FoodLabel", typeof(RectTransform));
@@ -915,7 +962,10 @@ namespace Companions
             if (rootRT != null)
             {
                 var sd = rootRT.sizeDelta;
-                sd.y += rowH + 4f;
+                // Keep only a tiny buffer here. The cloned vanilla container already
+                // has bottom space from hidden buttons; adding full rowH+4 created
+                // an extra ~30px visual gap between grid and food slots.
+                sd.y += 2f;
                 rootRT.sizeDelta = sd;
             }
 
@@ -1306,6 +1356,9 @@ namespace Companions
             _savedVanillaGroup = groups[0];
             _savedContainerGrid = _containerGridField?.GetValue(gui) as InventoryGrid;
 
+            if (_savedVanillaGroup != null)
+                _uiGroup.m_groupPriority = _savedVanillaGroup.m_groupPriority;
+
             // Inject our companion UIGroupHandler and grid
             groups[0] = _uiGroup;
             _containerGridField?.SetValue(gui, _grid);
@@ -1689,6 +1742,40 @@ namespace Companions
                 if (sameCompanionContainer) return;
 
                 Instance.HideForContainerSwitch();
+            }
+        }
+
+        [HarmonyPatch(typeof(InventoryGui), "UpdateContainer")]
+        private static class InventoryGuiUpdateContainerPatch
+        {
+            [HarmonyPrefix]
+            private static bool Prefix(InventoryGui __instance)
+            {
+                if (Instance == null || !Instance._visible || Instance._companion == null)
+                    return true;
+
+                // If a different container took over (e.g. chest), restore vanilla bindings
+                // before InventoryGui.UpdateContainer can push that inventory into our grid.
+                Container current = null;
+                if (_currentContainerField != null)
+                    current = _currentContainerField.GetValue(__instance) as Container;
+
+                if (current == null || current != Instance._companionContainer)
+                {
+                    Instance.HideForContainerSwitch();
+                    return true;
+                }
+
+                // Companion container is active: drive companion panel ourselves and suppress
+                // vanilla container rendering/update path to prevent cross-container ghosting.
+                if (__instance.m_container != null)
+                    __instance.m_container.gameObject.SetActive(false);
+
+                Instance.UpdateGrid();
+                Instance.FixEquippedIndicators();
+                Instance.UpdateWeightAndArmor();
+                Instance.RefreshFoodSlots(Instance.GetStorageInventory());
+                return false;
             }
         }
 

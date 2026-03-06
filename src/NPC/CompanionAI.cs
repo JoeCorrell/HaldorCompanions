@@ -213,6 +213,7 @@ namespace Companions
         private RepairController _repair;
         private SmeltController _smelt;
         private FarmController _farm;
+        private HuntController _hunt;
         private HomesteadController _homestead;
         private DoorHandler _doorHandler;
         private CompanionRest _rest;
@@ -227,12 +228,18 @@ namespace Companions
         {
             base.Awake();
 
+            // Use the standard humanoid navmesh. The companion should not carry an
+            // extra avoid-water policy on top of vanilla movement/pathfinding.
+            m_pathAgentType = Pathfinding.AgentType.Humanoid;
+            m_avoidWater = false;
+
             _setup = GetComponent<CompanionSetup>();
             _combatAI = GetComponent<CompanionCombatAI>();
             _harvest = GetComponent<HarvestController>();
             _repair = GetComponent<RepairController>();
             _smelt = GetComponent<SmeltController>();
             _farm = GetComponent<FarmController>();
+            _hunt = GetComponent<HuntController>();
             _homestead = GetComponent<HomesteadController>();
             _doorHandler = GetComponent<DoorHandler>();
             _rest = GetComponent<CompanionRest>();
@@ -1523,17 +1530,12 @@ namespace Companions
             // Drowning — damage companion when swimming with no stamina
             UpdateDrowning(dt);
 
-            // Hazard recovery — escape tar pits and water
+            // Hazard recovery — escape tar, lava, or actual drowning only
             if (UpdateHazardRecovery(dt))
                 return true; // survival overrides all other AI
 
             // Periodic blacklist cleanup
             CleanupBlacklist(dt);
-
-            // Proactive water avoidance — if on dry ground heading toward water
-            // with insufficient stamina, stop moving and let pathfinding re-route
-            if (UpdateWaterAvoidance(dt))
-                return true;
 
             // Auto-pickup — passively collect nearby items
             AutoPickup(dt);
@@ -2042,6 +2044,7 @@ namespace Companions
                 (_farm != null && _farm.IsActive) ||
                 (_homestead != null && _homestead.IsActive) ||
                 (_doorHandler != null && _doorHandler.IsActive) ||
+                (_hunt != null && _hunt.IsActive) ||
                 IsRepairBuildActive ||
                 IsRestockActive)
                 return true;
@@ -2193,17 +2196,13 @@ namespace Companions
         // ══════════════════════════════════════════════════════════════════════
 
         /// <summary>
-        /// Proactive hazard recovery. Detects dangerous conditions and moves toward
-        /// solid ground BEFORE the companion dies:
+        /// Hazard recovery is limited to true hazards:
+        /// - in tar
+        /// - in lava
+        /// - swimming with zero stamina (actual drowning)
         ///
-        /// Triggers:
-        /// - In tar (always dangerous)
-        /// - In lava (always dangerous)
-        /// - Swimming AND stamina below 30% (drowning risk)
-        /// - Swimming AND health below 50% (taking heavy damage)
-        /// - Swimming for 5+ continuous seconds without a follow target in water
-        ///
-        /// Uses multi-radius land sampling (5m/10m/20m × 12 directions) to find
+        /// Normal water traversal is handled by standard humanoid pathing.
+        /// Uses multi-radius land sampling (5m/10m/20m x 12 directions) to find
         /// the closest shore rather than just the highest nearby point.
         /// </summary>
         private bool UpdateHazardRecovery(float dt)
@@ -2212,46 +2211,14 @@ namespace Companions
             bool inLava = m_character.InLava();
             bool isSwimming = m_character.IsSwimming();
 
-            // Proactive water escape — trigger BEFORE stamina runs out
             bool waterDanger = false;
             string waterReason = null;
             if (isSwimming && _companionStamina != null)
             {
-                float staminaPct = _companionStamina.MaxStamina > 0f
-                    ? _companionStamina.Stamina / _companionStamina.MaxStamina : 0f;
-                float healthPct = m_character.GetMaxHealth() > 0f
-                    ? m_character.GetHealth() / m_character.GetMaxHealth() : 0f;
-
                 if (_companionStamina.Stamina <= 0f)
                 {
                     waterDanger = true;
                     waterReason = "DROWNING(no stamina)";
-                }
-                else if (staminaPct < 0.5f)
-                {
-                    waterDanger = true;
-                    waterReason = $"LOW_STAMINA({staminaPct*100:F0}%)";
-                }
-                else if (healthPct < 0.5f)
-                {
-                    waterDanger = true;
-                    waterReason = $"LOW_HEALTH({healthPct*100:F0}%)";
-                }
-                else if (_continuousSwimTimer > 3f)
-                {
-                    // Swimming too long — check if follow target is also in water
-                    bool followInWater = false;
-                    if (m_follow != null)
-                    {
-                        var followChar = m_follow.GetComponent<Character>();
-                        if (followChar != null && followChar.IsSwimming())
-                            followInWater = true;
-                    }
-                    if (!followInWater)
-                    {
-                        waterDanger = true;
-                        waterReason = $"SWIM_TIMEOUT({_continuousSwimTimer:F1}s)";
-                    }
                 }
             }
 
@@ -2347,59 +2314,7 @@ namespace Companions
         }
 
         // ══════════════════════════════════════════════════════════════════════
-        //  Proactive Water Avoidance
-        // ══════════════════════════════════════════════════════════════════════
-
-        private float _waterAvoidLogTimer;
-
-        /// <summary>
-        /// Prevents the companion from walking into water when stamina is too low
-        /// to survive swimming. Samples terrain 3m ahead in movement direction —
-        /// if it's below water level and stamina is under 50%, stops movement.
-        /// HumanoidAvoidWater pathfinding handles routing around water normally;
-        /// this is a safety net for edge cases (direct MoveTowards, physics push).
-        /// Returns true if movement was blocked.
-        /// </summary>
-        private bool UpdateWaterAvoidance(float dt)
-        {
-            if (m_character.IsSwimming()) return false; // handled by hazard recovery
-            if (!m_character.IsOnGround()) return false;
-            if (ZoneSystem.instance == null) return false;
-
-            // Only check when actually moving
-            Vector3 vel = m_character.GetVelocity();
-            if (vel.magnitude < 0.3f) return false;
-
-            // Sample terrain 3m ahead in movement direction
-            Vector3 ahead = transform.position + vel.normalized * 3f;
-            float solidH = ZoneSystem.instance.GetSolidHeight(ahead);
-            if (solidH >= 30f) return false; // dry land ahead — 30f is sea level
-
-            // Water ahead — check stamina
-            float staminaPct = _companionStamina != null && _companionStamina.MaxStamina > 0f
-                ? _companionStamina.Stamina / _companionStamina.MaxStamina : 1f;
-
-            if (staminaPct < 0.5f)
-            {
-                StopMoving();
-                _waterAvoidLogTimer -= dt;
-                if (_waterAvoidLogTimer <= 0f)
-                {
-                    _waterAvoidLogTimer = 3f;
-                    CompanionsPlugin.Log.LogDebug(
-                        $"[AI] Water ahead with low stamina ({staminaPct * 100:F0}%) — " +
-                        $"refusing to enter. pos={transform.position:F1} solidH={solidH:F1}");
-                }
-                return true;
-            }
-
-            _waterAvoidLogTimer = 0f;
-            return false;
-        }
-
-        // ══════════════════════════════════════════════════════════════════════
-        //  Follow Teleport
-        // ══════════════════════════════════════════════════════════════════════
+        // Follow Teleport
 
         private void TeleportToFollowTarget()
         {
@@ -2429,7 +2344,7 @@ namespace Companions
                 body.linearVelocity = Vector3.zero;
             }
 
-            // Reset context steer state — after a teleport the old direction is invalid.
+            // Reset context steer state after a teleport; the old direction is invalid.
             _ctxSmoothedDir = Vector3.zero;
             _pathStuckTimer = 0f;
             _navClaimedDoneCount = 0;
@@ -3078,6 +2993,7 @@ namespace Companions
                                (_smelt != null && _smelt.IsActive) ||
                                (_farm != null && _farm.IsActive) ||
                                (_repair != null && _repair.IsActive) ||
+                               (_hunt != null && _hunt.IsActive) ||
                                IsRepairBuildActive ||
                                IsRestockActive ||
                                _returningHome;
@@ -3349,6 +3265,7 @@ namespace Companions
                                (_smelt != null && _smelt.IsActive) ||
                                (_farm != null && _farm.IsActive) ||
                                (_repair != null && _repair.IsActive) ||
+                               (_hunt != null && _hunt.IsActive) ||
                                IsRepairBuildActive ||
                                IsRestockActive ||
                                (_doorHandler != null && _doorHandler.IsActive) ||
@@ -4240,3 +4157,4 @@ namespace Companions
         }
     }
 }
+

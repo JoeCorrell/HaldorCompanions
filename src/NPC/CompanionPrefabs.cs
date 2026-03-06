@@ -304,6 +304,10 @@ namespace Companions
             go.AddComponent<FarmController>();
             CompanionsPlugin.Log.LogInfo($"[CompanionPrefabs]   + FarmController ({def.PrefabName})");
 
+            // Hunting (hunt boar/deer/chicken with bow in ModeHunt)
+            go.AddComponent<HuntController>();
+            CompanionsPlugin.Log.LogInfo($"[CompanionPrefabs]   + HuntController ({def.PrefabName})");
+
             // Autonomous base maintenance (refuel fires, repair buildings, sort chests)
             go.AddComponent<HomesteadController>();
         }
@@ -375,9 +379,9 @@ namespace Companions
             CompanionsPlugin.Log.LogInfo("[CompanionPrefabs] Setting up CompanionAI...");
 
             // BaseAI perception — matches RenegadeVikings SetupMonsterAI exactly
-            ai.m_viewRange            = 30f;
+            ai.m_viewRange            = 20f;
             ai.m_viewAngle            = 120f;
-            ai.m_hearRange            = 30f;
+            ai.m_hearRange            = 20f;
             ai.m_mistVision           = true;
             ai.m_alertedEffects       = new EffectList();
             ai.m_idleSound            = new EffectList();
@@ -385,7 +389,7 @@ namespace Companions
             ai.m_idleSoundChance      = 0f;
 
             // Pathfinding — matches RV: moveMinAngle=90, smoothMovement=true
-            ai.m_pathAgentType        = Pathfinding.AgentType.HumanoidAvoidWater;
+            ai.m_pathAgentType        = Pathfinding.AgentType.Humanoid;
             ai.m_moveMinAngle         = 90f;
             ai.m_smoothMovement       = true;
             ai.m_serpentMovement      = false;
@@ -395,11 +399,11 @@ namespace Companions
             ai.m_randomMoveRange      = 10f;
             ai.m_avoidFire            = false;
             ai.m_afraidOfFire         = false;
-            ai.m_avoidWater           = true;
+            ai.m_avoidWater           = false;
             ai.m_aggravatable         = false;
 
             CompanionsPlugin.Log.LogInfo(
-                $"[CompanionPrefabs] CompanionAI configured: pathAgent=HumanoidAvoidWater " +
+                $"[CompanionPrefabs] CompanionAI configured: pathAgent=Humanoid " +
                 $"moveMinAngle={ai.m_moveMinAngle} smoothMove={ai.m_smoothMovement} " +
                 $"viewRange={ai.m_viewRange} hearRange={ai.m_hearRange} " +
                 $"randomMoveInterval={ai.m_randomMoveInterval} " +

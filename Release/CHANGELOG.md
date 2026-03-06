@@ -1,5 +1,70 @@
 # Changelog
 
+## 1.1.7
+
+### Hunt Mode
+- Added **Hunt** action mode — companions actively hunt Boar, Deer, Chicken, and Hare within 20m
+- Hunting is ranged-only; companions maintain distance so prey do not flee out of range
+- If prey runs beyond 20m, the companion disengages and stays planted rather than chasing indefinitely
+- Respects home zone — companions with Stay Home enabled only hunt within the home radius
+- Self-defense still works: if an enemy attacks while hunting, the companion handles the threat first then resumes hunting
+- Combat AI view and hear range reduced from 30m to 20m to match hunt scan radius
+- Fixed companion using melee weapons at the start of a hunt: weapon switch cooldown is now reset on engagement so the bow equips on the first frame
+- Fixed companion closing in on prey (charging into melee range): circling behavior is disabled during hunt and a standoff distance of 8m is enforced so the companion stays at bow range
+
+### Companion Inventory UI
+- Fixed companion inventory grid floating too high and overlapping the name box
+- Fixed a missing row at the top of the inventory grid
+- Fixed panel background texture not matching the vanilla Valheim style
+- Fixed food slot backgrounds disappearing when the panel background was corrected
+- Reduced panel height by 10px and raised food slots for better proportions
+- Fixed top inventory row being partially clipped by the name input box
+
+## 1.1.6
+
+### Companion Inventory UI
+- Fixed chest/container ghosting in the companion inventory by taking over companion container updates and blocking vanilla from pushing other container contents into the companion grid
+- Fixed gamepad focus leakage so the player inventory and companion inventory are no longer controlled at the same time
+- Adjusted companion inventory grid layout and positioning, including top-row highlight clipping fixes and a lower grid placement
+
+### Companion Stats
+- Increased default companion base stamina from 25 to 50 before food bonuses
+
+## 1.1.5
+
+### Combat AI Overhaul
+- Replaced CombatController with CompanionCombatAI — a complete rewrite ported from vanilla MonsterAI's combat loop with proper engage/disengage lifecycle
+- Added 4 combat stances selectable from the inner radial ring: **Balanced**, **Passive**, **Ranged**, **Melee**
+- Combat stances persist to ZDO and can be changed mid-combat
+- Ranged stance now forces bow equip and prevents AutoEquipBest from overriding it
+- Melee stance forces melee weapons even when a bow is available
+- Passive stance completely disables combat engagement
+
+### Parry System
+- Companions now reactively block when an enemy swings within 8m
+- Shield is raised late into the enemy's swing for a natural parry look
+- Block timer is reset each frame during the parry window to guarantee a perfect block
+- After a successful parry (enemy staggered), the companion queues 2 rapid counter-attacks
+- Parry works across all combat stances — including while holding a bow
+
+### Ranged Combat Fixes
+- Fixed bow being unequipped after every arrow shot — AutoEquipBest's shield section was removing the bow from the left hand to make room for a shield (bows are two-handed)
+- Fixed Dverger heal behavior overriding ranged stance bow
+
+### Target Reservation
+- Companions no longer fight over the same work target — Farm, Smelt, Repair, and Homestead controllers now use static claim sets so each companion picks a different target
+
+### Deposit Filter
+- Companions depositing items into chests now keep their equipped gear, food, weapons, armor, and shields instead of dumping everything
+
+### Radial Menu
+- Added **Despawn** button to the outer radial ring with custom icon
+- Increased outer ring radius for better spacing
+
+### Bug Fixes
+- Fixed companions moving around while the radial menu or inventory panel is open
+- Updated Discord invite links
+
 ## 1.1.4
 
 ### Companion Inventory Overhaul
