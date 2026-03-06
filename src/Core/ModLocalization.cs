@@ -345,6 +345,7 @@ namespace Companions
                 { "hc_speech_homestead_repaired", "Good as new." },
                 { "hc_speech_homestead_tidy", "Let me tidy up." },
                 { "hc_speech_homestead_tidied", "All tidied up." },
+                { "hc_speech_homestead_cooked", "Something tasty!" },
 
                 // ── Radial Repair / Restock speech ──
                 { "hc_speech_repair_buildings_done", "Everything's patched up." },

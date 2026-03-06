@@ -218,14 +218,6 @@ namespace Companions
             var zdo = _nview?.GetZDO();
             if (zdo == null) return false;
 
-            // In homestead mode, farming is managed by the rotation timer
-            if (_setup != null && _setup.GetStayHome()
-                && _setup.HasHomePosition() && !_setup.GetFollow())
-            {
-                var homestead = GetComponent<HomesteadController>();
-                return homestead != null && homestead.IsFarmTurn;
-            }
-
             return zdo.GetInt(CompanionSetup.ActionModeHash, CompanionSetup.ModeFollow)
                 == CompanionSetup.ModeFarm;
         }

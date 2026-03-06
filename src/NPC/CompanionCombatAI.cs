@@ -306,8 +306,10 @@ namespace Companions
 
             // Select best weapon
             ItemDrop.ItemData weapon = SelectBestAttack(dt);
+            // Extra 0.5s hold for bows so the companion draws longer before releasing
+            float bowHold = (weapon != null && weapon.m_shared.m_itemType == ItemDrop.ItemData.ItemType.Bow) ? 0.5f : 0f;
             bool weaponIntervalOk = weapon != null &&
-                Time.time - weapon.m_lastAttackTime > weapon.m_shared.m_aiAttackInterval;
+                Time.time - weapon.m_lastAttackTime > weapon.m_shared.m_aiAttackInterval + bowHold;
             float minInterval = ModConfig.AttackCooldown.Value;
             bool charIntervalOk = _character.GetTimeSinceLastAttack() >= minInterval;
             bool parryCounter = _parryAttackCount > 0;

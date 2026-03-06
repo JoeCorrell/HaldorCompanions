@@ -935,16 +935,6 @@ namespace Companions
             var zdo = _nview?.GetZDO();
             if (zdo == null) return false;
 
-            // In homestead mode, smelting is managed by the rotation timer — only
-            // run during the Smelt slot, even if ActionMode is set to Smelt.
-            if (_setup != null && _setup.GetStayHome()
-                && _setup.HasHomePosition() && !_setup.GetFollow())
-            {
-                var homestead = GetComponent<HomesteadController>();
-                return homestead != null && homestead.IsSmeltTurn;
-            }
-
-            // Outside homestead mode, check if action mode is explicitly Smelt
             return zdo.GetInt(CompanionSetup.ActionModeHash, CompanionSetup.ModeFollow)
                 == CompanionSetup.ModeSmelt;
         }

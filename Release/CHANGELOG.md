@@ -1,5 +1,34 @@
 # Changelog
 
+## 1.2.0
+
+### HomeLife System (Stay Home Overhaul)
+Companions left at home now behave organically instead of mechanically rotating through tasks. They use a weighted random behavior picker with per-behavior cooldowns, creating natural living-at-home behavior.
+
+#### Ambient Behaviors
+- **Wander** — companions walk continuously around the home area for 30-60 seconds, chaining random waypoints within the home radius
+- **Sit on chairs** — companions find nearby chairs and stools, walk over, sit down for 30-90 seconds with proper attach animation, then stand up and resume other activities
+- **Use workstations** — companions occasionally walk to a workbench or forge and stand at it for 10-20 seconds (cosmetic only)
+
+#### Cooking
+- Companions now **cook their own meals** at a Cauldron when hungry (empty food slot or food below 50% remaining)
+- Scans `ObjectDB` recipes filtered to the Cauldron's station type for food items the companion can craft
+- Gathers ingredients from nearby chests (supports multi-chest gathering), walks to the Cauldron, and crafts the meal
+- Announces "Something tasty!" on successful cook — the existing food auto-consume system handles eating
+- If inventory is full, the cooked item is dropped on the ground as a fallback
+
+#### In-Place Chest Sorting
+- Replaced cross-chest item transfer with **in-place chest sorting** — items within each chest are reorganized by type and name without moving items between chests
+- Sort priority: Weapons → Shields → Armor → Consumables → Materials → Trophies → Ammo
+
+#### Maintained Behaviors
+- **Repair buildings** — finds damaged structures (below 50% health) within home radius and repairs them (kept from previous system)
+- **Refuel fires** — finds low-fuel fireplaces and refuels them from nearby chests or inventory (kept from previous system)
+
+#### Architecture Changes
+- SmeltController and FarmController are now fully independent — no longer gated by HomesteadController's task rotation
+- Weighted behavior selection prevents repetitive loops (each behavior has a cooldown after completion)
+
 ## 1.1.9
 
 ### Harvesting Fixes
