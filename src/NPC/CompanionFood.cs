@@ -288,7 +288,7 @@ namespace Companions
             {
                 if (_foods[i].IsActive) continue;
 
-                var item = FindFoodForSlot(inv, i);
+                var item = FindFoodForSlot(inv);
                 if (item == null)
                 {
                     CompanionsPlugin.Log.LogDebug(
@@ -313,7 +313,7 @@ namespace Companions
                 int refreshSlot = FindMostDepletedRefreshableSlot();
                 if (refreshSlot >= 0)
                 {
-                    var item = FindFoodForSlot(inv, refreshSlot);
+                    var item = FindFoodForSlot(inv);
                     if (item != null)
                     {
                         CompanionsPlugin.Log.LogDebug(
@@ -556,7 +556,7 @@ namespace Companions
                    !_seman.HaveStatusEffectCategory(consumeSE.m_category);
         }
 
-        private ItemDrop.ItemData FindFoodForSlot(Inventory inv, int slot)
+        private ItemDrop.ItemData FindFoodForSlot(Inventory inv)
         {
             // Scan all inventory slots for valid food (food slots are display-only).
             List<ItemDrop.ItemData> all = inv.GetAllItemsInGridOrder();

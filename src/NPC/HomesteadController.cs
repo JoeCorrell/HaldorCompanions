@@ -98,6 +98,10 @@ namespace Companions
         // an expiry time. Scans skip blacklisted targets to prevent infinite
         // retry loops on unreachable locations.
         private readonly Dictionary<int, float> _blacklist = new Dictionary<int, float>();
+        private readonly List<int> _expiredKeys = new List<int>();
+        private readonly Dictionary<string, List<(Container chest, int count)>> _sortItemMap =
+            new Dictionary<string, List<(Container chest, int count)>>();
+        private readonly Dictionary<string, int> _sortLocalCounts = new Dictionary<string, int>();
         private const float BlacklistDuration = 120f;
 
         // ── Constants ───────────────────────────────────────────────────────
@@ -135,10 +139,12 @@ namespace Companions
             Log("Awake OK");
         }
 
+        private void OnDestroy() { UnclaimPiece(); }
+
         private void Update()
         {
             if (_nview == null || _nview.GetZDO() == null || !_nview.IsOwner()) return;
-            if (_character == null || _character.IsDead()) return;
+            if (_character == null || _character.GetHealth() <= 0f) return;
 
             // Only active in homestead mode (StayHome ON, Follow OFF)
             if (!IsHomesteadMode())
@@ -815,7 +821,7 @@ namespace Companions
             if (_nearbyChests.Count < 2) return false;
 
             // Build map: itemPrefab → list of (container, count)
-            var itemMap = new Dictionary<string, List<(Container chest, int count)>>();
+            _sortItemMap.Clear();
 
             for (int c = 0; c < _nearbyChests.Count; c++)
             {
@@ -825,22 +831,21 @@ namespace Companions
                 if (inv == null) continue;
 
                 var items = inv.GetAllItems();
-                // Count per-prefab in this chest
-                var localCounts = new Dictionary<string, int>();
+                _sortLocalCounts.Clear();
                 for (int i = 0; i < items.Count; i++)
                 {
                     string prefab = items[i].m_dropPrefab?.name ?? items[i].m_shared?.m_name;
                     if (string.IsNullOrEmpty(prefab)) continue;
-                    if (!localCounts.ContainsKey(prefab))
-                        localCounts[prefab] = 0;
-                    localCounts[prefab] += items[i].m_stack;
+                    if (!_sortLocalCounts.ContainsKey(prefab))
+                        _sortLocalCounts[prefab] = 0;
+                    _sortLocalCounts[prefab] += items[i].m_stack;
                 }
 
-                foreach (var kv in localCounts)
+                foreach (var kv in _sortLocalCounts)
                 {
-                    if (!itemMap.ContainsKey(kv.Key))
-                        itemMap[kv.Key] = new List<(Container, int)>();
-                    itemMap[kv.Key].Add((chest, kv.Value));
+                    if (!_sortItemMap.ContainsKey(kv.Key))
+                        _sortItemMap[kv.Key] = new List<(Container, int)>();
+                    _sortItemMap[kv.Key].Add((chest, kv.Value));
                 }
             }
 
@@ -850,7 +855,7 @@ namespace Companions
             string bestPrefab = null;
             int smallestStack = int.MaxValue;
 
-            foreach (var kv in itemMap)
+            foreach (var kv in _sortItemMap)
             {
                 if (kv.Value.Count < 2) continue;
 
@@ -1400,13 +1405,13 @@ namespace Companions
         {
             if (_blacklist.Count == 0) return;
             float now = Time.time;
-            var expired = new List<int>();
+            _expiredKeys.Clear();
             foreach (var kv in _blacklist)
             {
-                if (now >= kv.Value) expired.Add(kv.Key);
+                if (now >= kv.Value) _expiredKeys.Add(kv.Key);
             }
-            for (int i = 0; i < expired.Count; i++)
-                _blacklist.Remove(expired[i]);
+            for (int i = 0; i < _expiredKeys.Count; i++)
+                _blacklist.Remove(_expiredKeys[i]);
         }
 
         private void Log(string msg)

@@ -23,7 +23,7 @@ namespace Companions
 
         private const float DropScanRadius  = 12f;   // radius to search for drops around kill pos
         private const float DropPickupRange = 3.0f;  // close enough to Pickup()
-        private const float DropScanDelay   = 0.6f;  // wait for drops to spawn after kill
+        private const float DropScanDelay   = 5.0f;  // wait for death anim + drops to spawn
         private const float DropTimeout     = 12f;   // give up collecting after this many seconds
 
         private static readonly string[] s_preyPrefixes =
@@ -134,6 +134,7 @@ namespace Companions
                 $"dist={Vector3.Distance(transform.position, prey.transform.position):F1}m — engaging");
 
             _prey = prey;
+            _lastPreyPos = prey.transform.position;
             _combatAI.HuntMode = true;
             _combatAI.Engage(prey);
             _state = HuntState.Hunting;
@@ -145,24 +146,46 @@ namespace Companions
 
         private void UpdateHunting()
         {
-            // Self-defence took over (non-hunt engagement)
+            // Self-defence took over (non-hunt engagement).
+            // Still check if the prey died — transition to CollectingDrops
+            // immediately so drops aren't lost while fighting a hostile mob.
             if (_combatAI != null && _combatAI.IsEngaged && !_combatAI.HuntMode)
+            {
+                bool pd = !_prey;
+                bool pzi = !pd && !(_prey.GetComponent<ZNetView>()?.IsValid() ?? false);
+                bool pdead = !pd && !pzi && _prey.GetHealth() <= 0f;
+                if (pd || pzi || pdead)
+                {
+                    _killPos = (pd || pzi) ? _lastPreyPos : _prey.transform.position;
+                    _currentDrop        = null;
+                    _dropTimer          = 0f;
+                    _dropScanDelayTimer = DropScanDelay;
+                    _dropsPickedUp      = 0;
+                    _state              = HuntState.CollectingDrops;
+                    _prey               = null;
+                    CompanionsPlugin.Log.LogInfo(
+                        $"[Hunt] Prey killed during self-defence — collecting drops at {_killPos:F1}");
+                }
                 return;
+            }
 
             // CombatAI disengaged — either prey fled/died or it was cleared externally
             if (_combatAI == null || !_combatAI.IsEngaged)
             {
                 // Character.IsDead() always returns false for non-player characters.
-                // OnDeath() calls ZNetScene.Destroy immediately, so by the time this
-                // runs, _prey may already be Unity-null (destroyed). Use !_prey as the
-                // death signal, or fall back to GetHealth() if still accessible.
+                // OnDeath() calls ZNetScene.Destroy which clears the ZDO before
+                // Object.Destroy runs. Check ZNetView validity AND health.
                 bool preyDestroyed = !_prey;   // Unity fake-null = GameObject destroyed
-                bool preyDead = !preyDestroyed && _prey.GetHealth() <= 0f;
+                bool preyZdoInvalid = !preyDestroyed
+                    && !(_prey.GetComponent<ZNetView>()?.IsValid() ?? false);
+                bool preyDead = !preyDestroyed && !preyZdoInvalid
+                    && _prey.GetHealth() <= 0f;
 
-                if (preyDestroyed || preyDead)
+                if (preyDestroyed || preyZdoInvalid || preyDead)
                 {
                     // Use the last cached position — the reference may be null already.
-                    _killPos            = preyDestroyed ? _lastPreyPos : _prey.transform.position;
+                    _killPos            = (preyDestroyed || preyZdoInvalid)
+                                        ? _lastPreyPos : _prey.transform.position;
                     _currentDrop        = null;
                     _dropTimer          = 0f;
                     _dropScanDelayTimer = DropScanDelay;
@@ -171,7 +194,8 @@ namespace Companions
                     if (_ai != null) _ai.StopMoving();
 
                     CompanionsPlugin.Log.LogInfo(
-                        $"[Hunt] Prey killed (destroyed={preyDestroyed}) — collecting drops at {_killPos:F1}");
+                        $"[Hunt] Prey killed (destroyed={preyDestroyed} zdoInvalid={preyZdoInvalid}) " +
+                        $"— collecting drops at {_killPos:F1}");
                 }
                 else
                 {
@@ -192,14 +216,19 @@ namespace Companions
                 _lastPreyPos = target.transform.position;
 
             // Character.IsDead() returns false for all non-player characters — check
-            // health instead. Also handle Unity-null (destroyed between frames).
+            // health and ZNetView validity. ZNetScene.Destroy clears ZDO before
+            // Object.Destroy runs, so also check nview.
             bool targetDestroyed = !target;
-            bool targetDead = !targetDestroyed && target.GetHealth() <= 0f;
+            bool targetZdoInvalid = !targetDestroyed
+                && !(target.GetComponent<ZNetView>()?.IsValid() ?? false);
+            bool targetDead = !targetDestroyed && !targetZdoInvalid
+                && target.GetHealth() <= 0f;
 
-            if (targetDestroyed || targetDead)
+            if (targetDestroyed || targetZdoInvalid || targetDead)
             {
                 // Prey just died while CombatAI is still in its last frame — disengage and collect
-                _killPos = target != null ? target.transform.position : _lastPreyPos;
+                _killPos = (targetDestroyed || targetZdoInvalid)
+                         ? _lastPreyPos : target.transform.position;
                 _combatAI.Disengage();
                 _currentDrop        = null;
                 _dropTimer          = 0f;
@@ -244,6 +273,11 @@ namespace Companions
 
         private void UpdateCollectingDrops()
         {
+            // Pause collection during combat — CombatAI owns movement.
+            // Timer is frozen so drops don't time out while fighting.
+            if (_combatAI != null && _combatAI.IsEngaged)
+                return;
+
             float dt = Time.deltaTime;
             _dropTimer += dt;
 
@@ -259,8 +293,21 @@ namespace Companions
             if (_dropScanDelayTimer > 0f)
             {
                 _dropScanDelayTimer -= dt;
-                // Walk toward kill position during the delay
-                _ai?.MoveToPoint(dt, _killPos, DropPickupRange, true);
+                float distToKill = Vector3.Distance(transform.position, _killPos);
+
+                if (_dropScanDelayTimer > 0f)
+                {
+                    // Walk toward kill position during the delay; jog don't sprint
+                    _ai?.MoveToPoint(dt, _killPos, DropPickupRange, distToKill > 8f);
+                }
+                else
+                {
+                    // Delay just expired — stop cleanly before scanning for drops
+                    _ai?.StopMoving();
+                    CompanionsPlugin.Log.LogInfo(
+                        $"[Hunt] Drop delay expired — distToKill={distToKill:F1}m killPos={_killPos:F1} " +
+                        $"companionPos={transform.position:F1}");
+                }
                 return;
             }
 
@@ -316,6 +363,7 @@ namespace Companions
 
             GameObject best     = null;
             float      bestDist = float.MaxValue;
+            int validCount = 0;
 
             for (int i = 0; i < count; i++)
             {
@@ -328,6 +376,7 @@ namespace Companions
                 var nview = itemDrop.GetComponent<ZNetView>();
                 if (nview == null || !nview.IsValid()) continue;
 
+                validCount++;
                 float dist = Vector3.Distance(transform.position, itemDrop.transform.position);
                 if (dist < bestDist)
                 {
@@ -335,6 +384,11 @@ namespace Companions
                     best     = itemDrop.gameObject;
                 }
             }
+
+            if (validCount > 0 || _dropsPickedUp == 0)
+                CompanionsPlugin.Log.LogInfo(
+                    $"[Hunt] ScanForDrops: {validCount} items within {DropScanRadius}m of killPos={_killPos:F1} " +
+                    $"(companion at {transform.position:F1}, overlap count={count})");
 
             return best;
         }
@@ -379,7 +433,7 @@ namespace Companions
             bool stayHome = _setup != null && _setup.GetStayHome() && _setup.HasHomePosition();
             Vector3 origin = stayHome ? _setup.GetHomePosition() : transform.position;
             float radius   = stayHome
-                ? Mathf.Min(ScanRadius, CompanionSetup.MaxLeashDistance)
+                ? Mathf.Min(ScanRadius, _setup.GetHomeRadius())
                 : ScanRadius;
 
             Character best   = null;
@@ -387,7 +441,7 @@ namespace Companions
 
             foreach (Character c in Character.GetAllCharacters())
             {
-                if (c == null || c.IsDead() || c == _character) continue;
+                if (c == null || c.GetHealth() <= 0f || c == _character) continue;
                 if (!IsPrey(c)) continue;
 
                 float distSq = (c.transform.position - origin).sqrMagnitude;

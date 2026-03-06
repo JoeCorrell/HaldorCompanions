@@ -30,7 +30,7 @@ namespace Companions
 
             string localId = __instance.GetPlayerID().ToString();
 
-            foreach (var setup in Object.FindObjectsByType<CompanionSetup>(FindObjectsSortMode.None))
+            foreach (var setup in CompanionSetup.AllCompanions)
             {
                 var nview = setup.GetComponent<ZNetView>();
                 if (nview?.GetZDO() == null) continue;

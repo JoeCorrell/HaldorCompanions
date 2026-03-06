@@ -4,12 +4,12 @@
 
 <h1 align="center">Offline Companions</h1>
 
-<h3 align="center">Hire NPC companions from Haldor's shop - persistent allies with their own AI, inventory, voice lines, combat, gathering, farming, smelting, and base maintenance systems.</h3>
+<h3 align="center">Hire NPC companions from Haldor's shop - persistent allies with their own AI, inventory, voice lines, combat, gathering, farming, fishing, hunting, smelting, and base maintenance systems.</h3>
 
 <br/>
 
 <p align="center">
-<a href="https://github.com/JoeCorrell/OfflineCompanions/releases"><img src="https://img.shields.io/badge/Version-1.1.7-c9a44a?style=for-the-badge&labelColor=0d1117" alt="Version"></a>
+<a href="https://github.com/JoeCorrell/OfflineCompanions/releases"><img src="https://img.shields.io/badge/Version-1.1.9-c9a44a?style=for-the-badge&labelColor=0d1117" alt="Version"></a>
 <a href="#-requirements"><img src="https://img.shields.io/badge/BepInEx-5.4.2200+-e06c20?style=for-the-badge&labelColor=0d1117" alt="BepInEx"></a>
 <a href="#-requirements"><img src="https://img.shields.io/badge/Valheim-0.219+-4ade80?style=for-the-badge&labelColor=0d1117" alt="Valheim"></a>
 <a href="#"><img src="https://img.shields.io/badge/License-MIT-7c3aed?style=for-the-badge&labelColor=0d1117" alt="License"></a>
@@ -50,7 +50,7 @@
 
 Offline Companions adds persistent NPC allies to Valheim. A companion automatically spawns with you when you enter a new world for the first time. Additional companions can be purchased from Haldor's shop for **2,000 coins** if the optional [Trader Overhaul](https://github.com/JoeCorrell/TraderOverhaul) mod is installed, or spawned via console commands.
 
-Companions come with their own inventory, equipment, stamina, food system, voice lines, and custom AI. They aren't pets or tames, they're **teammates**. Customize their appearance, gear them up with weapons and armor, feed them food for bonus stats, and command them through a radial wheel or point-and-click hotkey system. They'll fight beside you, gather resources, forage for food, farm your crops, manage your smelting operation, maintain your base, haul your cart, repair their own gear, sit by the fire with you, sleep in beds, and teleport through portals alongside you.
+Companions come with their own inventory, equipment, stamina, food system, voice lines, and custom AI. They aren't pets or tames, they're **teammates**. Customize their appearance, gear them up with weapons and armor, feed them food for bonus stats, and command them through a radial wheel or point-and-click hotkey system. They'll fight beside you, gather resources, forage for food, farm your crops, fish for you, manage your smelting operation, maintain your base, haul your cart, repair their own gear, sit by the fire with you, sleep in beds, and teleport through portals alongside you.
 
 Leave a companion at home and they'll autonomously repair damaged walls, refuel campfires and torches, sort your chests, and keep your smelters running. They level up skills, receive the Rested buff, and respawn at the last bed they slept in.
 
@@ -107,6 +107,8 @@ The companion's name is shown in the center. Active toggles show their current O
 | **Forage** | Mode | Autonomously find and pick berry bushes, mushrooms, flowers, and ground items nearby |
 | **Smelt** | Mode | Autonomously refill kilns and furnaces with fuel/ore from chests, collect smelted output |
 | **Farm** | Mode | Autonomously harvest ripe crops, replant seeds, and deposit produce into chests |
+| **Fish** | Mode | Autonomously fish nearby water — requires fishing rod + bait in inventory |
+| **Hunt** | Mode | Autonomously hunt Boar, Deer, Chicken, and Hare with ranged weapons |
 | **Repair Buildings** | Mode | Periodically scan for and repair damaged player-built structures within 50m |
 | **Restock** | Mode | Periodically refuel campfires, torches, and hearths below 50% fuel capacity |
 | **Stay Home** | Toggle | Patrol the home position instead of following you |
@@ -345,6 +347,69 @@ Set a companion to **Farm** via the radial wheel and they'll autonomously manage
 Set **Stay Home + Farm** and the companion will manage your crop fields autonomously. Farm mode also integrates into the Homestead task rotation cycle.
 
 > Companions will pause farming to fight any enemies that enter self-defense range, then resume when the threat is gone.
+
+<br/>
+</td></tr></table>
+
+<br/>
+
+<p align="center">
+<img src="https://img.shields.io/badge/%F0%9F%8E%A3_FISHING-2896a5?style=for-the-badge&labelColor=0d1117" alt="Fishing">
+</p>
+
+<table><tr><td width="900">
+<br/>
+
+Set a companion to **Fish** via the radial wheel and they'll autonomously fish nearby water. Give them a **fishing rod** and **bait** in their inventory, and they'll handle the rest.
+
+### How It Works
+1. **Find water** - scans up to 30m for fishable water (ocean, rivers, ponds) with sufficient depth
+2. **Walk to shore** - pathfinds to the nearest shore position with a safe standoff distance
+3. **Cast** - faces the water, equips the fishing rod, and plays the full cast animation
+4. **Wait for nibble** - waits 15-20 seconds for a fish to bite (10% chance of a miss per wait)
+5. **Hook and reel** - 85% chance to hook the fish, then reels in over 4-6 seconds with stamina drain
+6. **Collect catch** - determines the fish type from bait probability tables, adds it to inventory, and announces the catch
+7. **Recast** - automatically recasts if bait remains; stops when bait runs out or inventory is full
+
+### Smart Behavior
+- **Bait-aware catch tables**: fish type is determined by which bait is equipped, using the same probability tables as vanilla fishing — different baits catch different fish
+- **Catch feedback**: companion announces every catch with overhead speech and a skill levelup sound effect
+- **Stamina drain**: reeling costs stamina; if stamina runs out mid-reel, the fish escapes
+- **Missing gear detection**: companion speaks up if they're missing a fishing rod or bait
+- **No water nearby**: companion announces if no fishable water is found within scan range
+
+### Combine with Stay Home
+Set **Stay Home + Fish** near a body of water and the companion will fish autonomously. Perfect for passive fish farming while you're out exploring.
+
+> Companions will pause fishing to fight any enemies that enter self-defense range, then resume when the threat is gone.
+
+<br/>
+</td></tr></table>
+
+<br/>
+
+<p align="center">
+<img src="https://img.shields.io/badge/%F0%9F%8F%B9_HUNTING-4a9c5e?style=for-the-badge&labelColor=0d1117" alt="Hunting">
+</p>
+
+<table><tr><td width="900">
+<br/>
+
+Set a companion to **Hunt** via the radial wheel and they'll autonomously hunt passive wildlife: **Boar**, **Deer**, **Chicken**, and **Hare**.
+
+### How It Works
+- Companions scan for prey within their home radius (or 20m in follow mode)
+- Hunting is **ranged-only** — companions maintain distance so prey don't flee out of range
+- After a kill, the companion walks to the body and collects all drops
+- If prey runs beyond range, the companion disengages rather than chasing indefinitely
+
+### Smart Behavior
+- **Standoff distance**: companions stay at bow range (8m+) to prevent spooking prey
+- **Home zone aware**: companions with Stay Home enabled only hunt within their home radius
+- **Self-defense**: if an enemy attacks while hunting, the companion fights the threat first, then resumes
+- **Drop collection**: companion waits briefly at the kill site for all drops to spawn, then collects them naturally
+
+> Companions need a bow and arrows in their inventory to hunt effectively.
 
 <br/>
 </td></tr></table>

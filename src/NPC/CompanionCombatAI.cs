@@ -69,6 +69,9 @@ namespace Companions
         // Hunt mode — set by HuntController to target prey animals with forced ranged stance
         internal bool HuntMode { get; set; }
 
+        // Recall — "come to me" disengages and ignores the current enemy
+        private Character _recallIgnored;
+
         // Combat stance — refreshed each Engage and frame from ZDO
         private int _stance;
 
@@ -79,6 +82,7 @@ namespace Companions
 
         // Parry counter-attack — after a successful parry, queue 2 fast attacks
         private int _parryAttackCount;
+        private float _parryGraceTimer;  // widens the stagger-detection window for network latency
 
         // Logging
         private float _logTimer;
@@ -108,7 +112,7 @@ namespace Companions
         /// </summary>
         internal void Engage(Character target)
         {
-            if (target == null || target.IsDead()) return;
+            if (target == null || target.GetHealth() <= 0f) return;
 
             // Passive stance: never engage in combat
             _stance = _setup?.GetCombatStance() ?? CompanionSetup.StanceBalanced;
@@ -164,17 +168,48 @@ namespace Companions
         }
 
         /// <summary>
+        /// Called by "come to me" — disengages and ignores the current enemy
+        /// so UpdateTarget won't immediately re-acquire it. The ignore is
+        /// cleared when a different enemy is found or the ignored one dies.
+        /// </summary>
+        internal void Recall()
+        {
+            _recallIgnored = _targetCreature;
+            if (_engaged)
+                Disengage();
+            else
+            {
+                _targetCreature = null;
+                _targetStatic = null;
+                _ai.m_targetCreature = null;
+                _ai.m_targetStatic = null;
+                _ai.SetAlerted(false);
+            }
+            CompanionsPlugin.Log.LogInfo(
+                $"[CombatAI] Recalled — ignoring \"{_recallIgnored?.m_name ?? "none"}\"");
+        }
+
+        /// <summary>
         /// Called by CompanionAI.OnDamaged when hit while already in combat.
         /// Switches target to the attacker if we don't have one.
         /// </summary>
         internal void OnDamaged(Character attacker)
         {
-            if (!_engaged) return;
             if (attacker == null) return;
             if (attacker.IsPlayer() && _character.IsTamed()) return;
 
+            // Being hit clears recall ignore — self-defence overrides
+            if (_recallIgnored != null && attacker == _recallIgnored)
+            {
+                CompanionsPlugin.Log.LogInfo(
+                    $"[CombatAI] Recall ignore cleared — attacked by \"{attacker.m_name}\"");
+                _recallIgnored = null;
+            }
+
+            if (!_engaged) return;
+
             // Only switch if no current target or current target is dead
-            if (_targetCreature == null || _targetCreature.IsDead())
+            if (_targetCreature == null || _targetCreature.GetHealth() <= 0f)
             {
                 _targetCreature = attacker;
                 _lastKnownTargetPos = attacker.transform.position;
@@ -469,10 +504,27 @@ namespace Companions
                 _updateTargetTimer = nearPlayer
                     ? UpdateTargetIntervalNear : UpdateTargetIntervalFar;
 
-                // Find new enemy — skip passive animals unless we are in hunt mode
+                // Find new enemy — always skip passive animals from the scan.
+                // Prey engagement is managed exclusively by HuntController.Engage(),
+                // so CombatAI should never auto-acquire prey here. Without this,
+                // CombatAI chains from dead prey to new prey before disengaging,
+                // and HuntController never transitions to CollectingDrops.
                 Character enemy = _ai.FindNearbyEnemy();
-                if (enemy != null && IsPassiveAnimal(enemy) && !HuntMode)
+                if (enemy != null && IsPassiveAnimal(enemy))
                     enemy = null;
+
+                // Recall ignore: skip the enemy we were told to leave alone.
+                // Clear ignore when the ignored enemy dies or is destroyed.
+                if (_recallIgnored != null)
+                {
+                    if (!_recallIgnored || _recallIgnored.GetHealth() <= 0f)
+                        _recallIgnored = null; // died — free to re-engage anything
+                    else if (enemy == _recallIgnored)
+                        enemy = null; // still alive — skip it
+                    else if (enemy != null)
+                        _recallIgnored = null; // different enemy — clear ignore
+                }
+
                 if (enemy != null)
                 {
                     if (_targetCreature != enemy)
@@ -524,11 +576,20 @@ namespace Companions
             }
 
             // Validate current creature target.
-            // Character.IsDead() returns false for all non-player characters, so also
-            // check GetHealth() <= 0 to detect death before the GameObject is destroyed.
+            // Character.IsDead() returns false for all non-player characters, so use
+            // GetHealth() <= 0 to detect death before the GameObject is destroyed.
+            // Also check ZNetView validity: ZNetScene.Destroy clears the ZDO before
+            // Object.Destroy runs, causing GetHealth() to return MaxHealth for one frame.
             if (_targetCreature != null)
             {
-                if (_targetCreature.IsDead() || _targetCreature.GetHealth() <= 0f)
+                var tgtNview = _targetCreature.GetComponent<ZNetView>();
+                if (tgtNview != null && !tgtNview.IsValid())
+                {
+                    CompanionsPlugin.Log.LogInfo(
+                        $"[CombatAI] Target \"{_targetCreature.m_name}\" destroyed (ZDO invalid)");
+                    _targetCreature = null;
+                }
+                else if (_targetCreature.GetHealth() <= 0f)
                 {
                     CompanionsPlugin.Log.LogInfo(
                         $"[CombatAI] Target \"{_targetCreature.m_name}\" died");
@@ -753,12 +814,20 @@ namespace Companions
             }
             else
             {
-                // _blockHoldTimer < 0 means it just drained out this frame (first time entering else).
-                // If the enemy is staggering, the parry connected — queue 2 counter-attacks.
-                if (_blockHoldTimer < 0f && _targetCreature != null && _targetCreature.IsStaggering())
+                // Start a 150ms grace window when the block hold expires, so the
+                // stagger-detection isn't limited to a single frame (handles network latency).
+                if (_blockHoldTimer < 0f)
+                    _parryGraceTimer = 0.15f;
+
+                if (_parryGraceTimer > 0f)
                 {
-                    _parryAttackCount = 2;
-                    CompanionsPlugin.Log.LogInfo("[CombatAI] Parry! Queuing 2 counter-attacks");
+                    _parryGraceTimer -= dt;
+                    if (_targetCreature != null && _targetCreature.IsStaggering())
+                    {
+                        _parryAttackCount = 2;
+                        _parryGraceTimer = 0f;
+                        CompanionsPlugin.Log.LogInfo("[CombatAI] Parry! Queuing 2 counter-attacks");
+                    }
                 }
                 ClearBlock();
             }

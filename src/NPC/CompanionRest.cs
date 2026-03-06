@@ -72,7 +72,7 @@ namespace Companions
         private void Update()
         {
             if (_nview == null || !_nview.IsOwner()) return;
-            if (_character == null || _character.IsDead()) return;
+            if (_character == null || _character.GetHealth() <= 0f) return;
 
             if (_navigating)
             {
@@ -739,10 +739,11 @@ namespace Companions
             if (_character == null) return false;
             foreach (var c in Character.GetAllCharacters())
             {
-                if (c == null || c.IsDead()) continue;
-                if (!BaseAI.IsEnemy(_character, c)) continue;
+                if (c == null || c.GetHealth() <= 0f) continue;
                 float d = Vector3.Distance(transform.position, c.transform.position);
-                if (d < 15f) return true;
+                if (d > 15f) continue;
+                if (!BaseAI.IsEnemy(_character, c)) continue;
+                return true;
             }
             return false;
         }

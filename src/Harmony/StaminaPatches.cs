@@ -29,6 +29,18 @@ namespace Companions
             }
         }
 
+        [HarmonyPatch(typeof(Character), "CheckRun")]
+        private static class CheckRun_Patch
+        {
+            static void Postfix(Character __instance, ref bool __result)
+            {
+                if (!__result) return;
+                var cs = __instance.GetComponent<CompanionStamina>();
+                if (cs != null && cs.Stamina <= 0f)
+                    __result = false;
+            }
+        }
+
         [HarmonyPatch(typeof(Character), nameof(Character.HaveStamina))]
         private static class HaveStamina_Patch
         {

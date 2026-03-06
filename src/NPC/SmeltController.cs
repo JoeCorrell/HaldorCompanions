@@ -78,6 +78,8 @@ namespace Companions
         private readonly List<Piece>     _tempPieces      = new List<Piece>();
         private readonly List<Smelter>   _tempFurnaces    = new List<Smelter>();
         private readonly List<Smelter>   _tempKilns       = new List<Smelter>();
+        private static readonly Collider[] _dropScanBuffer = new Collider[32];
+        private static int _itemLayerMask = -1;
 
         // ── Config ──────────────────────────────────────────────────────────
         private static float ScanInterval       => ModConfig.SmeltScanInterval.Value;
@@ -114,10 +116,12 @@ namespace Companions
             _repair    = GetComponent<RepairController>();
         }
 
+        private void OnDestroy() { UnclaimSmelter(); }
+
         private void Update()
         {
             if (_nview == null || _nview.GetZDO() == null || !_nview.IsOwner()) return;
-            if (_character == null || _character.IsDead()) return;
+            if (_character == null || _character.GetHealth() <= 0f) return;
 
             if (ShouldAbort())
             {
@@ -1119,6 +1123,9 @@ namespace Companions
 
             int needed = smelter.m_maxOre - queued;
 
+            // Kilns (m_maxFuel == 0) should only accept regular Wood, not fine/core/ancient
+            bool isKiln = smelter.m_maxFuel == 0;
+
             // Check if companion already has a valid ore/input in inventory — skip chest trip
             var companionInv = _humanoid?.GetInventory();
             if (companionInv != null)
@@ -1126,6 +1133,7 @@ namespace Companions
                 foreach (var conversion in smelter.m_conversion)
                 {
                     if (conversion?.m_from == null) continue;
+                    if (isKiln && conversion.m_from.gameObject.name != "Wood") continue;
                     string inputPrefab = conversion.m_from.gameObject.name;
                     int have = CountItemByPrefab(companionInv, inputPrefab);
                     if (have > 0)
@@ -1156,6 +1164,7 @@ namespace Companions
             foreach (var conversion in smelter.m_conversion)
             {
                 if (conversion?.m_from == null) continue;
+                if (isKiln && conversion.m_from.gameObject.name != "Wood") continue;
                 string inputPrefab = conversion.m_from.gameObject.name;
 
                 foreach (var chest in _nearbyChests)
@@ -1256,12 +1265,15 @@ namespace Companions
                 ? _targetSmelter.m_outputPoint.position
                 : _targetSmelter.transform.position;
 
-            var colliders = Physics.OverlapSphere(outputPos, 3f, LayerMask.GetMask("item"));
+            if (_itemLayerMask < 0) _itemLayerMask = LayerMask.GetMask("item");
+            int dropCount = Physics.OverlapSphereNonAlloc(outputPos, 3f, _dropScanBuffer, _itemLayerMask);
             var companionInv = _humanoid?.GetInventory();
             if (companionInv == null) return;
 
-            foreach (var col in colliders)
+            for (int di = 0; di < dropCount; di++)
             {
+                var col = _dropScanBuffer[di];
+                if (col == null) continue;
                 var itemDrop = col.GetComponentInParent<ItemDrop>();
                 if (itemDrop == null || itemDrop.m_itemData == null) continue;
 
@@ -1327,10 +1339,13 @@ namespace Companions
                 ? smelter.m_outputPoint.position
                 : smelter.transform.position;
 
-            var colliders = Physics.OverlapSphere(outputPos, 3f, LayerMask.GetMask("item"));
+            if (_itemLayerMask < 0) _itemLayerMask = LayerMask.GetMask("item");
+            int hitCount = Physics.OverlapSphereNonAlloc(outputPos, 3f, _dropScanBuffer, _itemLayerMask);
             int count = 0;
-            foreach (var col in colliders)
+            for (int di = 0; di < hitCount; di++)
             {
+                var col = _dropScanBuffer[di];
+                if (col == null) continue;
                 var itemDrop = col.GetComponentInParent<ItemDrop>();
                 if (itemDrop == null || itemDrop.m_itemData == null) continue;
                 if (itemDrop.m_itemData.m_shared == null) continue;

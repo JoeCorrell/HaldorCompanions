@@ -87,7 +87,7 @@ namespace Companions
         private void Update()
         {
             if (_nview == null || !_nview.IsOwner()) return;
-            if (_character == null || _character.IsDead()) return;
+            if (_character == null || _character.GetHealth() <= 0f) return;
             if (Chat.instance == null) return;
 
             // Suppress speech while radial menu or interact panel is open for this companion
@@ -115,12 +115,13 @@ namespace Companions
         // ── Public API ─────────────────────────────────────────────────────
 
         /// <summary>Display a specific line above the companion and optionally play voice audio.</summary>
-        public void Say(string text, string audioCategory = null)
+        /// <param name="force">When true, bypass per-companion and global speech cooldowns.</param>
+        public void Say(string text, string audioCategory = null, bool force = false)
         {
             if (string.IsNullOrEmpty(text)) return;
             float now = Time.time;
-            if (now - _lastSayTime < SayCooldown) return;
-            if (now - _globalLastSpeechTime < SayCooldown) return;
+            if (!force && now - _lastSayTime < SayCooldown) return;
+            if (!force && now - _globalLastSpeechTime < SayCooldown) return;
             _lastSayTime = now;
             _globalLastSpeechTime = now;
             CompanionsPlugin.Log.LogDebug($"[Talk] \"{text}\"");
@@ -253,10 +254,11 @@ namespace Companions
             if (_character == null) return false;
             foreach (var c in Character.GetAllCharacters())
             {
-                if (c == null || c.IsDead()) continue;
-                if (!BaseAI.IsEnemy(_character, c)) continue;
+                if (c == null || c.GetHealth() <= 0f) continue;
                 float d = Vector3.Distance(transform.position, c.transform.position);
-                if (d < 10f) return true;
+                if (d > 10f) continue;
+                if (!BaseAI.IsEnemy(_character, c)) continue;
+                return true;
             }
             return false;
         }

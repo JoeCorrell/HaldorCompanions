@@ -214,6 +214,7 @@ namespace Companions
         private SmeltController _smelt;
         private FarmController _farm;
         private HuntController _hunt;
+        private FishController _fish;
         private HomesteadController _homestead;
         private DoorHandler _doorHandler;
         private CompanionRest _rest;
@@ -240,6 +241,7 @@ namespace Companions
             _smelt = GetComponent<SmeltController>();
             _farm = GetComponent<FarmController>();
             _hunt = GetComponent<HuntController>();
+            _fish = GetComponent<FishController>();
             _homestead = GetComponent<HomesteadController>();
             _doorHandler = GetComponent<DoorHandler>();
             _rest = GetComponent<CompanionRest>();
@@ -541,6 +543,18 @@ namespace Companions
                 return true;
             }
 
+            // Swimming bypass: NavMesh water tiles are 2m below the surface,
+            // causing SnapToNavMesh/FindPath to fail or produce erratic waypoints.
+            // Water has no obstacles — swim straight toward the target.
+            if (m_character.IsSwimming())
+            {
+                Vector3 dir = point - transform.position;
+                dir.y = 0f;
+                dir.Normalize();
+                MoveTowards(dir, false); // never run in water
+                return false;
+            }
+
             Vector3 goalDir = point - transform.position;
             goalDir.y = 0f;
             goalDir.Normalize();
@@ -561,16 +575,6 @@ namespace Companions
                     Vector3 ctxDir = ContextSteer(goalDir, "fallback_cont", _ctxSteerPieceMask);
                     MoveTowards(ctxDir, run);
                     UpdateFallbackStuck(dt, goalDir, run);
-
-                    // Periodic progress log (every 2s) so it's visible in logs without spam
-                    _ctxLogTimer -= dt;
-                    if (_ctxLogTimer <= 0f)
-                    {
-                        _ctxLogTimer = 2f;
-                        CompanionsPlugin.Log.LogDebug(
-                            $"[AI:Path] ctx-steer active — moved={movedFromStuck:F1}m/2m " +
-                            $"goal={distXZ:F1}m away pos={transform.position:F1}");
-                    }
                     return false;
                 }
                 // Moved 2m — likely past the obstacle; exit fallback and try NavMesh.
@@ -1435,7 +1439,7 @@ namespace Companions
 
             if (shouldWander || isGathering)
             {
-                m_randomMoveRange = CompanionSetup.MaxLeashDistance; // 50m
+                m_randomMoveRange = _setup.GetHomeRadius();
                 // Switch from the suppressed interval to a normal one (once)
                 if (m_randomMoveInterval > 10f)
                 {
@@ -1589,13 +1593,13 @@ namespace Companions
                 _lastFollowPos = Vector3.positiveInfinity; // reset when follow clears
             }
 
-            // StayHome hard leash — if companion strays more than 50m from home
+            // StayHome hard leash — if companion strays beyond their home radius
             // (e.g. during combat chase), teleport them back and disengage.
             if (_setup != null && _setup.GetStayHome() && _setup.HasHomePosition()
                 && !_setup.GetFollow())
             {
                 float distFromHome = Utils.DistanceXZ(transform.position, _setup.GetHomePosition());
-                if (distFromHome > CompanionSetup.MaxLeashDistance)
+                if (distFromHome > _setup.GetHomeRadius())
                 {
                     TeleportToHome();
                 }
@@ -1917,7 +1921,7 @@ namespace Companions
                 if (_healTarget != null)
                 {
                     float htMax = _healTarget.GetMaxHealth();
-                    if (_healTarget.IsDead() || htMax <= 0f ||
+                    if (_healTarget.GetHealth() <= 0f || htMax <= 0f ||
                         _healTarget.GetHealth() / htMax >= HealThreshold)
                     {
                         CompanionsPlugin.Log.LogDebug(
@@ -2050,14 +2054,19 @@ namespace Companions
                 (_homestead != null && _homestead.IsActive) ||
                 (_doorHandler != null && _doorHandler.IsActive) ||
                 (_hunt != null && _hunt.IsActive) ||
+                (_fish != null && _fish.IsActive) ||
                 IsRepairBuildActive ||
                 IsRestockActive)
+            {
+                ClearFollowMovementOverrides();
                 return true;
+            }
 
             if (m_follow != null)
                 FollowWithFormation(m_follow, dt);
             else
             {
+                ClearFollowMovementOverrides();
                 if (!EnforceHomePatrol(dt))
                     IdleMovement(dt);
             }
@@ -2405,6 +2414,14 @@ namespace Companions
             ClearTargets();
             if (IsAlerted()) SetAlerted(false);
 
+            // Reset all controllers so they pick new targets within range
+            // instead of walking back to the same out-of-bounds target.
+            _harvest?.NotifyActionModeChanged();
+            _hunt?.NotifyActionModeChanged();
+            _fish?.NotifyActionModeChanged();
+            if (_smelt != null) _smelt.NotifyActionModeChanged();
+            if (_farm != null) _farm.NotifyActionModeChanged();
+
             // Restore home patrol
             SetFollowTarget(null);
             SetPatrolPointAt(homePos);
@@ -2420,6 +2437,26 @@ namespace Companions
         private void FollowWithFormation(GameObject target, float dt)
         {
             if (target == null) { IdleMovement(dt); return; }
+
+            // Swimming bypass: skip formation logic and swim straight toward the player.
+            // NavMesh pathfinding is unreliable in water (tiles 2m below surface).
+            if (m_character.IsSwimming())
+            {
+                float swimDist = Vector3.Distance(transform.position, target.transform.position);
+                if (swimDist > 3f)
+                {
+                    Vector3 dir = target.transform.position - transform.position;
+                    dir.y = 0f;
+                    dir.Normalize();
+                    MoveTowards(dir, false);
+                }
+                else
+                {
+                    StopMoving();
+                }
+                ClearFollowMovementOverrides();
+                return;
+            }
 
             // Init formation slot from ZDO if not set
             if (_formationSlot < 0 && _setup != null)
@@ -2524,6 +2561,15 @@ namespace Companions
         /// </summary>
         private void ApplyPlayerMovementMatch(bool sneak, bool walk, bool run)
         {
+            // Crouching costs stamina (vanilla Player.UpdateCrouch checks HaveStamina).
+            // Block crouch when companion stamina is depleted.
+            if (sneak && _companionStamina != null && _companionStamina.Stamina <= 0f)
+                sneak = false;
+
+            // Track crouch state for stamina drain
+            if (_companionStamina != null)
+                _companionStamina.IsCrouching = sneak;
+
             if (sneak)
             {
                 m_character.SetRun(false);
@@ -2550,6 +2596,7 @@ namespace Companions
         {
             m_character.SetWalk(false);
             if (_zanim != null) _zanim.SetBool(s_crouching, false);
+            if (_companionStamina != null) _companionStamina.IsCrouching = false;
         }
 
         private static Vector3 GetFormationOffset(int slot, Vector3 fwd, Vector3 right)
@@ -2619,7 +2666,7 @@ namespace Companions
 
             foreach (Character c in Character.GetAllCharacters())
             {
-                if (c == m_character || c.IsDead()) continue;
+                if (c == m_character || c.GetHealth() <= 0f) continue;
 
                 float maxHp = c.GetMaxHealth();
                 if (maxHp <= 0f) continue;
@@ -2648,7 +2695,7 @@ namespace Companions
         /// </summary>
         private void UpdateHealBehavior(Humanoid humanoid, float dt)
         {
-            if (_healTarget == null || _healTarget.IsDead())
+            if (_healTarget == null || _healTarget.GetHealth() <= 0f)
             {
                 ResetHealReachabilityTracking();
                 return;
@@ -2976,6 +3023,7 @@ namespace Companions
             if (!m_character.IsOnGround()) return;
             if (m_character.IsSwimming()) return;
             if (m_character.InAttack()) return;
+            if (_harvest != null && _harvest.IsAttacking) return; // between harvest swings, InAttack() is false but companion should stay put
             if (_groundStuckRecoveryTimer > 0f) return; // stuck recovery handles movement
             if (_inContextSteerFallback) return;         // context steer has its own stuck handling
 
@@ -2990,6 +3038,8 @@ namespace Companions
             }
 
             // Determine if companion wants to move
+            // Fish excluded — fishing is intentionally stationary (except MovingToSpot,
+            // which the fish controller handles internally).
             bool wantsToMove = (m_targetCreature != null) ||
                                (m_targetStatic != null) ||
                                PendingMoveTarget.HasValue ||
@@ -3202,6 +3252,14 @@ namespace Companions
             else
                 _continuousSwimTimer = 0f;
 
+            // Don't trigger ground stuck recovery while swimming — the direct swim
+            // movement bypass handles navigation. Strafing in water looks confused.
+            if (m_character.IsSwimming())
+            {
+                _groundStuckTimer = 0f;
+                return false;
+            }
+
             // Context steer fallback has its own stuck handling (UpdateFallbackStuck).
             // Don't fight it with a second movement override — that causes oscillation.
             if (_inContextSteerFallback)
@@ -3278,7 +3336,8 @@ namespace Companions
                                _returningHome;
 
             // Don't accumulate stuck time during attacks, rest, ship, freeze, or when stationary by choice
-            if (inAttack || isResting || onShip || frozen || !wantsToMove)
+            bool harvestAttacking = _harvest != null && _harvest.IsAttacking;
+            if (inAttack || harvestAttacking || isResting || onShip || frozen || !wantsToMove)
             {
                 _groundStuckTimer = 0f;
                 return false;

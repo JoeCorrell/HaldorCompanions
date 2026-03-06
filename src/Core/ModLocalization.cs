@@ -45,6 +45,9 @@ namespace Companions
             catch { return template; }
         }
 
+        private static readonly FieldInfo InstanceField =
+            AccessTools.Field(typeof(Localization), "m_instance");
+
         /// <summary>Called once from Plugin.Awake after Harmony.PatchAll.</summary>
         public static void Init()
         {
@@ -52,9 +55,17 @@ namespace Companions
             _translationsDir = Path.Combine(dllDir, "Translations");
             BuildEnglishDefaults();
             _initialized = true;
-            // Don't access Localization.instance here — the singleton getter triggers
-            // Initialize() → constructor → SetupLanguage, and our Harmony postfix will
-            // handle injection at that point via __instance.
+
+            // If another mod already accessed Localization.instance before our patches
+            // were applied, the singleton exists but our SetupLanguage postfix never
+            // fired. Inject into the existing instance now.
+            var existing = InstanceField?.GetValue(null) as Localization;
+            if (existing != null)
+            {
+                CompanionsPlugin.Log.LogInfo(
+                    "[Localization] Localization already initialized — injecting retroactively");
+                InjectTranslations(existing);
+            }
         }
 
         /// <summary>
@@ -290,6 +301,7 @@ namespace Companions
                 { "hc_radial_repair", "Repair" },
                 { "hc_radial_restock", "Restock" },
                 { "hc_radial_despawn", "Despawn" },
+                { "hc_radial_despawn_confirm", "Confirm?" },
                 { "hc_radial_active", "ACTIVE" },
                 { "hc_radial_on", "ON" },
                 { "hc_radial_off", "OFF" },
@@ -348,6 +360,14 @@ namespace Companions
                 { "hc_speech_no_chest", "No chest nearby to unload!" },
                 { "hc_speech_no_bow", "I need a bow and arrows to shoot!" },
                 { "hc_speech_overweight", "My back is hurting from all this weight!" },
+
+                // ── Speech: Fishing ──
+                { "hc_speech_fish_need_rod", "I need a fishing rod." },
+                { "hc_speech_fish_need_bait", "I need bait to fish." },
+                { "hc_speech_fish_no_water", "I can't find water nearby..." },
+                { "hc_speech_fish_got_away", "It got away!" },
+                { "hc_speech_fish_caught", "I caught a {0}!" },
+                { "hc_speech_fish_full", "My bags are full!" },
 
                 // ── Speech: CompanionAI ──
                 { "hc_speech_tomb_found", "My belongings!" },

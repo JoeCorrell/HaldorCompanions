@@ -146,7 +146,7 @@ namespace Companions
         /// </summary>
         public void ApplyRestedBuff()
         {
-            if (_character == null || _character.IsDead()) return;
+            if (_character == null || _character.GetHealth() <= 0f) return;
 
             // Cache vanilla bonus values on first use
             CacheVanillaBonuses();
@@ -191,7 +191,7 @@ namespace Companions
         private void Update()
         {
             if (_nview == null || !_nview.IsOwner()) return;
-            if (_character != null && _character.IsDead()) return;
+            if (_character != null && _character.GetHealth() <= 0f) return;
 
             // ── Resting warmup accumulation (fire sitting) ──
             if (_isAccumulatingRest)

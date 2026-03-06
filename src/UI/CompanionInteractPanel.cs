@@ -1573,6 +1573,17 @@ namespace Companions
         //  Name / ownership / inventory
         // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
+        /// <summary>
+        /// Saves the current name and deselects the input field.
+        /// Called by InventoryGuiHidePatch before the panel is torn down.
+        /// </summary>
+        internal void SaveAndDeselectName()
+        {
+            if (_nameInput == null) return;
+            OnNameChanged(_nameInput.text);
+            _nameInput.DeactivateInputField();
+        }
+
         private void OnNameChanged(string newName)
         {
             EnsureCompanionOwnership();

@@ -54,6 +54,14 @@ namespace Companions
         private static bool  _holdFired;
         private const  float CmdHoldThreshold = 0.4f;
 
+        // ── Direct command raycast buffers (avoid per-call allocations) ──
+        private static readonly RaycastHit[] _cmdHitBuffer = new RaycastHit[32];
+        private class DistComparer : System.Collections.Generic.IComparer<RaycastHit>
+        {
+            public int Compare(RaycastHit a, RaycastHit b) => a.distance.CompareTo(b.distance);
+        }
+        private static readonly DistComparer _distCompare = new DistComparer();
+
         // ── Diagnostic logging ──
         private static bool _loggedPendingStart;
 
@@ -309,16 +317,16 @@ namespace Companions
                 "Default", "Default_small", "piece", "piece_nonsolid",
                 "static_solid", "terrain", "vehicle", "item");
 
-            RaycastHit[] hits = Physics.RaycastAll(ray, 50f, layerMask);
-            if (hits.Length > 1)
-                System.Array.Sort(hits, (a, b) => a.distance.CompareTo(b.distance));
+            int hitCount = Physics.RaycastNonAlloc(ray, _cmdHitBuffer, 50f, layerMask);
+            if (hitCount > 1)
+                System.Array.Sort(_cmdHitBuffer, 0, hitCount, _distCompare);
 
-            var setups = Object.FindObjectsByType<CompanionSetup>(FindObjectsSortMode.None);
+            var setups = CompanionSetup.AllCompanions;
             string localId = player.GetPlayerID().ToString();
 
-            for (int i = 0; i < hits.Length; i++)
+            for (int i = 0; i < hitCount; i++)
             {
-                var col = hits[i].collider;
+                var col = _cmdHitBuffer[i].collider;
                 if (col == null) continue;
 
                 // Skip self and companions
@@ -329,7 +337,7 @@ namespace Companions
                 var character = col.GetComponentInParent<Character>();
                 if (character != null)
                 {
-                    if (!character.IsDead() && BaseAI.IsEnemy(player, character))
+                    if (character.GetHealth() > 0f && BaseAI.IsEnemy(player, character))
                     {
                         DirectAttack(setups, localId, character);
                         return;
@@ -425,7 +433,7 @@ namespace Companions
                     layer == LayerMask.NameToLayer("piece") ||
                     layer == LayerMask.NameToLayer("piece_nonsolid"))
                 {
-                    DirectGround(setups, localId, hits[i].point);
+                    DirectGround(setups, localId, _cmdHitBuffer[i].point);
                     return;
                 }
             }
@@ -440,7 +448,7 @@ namespace Companions
 
         private static void FireComeToMe(Player player)
         {
-            var setups = Object.FindObjectsByType<CompanionSetup>(FindObjectsSortMode.None);
+            var setups = CompanionSetup.AllCompanions;
             string localId = player.GetPlayerID().ToString();
 
             CancelAll(setups, localId);
@@ -461,6 +469,10 @@ namespace Companions
                 if (ai != null && Player.m_localPlayer != null)
                     ai.SetFollowTarget(Player.m_localPlayer.gameObject);
 
+                var combatAI = setup.GetComponent<CompanionCombatAI>();
+                if (combatAI != null)
+                    combatAI.Recall();
+
                 if (firstTalk == null) firstTalk = setup.GetComponent<CompanionTalk>();
             }
 
@@ -472,7 +484,7 @@ namespace Companions
         //  Context-sensitive command dispatchers
         // ═══════════════════════════════════════════════════════════════════
 
-        private static void DirectAttack(CompanionSetup[] setups, string localId, Character enemy)
+        private static void DirectAttack(System.Collections.Generic.IReadOnlyList<CompanionSetup> setups, string localId, Character enemy)
         {
             int directed = 0;
             CompanionTalk firstTalk = null;
@@ -492,7 +504,7 @@ namespace Companions
             CompanionsPlugin.Log.LogDebug($"[Direct] {directed} companion(s) → attack \"{enemy.m_name}\"");
         }
 
-        private static void DirectCart(CompanionSetup[] setups, string localId, Vagon vagon)
+        private static void DirectCart(System.Collections.Generic.IReadOnlyList<CompanionSetup> setups, string localId, Vagon vagon)
         {
             // Check if any owned companion is already attached — detach them
             foreach (var setup in setups)
@@ -561,7 +573,7 @@ namespace Companions
             CompanionsPlugin.Log.LogDebug($"[Direct] Companion → cart attach (dist={closestDist:F1}m)");
         }
 
-        private static void DirectDoor(CompanionSetup[] setups, string localId, Door door)
+        private static void DirectDoor(System.Collections.Generic.IReadOnlyList<CompanionSetup> setups, string localId, Door door)
         {
             int directed = 0;
             CompanionTalk firstTalk = null;
@@ -580,7 +592,7 @@ namespace Companions
             CompanionsPlugin.Log.LogDebug($"[Direct] {directed} companion(s) → open door \"{door.m_name}\"");
         }
 
-        private static void DirectSit(CompanionSetup[] setups, string localId, Fireplace fire)
+        private static void DirectSit(System.Collections.Generic.IReadOnlyList<CompanionSetup> setups, string localId, Fireplace fire)
         {
             if (!fire.IsBurning()) return;
             int directed = 0;
@@ -600,7 +612,7 @@ namespace Companions
             CompanionsPlugin.Log.LogDebug($"[Direct] {directed} companion(s) → sit near fire");
         }
 
-        private static void DirectSleep(CompanionSetup[] setups, string localId, Bed bed)
+        private static void DirectSleep(System.Collections.Generic.IReadOnlyList<CompanionSetup> setups, string localId, Bed bed)
         {
             int started = 0, wokeUp = 0;
             CompanionTalk firstTalk = null;
@@ -624,7 +636,7 @@ namespace Companions
             CompanionsPlugin.Log.LogDebug($"[Direct] Sleep — started={started}, wokeUp={wokeUp}");
         }
 
-        private static void DirectRepair(CompanionSetup[] setups, string localId, CraftingStation station)
+        private static void DirectRepair(System.Collections.Generic.IReadOnlyList<CompanionSetup> setups, string localId, CraftingStation station)
         {
             CompanionTalk firstTalk = null;
             int directed = 0;
@@ -643,7 +655,7 @@ namespace Companions
             CompanionsPlugin.Log.LogDebug($"[Direct] {directed} companion(s) → repair at \"{station.m_name}\"");
         }
 
-        private static void DirectSmelt(CompanionSetup[] setups, string localId)
+        private static void DirectSmelt(System.Collections.Generic.IReadOnlyList<CompanionSetup> setups, string localId)
         {
             CompanionTalk firstTalk = null;
             int directed = 0;
@@ -663,7 +675,7 @@ namespace Companions
             CompanionsPlugin.Log.LogDebug($"[Direct] {directed} companion(s) → smelt mode");
         }
 
-        private static void DirectBoard(CompanionSetup[] setups, string localId, Ship ship)
+        private static void DirectBoard(System.Collections.Generic.IReadOnlyList<CompanionSetup> setups, string localId, Ship ship)
         {
             var allChairs = ship.GetComponentsInChildren<Chair>();
             var availableChairs = new System.Collections.Generic.List<Chair>();
@@ -726,7 +738,7 @@ namespace Companions
             CompanionsPlugin.Log.LogDebug($"[Direct] {boarded} companion(s) → board ship");
         }
 
-        private static void DirectTombstoneRecovery(CompanionSetup[] setups, string localId, TombStone tombstone)
+        private static void DirectTombstoneRecovery(System.Collections.Generic.IReadOnlyList<CompanionSetup> setups, string localId, TombStone tombstone)
         {
             CompanionSetup closest = null;
             float closestDist = float.MaxValue;
@@ -746,7 +758,7 @@ namespace Companions
             CompanionsPlugin.Log.LogDebug($"[Direct] Companion → recover tombstone");
         }
 
-        private static void DirectDeposit(CompanionSetup[] setups, string localId, Container chest)
+        private static void DirectDeposit(System.Collections.Generic.IReadOnlyList<CompanionSetup> setups, string localId, Container chest)
         {
             var chestInv = chest.GetInventory();
             if (chestInv == null) return;
@@ -782,7 +794,7 @@ namespace Companions
             CompanionsPlugin.Log.LogDebug($"[Direct] {dispatched} companion(s) → deposit");
         }
 
-        private static void DirectGatherMode(CompanionSetup[] setups, string localId, GameObject target)
+        private static void DirectGatherMode(System.Collections.Generic.IReadOnlyList<CompanionSetup> setups, string localId, GameObject target)
         {
             int harvestMode = HarvestController.DetermineHarvestModeStatic(target);
             if (harvestMode < 0) return;
@@ -807,7 +819,7 @@ namespace Companions
             CompanionsPlugin.Log.LogDebug($"[Direct] {directed} companion(s) → gather mode {harvestMode}");
         }
 
-        private static void DirectGround(CompanionSetup[] setups, string localId, Vector3 point)
+        private static void DirectGround(System.Collections.Generic.IReadOnlyList<CompanionSetup> setups, string localId, Vector3 point)
         {
             // If any companion is in gather mode, exit gather instead of moving
             foreach (var setup in setups)
@@ -839,7 +851,7 @@ namespace Companions
             CompanionsPlugin.Log.LogDebug($"[Direct] {directed} companion(s) → move to {point:F1}");
         }
 
-        private static void ExitGatherMode(CompanionSetup[] setups, string localId)
+        private static void ExitGatherMode(System.Collections.Generic.IReadOnlyList<CompanionSetup> setups, string localId)
         {
             CompanionTalk firstTalk = null;
             int exited = 0;
@@ -857,7 +869,7 @@ namespace Companions
             CompanionsPlugin.Log.LogDebug($"[Direct] {exited} companion(s) exited gather mode → follow");
         }
 
-        private static void CancelAll(CompanionSetup[] setups, string localId)
+        private static void CancelAll(System.Collections.Generic.IReadOnlyList<CompanionSetup> setups, string localId)
         {
             CompanionTalk firstTalk = null;
             foreach (var setup in setups)

@@ -77,7 +77,7 @@ namespace Companions
         /// </summary>
         public static void RestoreFollowTargets()
         {
-            foreach (var setup in Object.FindObjectsByType<CompanionSetup>(FindObjectsSortMode.None))
+            foreach (var setup in CompanionSetup.AllCompanions)
                 setup.RestoreFollowTarget();
         }
 
@@ -115,7 +115,8 @@ namespace Companions
                 bool sameEntry = existing.OwnerId == data.OwnerId &&
                     (data.TombstoneId != 0L
                         ? existing.TombstoneId == data.TombstoneId
-                        : existing.Name == data.Name);
+                        : existing.Name == data.Name
+                          && existing.AppearanceSerialized == data.AppearanceSerialized);
                 if (sameEntry)
                 {
                     CompanionsPlugin.Log.LogWarning(
@@ -164,7 +165,7 @@ namespace Companions
 
             // Guard: abort if a living companion with the same owner+name already exists
             // (prevents duplication from race conditions, ZDO ownership transfer, etc.)
-            foreach (var existing in Object.FindObjectsByType<CompanionSetup>(FindObjectsSortMode.None))
+            foreach (var existing in CompanionSetup.AllCompanions)
             {
                 var existingZdo = existing.GetComponent<ZNetView>()?.GetZDO();
                 if (existingZdo == null) continue;
@@ -319,7 +320,7 @@ namespace Companions
             // Fallback: if any companion owned by this player already exists in the scene,
             // skip the panel (handles cases where m_customData didn't persist)
             string localId = player.GetPlayerID().ToString();
-            foreach (var setup in Object.FindObjectsByType<CompanionSetup>(FindObjectsSortMode.None))
+            foreach (var setup in CompanionSetup.AllCompanions)
             {
                 var zdo = setup.GetComponent<ZNetView>()?.GetZDO();
                 if (zdo != null && zdo.GetString(CompanionSetup.OwnerHash, "") == localId)

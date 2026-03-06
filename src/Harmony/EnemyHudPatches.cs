@@ -18,6 +18,7 @@ namespace Companions
         {
             public GuiBar StaminaBar;
             public GuiBar WeightBar;
+            public CompanionStamina StaminaComp;
         }
 
         // Keyed by instance ID to avoid destroyed-Unity-object dictionary key issues
@@ -132,8 +133,9 @@ namespace Companions
 
                 _bars[id] = new CompanionBars
                 {
-                    StaminaBar = staminaBar,
-                    WeightBar  = weightBar
+                    StaminaBar  = staminaBar,
+                    WeightBar   = weightBar,
+                    StaminaComp = c.GetComponent<CompanionStamina>()
                 };
                 _barCharacters[id] = c;
 
@@ -179,11 +181,9 @@ namespace Companions
                     var bars = kvp.Value;
 
                     // Update stamina bar
-                    if (bars.StaminaBar != null)
+                    if (bars.StaminaBar != null && bars.StaminaComp != null)
                     {
-                        var stamina = character.GetComponent<CompanionStamina>();
-                        if (stamina != null)
-                            bars.StaminaBar.SetValue(stamina.GetStaminaPercentage());
+                        bars.StaminaBar.SetValue(bars.StaminaComp.GetStaminaPercentage());
                     }
 
                     // Update weight bar

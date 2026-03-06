@@ -136,10 +136,12 @@ namespace Companions
                                               "piece", "piece_nonsolid");
         }
 
+        private void OnDestroy() { UnclaimPickable(); }
+
         private void Update()
         {
             if (_nview == null || _nview.GetZDO() == null || !_nview.IsOwner()) return;
-            if (_character == null || _character.IsDead()) return;
+            if (_character == null || _character.GetHealth() <= 0f) return;
 
             if (ShouldAbort())
             {

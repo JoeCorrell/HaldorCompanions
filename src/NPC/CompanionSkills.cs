@@ -77,14 +77,16 @@ namespace Companions
 
         private ZNetView  _nview;
         private Character _character;
+        private CompanionRestedBuff _restedBuff;
         private float     _saveTimer;
         private bool      _dirty;
         private bool      _initialized;
 
         private void Awake()
         {
-            _nview     = GetComponent<ZNetView>();
-            _character = GetComponent<Character>();
+            _nview      = GetComponent<ZNetView>();
+            _character  = GetComponent<Character>();
+            _restedBuff = GetComponent<CompanionRestedBuff>();
         }
 
         private void Start()
@@ -145,8 +147,7 @@ namespace Companions
             float num = increseStep * factor * Game.m_skillGainRate;
 
             // Rested buff: skill XP modifier read from vanilla SE_Rested asset at runtime
-            var restedBuff = GetComponent<CompanionRestedBuff>();
-            if (restedBuff != null && restedBuff.IsRested)
+            if (_restedBuff != null && _restedBuff.IsRested)
                 num += num * CompanionRestedBuff.SkillXPModifier;
 
             skill.Accumulator += num;

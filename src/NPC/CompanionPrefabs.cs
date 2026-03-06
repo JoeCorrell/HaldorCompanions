@@ -308,6 +308,9 @@ namespace Companions
             go.AddComponent<HuntController>();
             CompanionsPlugin.Log.LogInfo($"[CompanionPrefabs]   + HuntController ({def.PrefabName})");
 
+            // Fishing (cast rod, simulated catch in ModeFish)
+            go.AddComponent<FishController>();
+
             // Autonomous base maintenance (refuel fires, repair buildings, sort chests)
             go.AddComponent<HomesteadController>();
         }

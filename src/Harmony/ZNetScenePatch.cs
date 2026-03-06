@@ -202,4 +202,20 @@ namespace Companions
             CompanionRadialMenu.WarmCache();
         }
     }
+
+    /// <summary>
+    /// Saves the companion name before InventoryGui.Hide destroys the panel
+    /// while the name input field is focused (e.g. pressing Escape mid-edit).
+    /// </summary>
+    [HarmonyPatch(typeof(InventoryGui), nameof(InventoryGui.Hide))]
+    public static class InventoryGuiHidePatch
+    {
+        [HarmonyPrefix]
+        static void Prefix()
+        {
+            var panel = CompanionInteractPanel.Instance;
+            if (panel != null && panel.IsNameInputFocused)
+                panel.SaveAndDeselectName();
+        }
+    }
 }

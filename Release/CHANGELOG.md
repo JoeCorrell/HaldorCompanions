@@ -1,5 +1,46 @@
 # Changelog
 
+## 1.1.9
+
+### Harvesting Fixes
+- Fixed companions **not aiming at large rocks** when mining — closest surface point on big rocks could be directly beside the companion, causing the facing system to silently bail out; now falls back to the rock's center and snaps body rotation instantly during attacks
+- Fixed companions **digging holes in the ground** instead of hitting rocks — tightened approach distance, arrival threshold, and "too far" detection for rock-like targets so pickaxe swings land on the rock face
+- Fixed companions **jumping between pickaxe swings** — proactive jump and stuck recovery are now suppressed while the companion is in the harvest Attacking state
+- Fixed pickaxes being used as **combat weapons** — pickaxes and tools are now excluded from CanUseAttack alongside fishing rods
+
+### Combat Fixes
+- Fixed companions using **weak axes over better weapons** — weapon selection now ranks by combat damage (excludes chop/pickaxe damage that doesn't hurt enemies), so a flint axe no longer beats a proper sword or battleaxe
+- Fixed vanilla `EquipBestWeapon` picking **randomly** between valid weapons — companions now always equip the highest combat-damage weapon available
+
+## 1.1.8
+
+### Fish Mode
+- Added **Fish** action mode — companions autonomously fish nearby water bodies (ocean, rivers, ponds)
+- Requires a **fishing rod** and **bait** in the companion's inventory
+- Companion scans for water within 30m, walks to shore, faces the water, and casts the rod with the full casting animation
+- After casting, the companion waits for a nibble (15-20s), then reels in the fish (4-6s) with stamina drain
+- Catch type is determined by bait type using vanilla Fish prefab probability tables — the same bait catches the same fish as player fishing
+- On catch, the companion announces what they caught with overhead speech and a **skill levelup sound effect**
+- Automatically recasts after catching a fish if bait remains — loops until bait runs out or inventory is full
+- 85% hook chance and 10% miss chance by default (configurable)
+- Companion speaks contextual lines: "I need a fishing rod...", "I need bait...", "I caught a {fish}!", "I can't find water nearby..."
+- Self-defense: companions abort fishing to fight enemies, then resume
+- All fishing parameters are fully configurable in the Fishing config section
+
+### Home Zone Fixes
+- Fixed **home radius slider not working** — the Set Home radius slider now correctly controls the companion's leash distance (previously hardcoded to 50m regardless of slider value)
+- Fixed companions getting stuck in a **teleport loop** when working outside their home radius — controllers now reset when the companion is teleported home, preventing them from immediately running back to the same spot
+
+### Hunt Mode Fixes
+- Fixed companions **jumping** after waiting at a dead animal's body during drop collection — the companion now stops moving cleanly when the collection delay expires instead of triggering a movement lunge
+
+### Bug Fixes
+- Fixed fishing rod being used as a **combat weapon** — fishing rods are now excluded from auto-equip weapon selection and BaseAI.CanUseAttack
+- Fixed fishing rod **staying equipped** after leaving fish mode — the rod is now unequipped on mode change
+- Fixed **auto-equip overriding** the fishing rod during casting — bait consumption no longer triggers a weapon swap mid-cast
+- Fixed companions **jumping into water** after casting — proactive jump and stuck recovery systems no longer trigger during fishing
+- Fixed companion **not facing water** before casting — the companion now rotates to face the water point and waits until aimed before starting the cast
+
 ## 1.1.7
 
 ### Hunt Mode

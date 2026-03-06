@@ -92,6 +92,7 @@ namespace Companions
         // ══════════════════════════════════════════════════════════════════════
         internal static ConfigEntry<float> StaminaRegenRate;
         internal static ConfigEntry<float> StaminaRunDrain;
+        internal static ConfigEntry<float> StaminaSneakDrain;
         internal static ConfigEntry<float> StaminaSwimDrain;
         internal static ConfigEntry<float> StaminaRegenDelay;
 
@@ -122,6 +123,18 @@ namespace Companions
         internal static ConfigEntry<float> FarmScanInterval;
         internal static ConfigEntry<float> FarmPlantSpacing;
         internal static ConfigEntry<float> FarmUseDistance;
+
+        // ══════════════════════════════════════════════════════════════════════
+        //  Fishing
+        // ══════════════════════════════════════════════════════════════════════
+        internal static ConfigEntry<float> FishScanRadius;
+        internal static ConfigEntry<float> FishWaitTimeMin;
+        internal static ConfigEntry<float> FishWaitTimeMax;
+        internal static ConfigEntry<float> FishReelTimeMin;
+        internal static ConfigEntry<float> FishReelTimeMax;
+        internal static ConfigEntry<float> FishHookChance;
+        internal static ConfigEntry<float> FishMissChance;
+        internal static ConfigEntry<float> FishReelStaminaDrain;
 
         // ══════════════════════════════════════════════════════════════════════
         //  Repair
@@ -258,6 +271,7 @@ namespace Companions
             // ── Stamina ──────────────────────────────────────────────────────
             StaminaRegenRate        = Bind(cfg, "Stamina", "RegenRate", 6f, "Stamina per second while idle", new AcceptableValueRange<float>(1f, 30f));
             StaminaRunDrain         = Bind(cfg, "Stamina", "RunDrainRate", 10f, "Stamina drain per second while running", new AcceptableValueRange<float>(1f, 30f));
+            StaminaSneakDrain       = Bind(cfg, "Stamina", "SneakDrainRate", 5f, "Stamina drain per second while sneaking", new AcceptableValueRange<float>(1f, 30f));
             StaminaSwimDrain        = Bind(cfg, "Stamina", "SwimDrainRate", 10f, "Stamina drain per second while swimming", new AcceptableValueRange<float>(1f, 30f));
             StaminaRegenDelay       = Bind(cfg, "Stamina", "RegenDelay", 1f, "Seconds after stamina use before regen starts", new AcceptableValueRange<float>(0.1f, 5f));
 
@@ -282,6 +296,16 @@ namespace Companions
             FarmScanInterval        = Bind(cfg, "Farming", "ScanInterval", 4f, "Seconds between farm scans", new AcceptableValueRange<float>(1f, 30f));
             FarmPlantSpacing        = Bind(cfg, "Farming", "PlantSpacing", 1.5f, "Min spacing between crops (uses max of this and plant grow radius)", new AcceptableValueRange<float>(0.5f, 3f));
             FarmUseDistance         = Bind(cfg, "Farming", "UseDistance", 2f, "Interaction range for crops and chests", new AcceptableValueRange<float>(1f, 5f));
+
+            // ── Fishing ─────────────────────────────────────────────────────
+            FishScanRadius          = Bind(cfg, "Fishing", "ScanRadius", 30f, "Water scan radius", new AcceptableValueRange<float>(5f, 100f));
+            FishWaitTimeMin         = Bind(cfg, "Fishing", "WaitTimeMin", 15f, "Min seconds waiting for nibble", new AcceptableValueRange<float>(1f, 120f));
+            FishWaitTimeMax         = Bind(cfg, "Fishing", "WaitTimeMax", 20f, "Max seconds waiting for nibble", new AcceptableValueRange<float>(1f, 180f));
+            FishReelTimeMin         = Bind(cfg, "Fishing", "ReelTimeMin", 4f, "Min seconds to reel in", new AcceptableValueRange<float>(1f, 30f));
+            FishReelTimeMax         = Bind(cfg, "Fishing", "ReelTimeMax", 6f, "Max seconds to reel in", new AcceptableValueRange<float>(1f, 60f));
+            FishHookChance          = Bind(cfg, "Fishing", "HookChance", 0.85f, "Chance to hook after nibble", new AcceptableValueRange<float>(0.1f, 1f));
+            FishMissChance          = Bind(cfg, "Fishing", "MissChance", 0.10f, "Chance of no nibble per wait", new AcceptableValueRange<float>(0f, 0.9f));
+            FishReelStaminaDrain    = Bind(cfg, "Fishing", "ReelStaminaDrain", 3f, "Stamina drain per second while reeling", new AcceptableValueRange<float>(0f, 20f));
 
             // ── Repair ───────────────────────────────────────────────────────
             RepairDurabilityThreshold = Bind(cfg, "Repair", "DurabilityThreshold", 0.50f, "Repair items below this durability %", new AcceptableValueRange<float>(0.1f, 0.9f));

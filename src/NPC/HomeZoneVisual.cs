@@ -9,6 +9,7 @@ namespace Companions
     public class HomeZoneVisual : MonoBehaviour
     {
         private LineRenderer _lr;
+        private Material     _ringMaterial;
         private const int    Points    = 64;
         private const float  Width     = 0.08f;
         private static readonly Color RingColor = new Color(1f, 0.9f, 0.2f, 0.8f);
@@ -27,8 +28,14 @@ namespace Companions
             _lr.receiveShadows = false;
             _lr.enabled        = false;
 
-            // Use a simple unlit material so the ring is always visible
-            _lr.material = new Material(Shader.Find("Sprites/Default"));
+            _ringMaterial = new Material(Shader.Find("Sprites/Default"));
+            _lr.material = _ringMaterial;
+        }
+
+        private void OnDestroy()
+        {
+            if (_ringMaterial != null)
+                Destroy(_ringMaterial);
         }
 
         public void Show(Vector3 center, float radius)

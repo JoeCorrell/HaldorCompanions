@@ -120,6 +120,10 @@ namespace Companions
         /// <summary>True when navigating to a resource target (not yet attacking/collecting).</summary>
         internal bool IsMoving => _state == State_Moving;
 
+        /// <summary>True when in the Attacking state (swinging at a resource). Used by CompanionAI
+        /// to suppress proactive jump between attack swings.</summary>
+        internal bool IsAttacking => _state == State_Attacking;
+
         /// <summary>Current harvest state name for external diagnostics.</summary>
         internal string CurrentStateName => _state.ToString();
 
@@ -708,11 +712,10 @@ namespace Companions
             }
             else if (rockLikeTarget)
             {
-                // Rocks are frequently "reachable but not center-reachable". Asking MoveToPoint
-                // for a very tight stop (<1m) causes repeated NavMesh-done retries and ping-pong.
-                // Use range - 0.2f so that NavMesh's natural overstopping (~0.1-0.3m) lands the
-                // companion inside weapon range rather than outside it (prevents digging into ground).
-                moveGoal = range - 0.2f;
+                // Get close enough that the pickaxe actually hits the rock.
+                // range - 0.2f was too far — NavMesh often overshoots the stop distance,
+                // leaving the companion ~1m short and digging into the ground instead.
+                moveGoal = range * 0.5f;
                 runToTarget = distToTarget > 6f;
             }
             else
@@ -798,6 +801,8 @@ namespace Companions
                 arrivalDist = range * 0.7f;   // tighter than re-approach trigger (0.85*range)
             else if (isLow)
                 arrivalDist = range;
+            else if (rockLikeTarget)
+                arrivalDist = range;           // no slack for rocks — pickaxes have short range
             else
                 arrivalDist = range + ArrivalSlack;
             // Safety: if re-approach can't reach the tighter distance after 3s
@@ -806,7 +811,7 @@ namespace Companions
             // prevents getting any nearer.
             if (_reapproach && _moveTimer > 3f)
             {
-                float normalArrival = isLow ? range : range + ArrivalSlack;
+                float normalArrival = (isLow || rockLikeTarget) ? range : range + ArrivalSlack;
                 if (distToTarget <= normalArrival || horizDist <= normalArrival)
                     arrivalDist = normalArrival;
             }
@@ -857,15 +862,17 @@ namespace Companions
             }
 
             // During attack, shuffle closer if beyond actual hit range.
-            // Follow() stops at ~3m but weapon range is ~2.2m — the gap means
-            // small targets get missed. LateUpdate overrides Follow's StopMoving.
-            // After 2+ swings (likely whiffing), get much more aggressive about closing distance.
-            if (_state == State_Attacking && _target != null && _ai != null && IsLowTarget())
+            // NavMesh stop distance is imprecise — the companion can end up 1m short
+            // and hit the ground instead of the target. This nudges them closer.
+            // Rocks always use aggressive shuffle — pickaxes have short range and
+            // being even slightly too far causes ground-digging.
+            if (_state == State_Attacking && _target != null && _ai != null
+                && (IsLowTarget() || IsRockLikeTarget()))
             {
                 Vector3 effectivePos = GetEffectiveTargetPosition();
                 float dist = Vector3.Distance(transform.position, effectivePos);
                 float range = GetAttackRange();
-                bool needsCloser = _swingCount >= 2 || _totalAttempts >= 2 || IsLowTarget();
+                bool needsCloser = _swingCount >= 2 || _totalAttempts >= 2 || IsLowTarget() || IsRockLikeTarget();
                 float shuffleThreshold = needsCloser ? range * 0.5f : range * 0.8f;
                 float shuffleGoal     = needsCloser ? range * 0.15f : range * 0.5f;
                 if (dist > shuffleThreshold)
@@ -956,16 +963,18 @@ namespace Companions
             FaceTarget();
 
             // Check distance — may have drifted or never been close enough.
-            // Use range + 1.5f (not +0.5f) to add hysteresis vs the arrival threshold
-            // (range + 0.5f). Without this gap, the companion oscillates at the boundary:
-            // arrive at 2.4m → Attacking → momentum to 2.6m → Moving → repeat.
+            // Trees use range + 1.5f for hysteresis vs the arrival threshold (range + 0.5f).
+            // Rocks use a tighter range + 0.8f — pickaxes have short range (~2m) and the
+            // generous 1.5f margin was letting companions stay 3.5m away, hitting the ground
+            // instead of the rock face.
             Vector3 effectivePos = GetEffectiveTargetPosition();
             float dist = Vector3.Distance(transform.position, effectivePos);
             float range = GetAttackRange();
-            if (dist > range + 1.5f)
+            float tooFarThreshold = IsRockLikeTarget() ? range + 0.8f : range + 1.5f;
+            if (dist > tooFarThreshold)
             {
                 Log($"Too far from target: dist={dist:F1}m " +
-                    $"(range={range:F1} + 1.5) — returning to Moving state");
+                    $"(threshold={tooFarThreshold:F1}) — returning to Moving state");
                 _reapproach = true;
                 _attackFaceLocked = false;
                 _moveTimer = 0f;
@@ -1604,12 +1613,22 @@ namespace Companions
             {
                 // Ore mode — only MineRock/MineRock5 that drop actual ore (not just stone)
                 var rock5 = col.GetComponentInParent<MineRock5>();
-                if (rock5 != null && !DropsOnlyStone(rock5.m_dropItems))
-                { type = "MineRock5"; return rock5.gameObject; }
+                if (rock5 != null)
+                {
+                    bool stoneOnly = DropsOnlyStone(rock5.m_dropItems);
+                    CompanionsPlugin.Log.LogDebug(
+                        $"[Harvest] OreMode MineRock5 \"{rock5.gameObject.name}\" stoneOnly={stoneOnly} → {(stoneOnly ? "SKIP" : "ACCEPT")}");
+                    if (!stoneOnly) { type = "MineRock5"; return rock5.gameObject; }
+                }
 
                 var rock = col.GetComponentInParent<MineRock>();
-                if (rock != null && !DropsOnlyStone(rock.m_dropItems))
-                { type = "MineRock"; return rock.gameObject; }
+                if (rock != null)
+                {
+                    bool stoneOnly = DropsOnlyStone(rock.m_dropItems);
+                    CompanionsPlugin.Log.LogDebug(
+                        $"[Harvest] OreMode MineRock \"{rock.gameObject.name}\" stoneOnly={stoneOnly} → {(stoneOnly ? "SKIP" : "ACCEPT")}");
+                    if (!stoneOnly) { type = "MineRock"; return rock.gameObject; }
+                }
 
                 // Skip Destructible — ore deposits use MineRock/MineRock5
             }
@@ -1618,12 +1637,22 @@ namespace Companions
                 // Stone mode — only MineRock/MineRock5 that drop stone (not ore) + Destructible rocks.
                 // Ore veins (copper, tin, etc.) are reserved for Ore mode.
                 var rock5 = col.GetComponentInParent<MineRock5>();
-                if (rock5 != null && DropsOnlyStone(rock5.m_dropItems))
-                { type = "MineRock5"; return rock5.gameObject; }
+                if (rock5 != null)
+                {
+                    bool stoneOnly = DropsOnlyStone(rock5.m_dropItems);
+                    CompanionsPlugin.Log.LogDebug(
+                        $"[Harvest] StoneMode MineRock5 \"{rock5.gameObject.name}\" stoneOnly={stoneOnly} → {(stoneOnly ? "ACCEPT" : "SKIP")}");
+                    if (stoneOnly) { type = "MineRock5"; return rock5.gameObject; }
+                }
 
                 var rock = col.GetComponentInParent<MineRock>();
-                if (rock != null && DropsOnlyStone(rock.m_dropItems))
-                { type = "MineRock"; return rock.gameObject; }
+                if (rock != null)
+                {
+                    bool stoneOnly = DropsOnlyStone(rock.m_dropItems);
+                    CompanionsPlugin.Log.LogDebug(
+                        $"[Harvest] StoneMode MineRock \"{rock.gameObject.name}\" stoneOnly={stoneOnly} → {(stoneOnly ? "ACCEPT" : "SKIP")}");
+                    if (stoneOnly) { type = "MineRock"; return rock.gameObject; }
+                }
 
                 // Destructible rocks: must respond to pickaxe AND not respond to chop.
                 // Accept both Immune and Ignore for chop — some rocks use Ignore which
@@ -1648,13 +1677,21 @@ namespace Companions
         /// </summary>
         private static bool DropsOnlyStone(DropTable table)
         {
-            if (table == null || table.m_drops.Count == 0) return true;
+            if (table == null || table.m_drops.Count == 0)
+            {
+                CompanionsPlugin.Log.LogDebug("[Harvest] DropsOnlyStone: table null/empty → true");
+                return true;
+            }
+            bool result = true;
             foreach (var drop in table.m_drops)
             {
+                string itemName = drop.m_item != null ? drop.m_item.name : "NULL";
+                CompanionsPlugin.Log.LogDebug($"[Harvest] DropsOnlyStone: drop item=\"{itemName}\"");
                 if (drop.m_item == null) continue;
-                if (drop.m_item.name != "Stone") return false;
+                if (drop.m_item.name != "Stone") result = false;
             }
-            return true;
+            CompanionsPlugin.Log.LogDebug($"[Harvest] DropsOnlyStone → {result}");
+            return result;
         }
 
         /// <summary>
@@ -1995,19 +2032,35 @@ namespace Companions
 
         private void FaceTarget()
         {
-            if (_target == null) return;
+            if (_target == null || _ai == null || _character == null) return;
             Vector3 facePoint = (_state == State_Attacking && _attackFaceLocked && IsRockLikeTarget())
                 ? _lockedAttackFaceTarget
                 : GetEffectiveTargetPosition();
-            Vector3 dir = facePoint - transform.position;
-            dir.y = 0f;
-            if (dir.sqrMagnitude <= 0.01f)
+
+            // For large rocks, the closest surface point can be almost directly beside
+            // the companion — BaseAI.LookAt bails out when XZ distance < 0.01.
+            // Fall back to the rock's center position to guarantee a valid facing direction.
+            Vector3 toFace = facePoint - transform.position;
+            toFace.y = 0f;
+            if (toFace.sqrMagnitude < 0.1f)
+                facePoint = _target.transform.position;
+
+            // Set look direction through the AI system so it isn't overridden
+            _ai.LookAtPoint(facePoint);
+
+            // Also snap body rotation instantly during Attacking state —
+            // Character.RotateTowards is smooth and too slow for pickaxe timing.
+            if (_state == State_Attacking)
             {
-                dir = _target.transform.position - transform.position;
+                Vector3 dir = facePoint - transform.position;
                 dir.y = 0f;
+                if (dir.sqrMagnitude > 0.001f)
+                {
+                    Quaternion targetRot = Quaternion.LookRotation(dir.normalized);
+                    _character.SetLookDir(dir.normalized);
+                    transform.rotation = targetRot;
+                }
             }
-            if (dir.sqrMagnitude > 0.01f)
-                transform.rotation = Quaternion.LookRotation(dir);
         }
 
         /// <summary>

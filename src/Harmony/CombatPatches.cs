@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using HarmonyLib;
 using UnityEngine;
 
@@ -55,6 +56,93 @@ namespace Companions
                 }
 
                 __result = newMax;
+            }
+        }
+
+        /// <summary>
+        /// Prevent companions from using tools as combat weapons.
+        /// EquipBestWeapon calls BaseAI.CanUseAttack for each candidate — returning
+        /// false here stops fishing rods, pickaxes, and other tools from being selected.
+        /// </summary>
+        [HarmonyPatch(typeof(BaseAI), nameof(BaseAI.CanUseAttack))]
+        public static class ToolCombatExclude
+        {
+            static void Postfix(BaseAI __instance, ItemDrop.ItemData item, ref bool __result)
+            {
+                if (!__result) return;
+                if (!(__instance is CompanionAI)) return;
+
+                // Fishing rod
+                if (item.m_shared.m_animationState == ItemDrop.ItemData.AnimationState.FishingRod)
+                {
+                    __result = false;
+                    return;
+                }
+
+                // Pickaxes — TwoHandedWeapon with pickaxe damage
+                if (item.GetDamage().m_pickaxe > 0f)
+                {
+                    __result = false;
+                    return;
+                }
+
+                // Tool item type (cultivators, hammers, hoes)
+                if (item.m_shared.m_itemType == ItemDrop.ItemData.ItemType.Tool)
+                {
+                    __result = false;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Vanilla EquipBestWeapon picks RANDOMLY from all valid in-range weapons.
+        /// For companions, override with highest combat damage selection so a flint
+        /// axe (low slash + high chop) doesn't beat a proper sword/battleaxe.
+        /// </summary>
+        [HarmonyPatch(typeof(Humanoid), nameof(Humanoid.EquipBestWeapon))]
+        private static class EquipBestWeapon_PreferHighestDamage
+        {
+            static void Postfix(Humanoid __instance)
+            {
+                var baseAI = __instance.GetBaseAI();
+                if (baseAI == null || !(baseAI is CompanionAI)) return;
+
+                var current = __instance.GetCurrentWeapon();
+                if (current == null) return;
+
+                float currentCombatDmg = GetCombatDamage(current);
+                var inv = __instance.GetInventory();
+                if (inv == null) return;
+
+                ItemDrop.ItemData best = current;
+                float bestDmg = currentCombatDmg;
+
+                foreach (var item in inv.GetAllItems())
+                {
+                    if (item == null || item.m_shared == null) continue;
+                    if (!item.IsWeapon()) continue;
+                    if (!baseAI.CanUseAttack(item)) continue;
+                    if (item.m_shared.m_aiTargetType != ItemDrop.ItemData.AiTarget.Enemy) continue;
+                    if (item.m_shared.m_useDurability && item.m_durability <= 0f) continue;
+
+                    float dmg = GetCombatDamage(item);
+                    if (dmg > bestDmg)
+                    {
+                        best = item;
+                        bestDmg = dmg;
+                    }
+                }
+
+                if (best != current)
+                    __instance.EquipItem(best);
+            }
+
+            /// <summary>Combat-only damage — excludes chop/pickaxe which don't hurt enemies.</summary>
+            private static float GetCombatDamage(ItemDrop.ItemData item)
+            {
+                var d = item.GetDamage();
+                return d.m_damage + d.m_blunt + d.m_slash + d.m_pierce
+                     + d.m_fire + d.m_frost + d.m_lightning + d.m_poison + d.m_spirit;
             }
         }
     }

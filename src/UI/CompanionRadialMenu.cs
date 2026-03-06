@@ -140,6 +140,11 @@ namespace Companions
         /// </summary>
         private bool _useReleasedSinceOpen;
 
+        // ── Despawn confirmation ─────────────────────────────────────────
+        private bool  _despawnConfirmPending;
+        private float _despawnConfirmTimer;
+        private const float DespawnConfirmTimeout = 3f;
+
         // ── Animation state ─────────────────────────────────────────────
         private AnimState _animState = AnimState.Closed;
         private float     _animTimer;
@@ -277,6 +282,7 @@ namespace Companions
             if (!_visible) return;
             if (_animState == AnimState.Closing) return;
 
+            _despawnConfirmPending = false;
             _animState = AnimState.Closing;
             _animTimer = 0f;
             _hoveredIndex = -1;
@@ -344,6 +350,14 @@ namespace Companions
             {
                 if (!ZInput.GetButton("Use") && !ZInput.GetButton("JoyUse"))
                     _useReleasedSinceOpen = true;
+            }
+
+            // Despawn confirmation timeout
+            if (_despawnConfirmPending)
+            {
+                _despawnConfirmTimer -= Time.unscaledDeltaTime;
+                if (_despawnConfirmTimer <= 0f)
+                    ResetDespawnConfirm();
             }
 
             UpdateSelection();
@@ -792,6 +806,10 @@ namespace Companions
             var farm = _companion.GetComponent<FarmController>();
             farm?.NotifyActionModeChanged();
 
+            // Notify FishController of mode change
+            var fish = _companion.GetComponent<FishController>();
+            fish?.NotifyActionModeChanged();
+
             // Reset repair/restock state machines on mode change
             var ai = _companion.GetComponent<CompanionAI>();
             if (ai != null)
@@ -881,8 +899,23 @@ namespace Companions
         {
             if (_companion == null || _companionNview == null) return;
 
+            // First click → enter confirmation state
+            if (!_despawnConfirmPending)
+            {
+                _despawnConfirmPending = true;
+                _despawnConfirmTimer = DespawnConfirmTimeout;
+                UpdateDespawnLabel();
+                return;
+            }
+
+            // Second click → actually despawn
+            _despawnConfirmPending = false;
+
             string name = _companionNview.GetZDO()?.GetString(CompanionSetup.NameHash, "Companion") ?? "Companion";
             CompanionsPlugin.Log.LogInfo($"[Radial] Despawn — permanently removing \"{name}\"");
+
+            // Drop tombstone with inventory before destruction
+            _companion.DespawnWithTombstone();
 
             // Unsubscribe death handler so OnCompanionDeath doesn't queue a respawn
             var humanoid = _companion.GetComponent<Humanoid>();
@@ -894,6 +927,40 @@ namespace Companions
 
             // Destroy the ZDO-backed object — removes from world permanently
             _companionNview.Destroy();
+        }
+
+        private void UpdateDespawnLabel()
+        {
+            string confirmText = ModLocalization.Loc("hc_radial_despawn_confirm");
+            // Update inner ring despawn label
+            for (int i = 0; i < _innerSegments.Count; i++)
+            {
+                if (_innerSegments[i].ActionId == ActionDespawn && i < _innerSegLabels.Count)
+                    _innerSegLabels[i].text = confirmText;
+            }
+            // Update outer ring despawn label (if present)
+            for (int i = 0; i < _segments.Count; i++)
+            {
+                if (_segments[i].ActionId == ActionDespawn && i < _segLabels.Count)
+                    _segLabels[i].text = confirmText;
+            }
+        }
+
+        private void ResetDespawnConfirm()
+        {
+            if (!_despawnConfirmPending) return;
+            _despawnConfirmPending = false;
+            string normalText = ModLocalization.Loc("hc_radial_despawn");
+            for (int i = 0; i < _innerSegments.Count; i++)
+            {
+                if (_innerSegments[i].ActionId == ActionDespawn && i < _innerSegLabels.Count)
+                    _innerSegLabels[i].text = normalText;
+            }
+            for (int i = 0; i < _segments.Count; i++)
+            {
+                if (_segments[i].ActionId == ActionDespawn && i < _segLabels.Count)
+                    _segLabels[i].text = normalText;
+            }
         }
 
         // ── One-shot: Repair all building pieces within 50m ──────────────

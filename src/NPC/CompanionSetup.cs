@@ -13,6 +13,11 @@ namespace Companions
     /// </summary>
     public class CompanionSetup : MonoBehaviour
     {
+        // ── Static registry (replaces FindObjectsByType calls) ──────────────────
+        private static readonly System.Collections.Generic.List<CompanionSetup> _allCompanions =
+            new System.Collections.Generic.List<CompanionSetup>();
+        internal static System.Collections.Generic.IReadOnlyList<CompanionSetup> AllCompanions => _allCompanions;
+
         // ── ZDO hash keys ──────────────────────────────────────────────────────
         internal static readonly int AppearanceHash = StringExtensionMethods.GetStableHashCode("HC_Appearance");
         internal static readonly int OwnerHash      = StringExtensionMethods.GetStableHashCode("HC_Owner");
@@ -112,6 +117,7 @@ namespace Companions
 
         private void Awake()
         {
+            _allCompanions.Add(this);
             _nview         = GetComponent<ZNetView>();
             _visEquip      = GetComponent<VisEquipment>();
             _ai            = GetComponent<CompanionAI>();
@@ -395,7 +401,10 @@ namespace Companions
 
             // Legacy mapping: 2 used to be Stay before gather modes were fully wired.
             if (mode == 2) mode = ModeStay;
-            if (mode < ModeFollow || mode > ModeFish) mode = ModeFollow;
+            bool isValidMode = (mode >= ModeFollow && mode <= ModeFish)
+                            || mode == ModeRepairBuildings
+                            || mode == ModeRestock;
+            if (!isValidMode) mode = ModeFollow;
 
             zdo.Set(ActionModeHash, mode);
             zdo.Set(ActionModeSchemaHash, ActionModeSchemaVersion);
@@ -524,8 +533,7 @@ namespace Companions
                 case ModeSmelt:
                 case ModeFarm:
                 case ModeHunt:
-                    // Don't override follow target if HarvestController, SmeltController,
-                    // FarmController, or HuntController is actively driving movement.
+                    // Don't override follow target if a controller is actively driving movement.
                     // Skip this guard when force=true (UI close restoration).
                     if (!force)
                     {
@@ -574,6 +582,13 @@ namespace Companions
                         _ai.SetFollowTarget(null);
                         CompanionsPlugin.Log.LogDebug($"[Setup]   → Follow OFF, gather mode={mode} — idle");
                     }
+                    break;
+                case ModeFish:
+                    // Fishing is stationary — companion stays put and independently seeks water.
+                    // Never set follow target; FishController drives movement to water spots.
+                    _ai.SetFollowTarget(null);
+                    _ai.SetPatrolPoint();
+                    CompanionsPlugin.Log.LogDebug($"[Setup]   → Fish mode — stationary, patrol at current pos");
                     break;
                 case ModeStay:
                     _ai.SetFollowTarget(null);
@@ -660,7 +675,31 @@ namespace Companions
             _inventoryCallback = null;
         }
 
-        // ── Death System ──────────────────────────────────────────────────
+        // ── Death / Despawn System ───────────────────────────────────────
+
+        /// <summary>
+        /// Called by the radial menu when the player confirms a despawn.
+        /// Drops a tombstone with all inventory items (same as death) but
+        /// does NOT queue a respawn.
+        /// </summary>
+        internal void DespawnWithTombstone()
+        {
+            if (_humanoid == null) return;
+            var inv = _humanoid.GetInventory();
+            if (inv == null || inv.NrOfItems() == 0) return;
+
+            string companionName = _humanoid.m_name ?? "Companion";
+            var zdo = _nview?.GetZDO();
+            if (zdo != null)
+            {
+                string zdoName = zdo.GetString(NameHash, "");
+                if (!string.IsNullOrEmpty(zdoName)) companionName = zdoName;
+            }
+
+            Vector3 pos = _humanoid.GetCenterPoint();
+            long tombstoneId = System.DateTime.UtcNow.Ticks;
+            CreateCompanionTombstone(companionName, pos, tombstoneId);
+        }
 
         private void OnCompanionDeath()
         {
@@ -903,6 +942,7 @@ namespace Companions
 
         private void OnDestroy()
         {
+            _allCompanions.Remove(this);
             RemoveMinimapPin();
             UnregisterInventoryCallback();
             if (_visEquip != null)
@@ -1066,8 +1106,18 @@ namespace Companions
                 if (item == null || item.m_shared == null) continue;
                 if (item.m_shared.m_useDurability && item.m_durability <= 0f) continue;
 
+                // Fishing rod is not a combat weapon — skip for auto-equip
+                if (item.m_shared.m_animationState == ItemDrop.ItemData.AnimationState.FishingRod)
+                    continue;
+
                 var type = item.m_shared.m_itemType;
-                float dmg = item.GetDamage().GetTotalDamage();
+                // Use combat-only damage for weapon ranking — exclude chop/pickaxe
+                // which don't hurt enemies. Without this, a flint axe (20 slash + 40 chop = 60)
+                // would beat a bronze sword (35 slash) despite being a weaker combat weapon.
+                var rawDmg = item.GetDamage();
+                float dmg = rawDmg.m_damage + rawDmg.m_blunt + rawDmg.m_slash + rawDmg.m_pierce
+                          + rawDmg.m_fire + rawDmg.m_frost + rawDmg.m_lightning
+                          + rawDmg.m_poison + rawDmg.m_spirit;
                 float armor = item.GetArmor();
 
                 switch (type)
@@ -1382,7 +1432,7 @@ namespace Companions
             if (player == null) return 0;
             string localId = player.GetPlayerID().ToString();
 
-            foreach (var setup in FindObjectsByType<CompanionSetup>(FindObjectsSortMode.None))
+            foreach (var setup in _allCompanions)
             {
                 if (setup == this) continue;
                 var otherZdo = setup._nview?.GetZDO();

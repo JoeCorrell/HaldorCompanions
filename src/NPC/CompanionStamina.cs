@@ -36,8 +36,12 @@ namespace Companions
         /// <summary>Set by CompanionAIPatches.Follow_Patch when companion is running.</summary>
         public bool IsRunning { get; set; }
 
-        private static float RegenRate    => ModConfig.StaminaRegenRate.Value;
-        private static float RunDrainRate => ModConfig.StaminaRunDrain.Value;
+        /// <summary>Set by CompanionAI.ApplyPlayerMovementMatch when companion crouches.</summary>
+        public bool IsCrouching { get; set; }
+
+        private static float RegenRate     => ModConfig.StaminaRegenRate.Value;
+        private static float RunDrainRate  => ModConfig.StaminaRunDrain.Value;
+        private static float SneakDrainRate => ModConfig.StaminaSneakDrain.Value;
         private static float SwimDrainRate => ModConfig.StaminaSwimDrain.Value;
         private static float RegenDelay   => ModConfig.StaminaRegenDelay.Value;
         private const float SaveInterval = 5f;
@@ -50,11 +54,14 @@ namespace Companions
         private float         _remoteSyncTimer;
         private bool          _initialized;
 
+        private CompanionRestedBuff _restedBuff;
+
         private void Awake()
         {
-            _nview     = GetComponent<ZNetView>();
-            _food      = GetComponent<CompanionFood>();
-            _character = GetComponent<Character>();
+            _nview      = GetComponent<ZNetView>();
+            _food       = GetComponent<CompanionFood>();
+            _character  = GetComponent<Character>();
+            _restedBuff = GetComponent<CompanionRestedBuff>();
         }
 
         private void Start()
@@ -121,17 +128,13 @@ namespace Companions
                              && (_character.IsRunning()
                                  || (velocity > runVelThreshold && _character.IsOnGround()));
 
-            // Enforce stamina rules: force walk when stamina is depleted.
-            // Multiple systems (Follow, HarvestController, FarmController) call
-            // SetRun(true) without checking stamina. This central gate prevents
-            // the companion from running at 0 stamina regardless of caller.
-            if (Stamina <= 0f && _character != null && _character.IsRunning())
-                _character.SetRun(false);
-
-            // Drain for running or swimming.
-            if ((isRunning || isSwimming) && Stamina > 0f)
+            // Drain for running, sneaking, or swimming.
+            bool isSneaking = IsCrouching && !isRunning && !isSwimming && velocity > 0.1f;
+            if ((isRunning || isSwimming || isSneaking) && Stamina > 0f)
             {
-                float drainRate = isSwimming ? SwimDrainRate : RunDrainRate;
+                float drainRate = isSwimming ? SwimDrainRate
+                                : isSneaking ? SneakDrainRate
+                                : RunDrainRate;
                 Stamina = Mathf.Max(0f, Stamina - drainRate * dt);
                 _regenDelayTimer = RegenDelay;
             }
@@ -145,8 +148,7 @@ namespace Companions
                     // Base=1x, Resting=+1x, Rested buff=+1x
                     float regenMult = 1f;
                     if (IsResting) regenMult += 1f;
-                    var restedBuff = GetComponent<CompanionRestedBuff>();
-                    if (restedBuff != null && restedBuff.IsRested)
+                    if (_restedBuff != null && _restedBuff.IsRested)
                         regenMult += CompanionRestedBuff.StaminaRegenAdditiveBonus;
                     float rate = RegenRate * regenMult;
                     Stamina = Mathf.Min(max, Stamina + rate * dt);
