@@ -7,7 +7,7 @@ namespace Companions
     /// <summary>
     /// Food system for companions — mirrors the player's food mechanics.
     /// Tracks up to 3 active food effects (matching the 3 food inventory slots).
-    /// Base health = 25, base stamina = 25. Food provides bonuses on top.
+    /// Base health = 25, base stamina = 50 by default. Food provides bonuses on top.
     /// Auto-consumes food from inventory when a slot is empty.
     /// Persists to ZDO for save/load.
     /// </summary>

@@ -112,11 +112,15 @@ namespace Companions
             for (int i = 0; i < _respawnQueue.Count; i++)
             {
                 var existing = _respawnQueue[i];
-                if (existing.OwnerId == data.OwnerId && existing.Name == data.Name)
+                bool sameEntry = existing.OwnerId == data.OwnerId &&
+                    (data.TombstoneId != 0L
+                        ? existing.TombstoneId == data.TombstoneId
+                        : existing.Name == data.Name);
+                if (sameEntry)
                 {
                     CompanionsPlugin.Log.LogWarning(
                         $"[CompanionManager] Duplicate respawn blocked for \"{data.Name}\" " +
-                        $"(owner={data.OwnerId}) — already queued");
+                        $"(owner={data.OwnerId} tombstoneId={data.TombstoneId}) — already queued");
                     return;
                 }
             }

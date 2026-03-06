@@ -82,6 +82,7 @@ namespace Companions
         private CompanionRest     _restCached;
         private SmeltController   _smeltCached;
         private HuntController    _huntCached;
+        private CompanionCombatAI _combatAI;
         private bool           _initialized;
         private bool           _ownerMismatchLogged;
         private bool           _uiFrozen;
@@ -120,6 +121,7 @@ namespace Companions
             _restCached    = GetComponent<CompanionRest>();
             _smeltCached   = GetComponent<SmeltController>();
             _huntCached    = GetComponent<HuntController>();
+            _combatAI      = GetComponent<CompanionCombatAI>();
 
             CompanionsPlugin.Log.LogInfo(
                 $"[Setup] Awake — nview={_nview != null} visEquip={_visEquip != null} " +
@@ -1160,12 +1162,12 @@ namespace Companions
                 $"current=\"{curRight?.m_shared?.m_name ?? "none"}\" " +
                 $"needsSwap={desiredRight != null && curRight != desiredRight}");
 
-            // If stance is Ranged and a bow is currently equipped, don't override —
-            // combat AI manages the weapon slot for ranged stance.
-            // Note: vanilla equips bows in m_leftItem, not m_rightItem.
+            // Combat AI manages weapon selection while engaged — don't override.
+            // Also protect Ranged stance bow even when not in combat.
+            bool combatActive = _combatAI != null && _combatAI.IsEngaged;
             bool bowEquipped = (curRight != null && curRight.m_shared.m_itemType == ItemDrop.ItemData.ItemType.Bow)
                             || (curLeft  != null && curLeft.m_shared.m_itemType  == ItemDrop.ItemData.ItemType.Bow);
-            bool skipWeaponSwap = bowEquipped && GetCombatStance() == StanceRanged;
+            bool skipWeaponSwap = combatActive || (bowEquipped && GetCombatStance() == StanceRanged);
 
             if (!skipWeaponSwap && desiredRight != null && curRight != desiredRight)
             {

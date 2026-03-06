@@ -50,6 +50,7 @@ namespace Companions
         // Scanning / Hunting
         private float     _scanTimer;
         private Character _prey;           // tracked so we can detect death
+        private Vector3   _lastPreyPos;   // continuously updated; used when prey destroyed before check
 
         // CollectingDrops
         private Vector3    _killPos;
@@ -151,10 +152,17 @@ namespace Companions
             // CombatAI disengaged — either prey fled/died or it was cleared externally
             if (_combatAI == null || !_combatAI.IsEngaged)
             {
-                // If prey is confirmed dead, collect drops
-                if (_prey != null && _prey.IsDead())
+                // Character.IsDead() always returns false for non-player characters.
+                // OnDeath() calls ZNetScene.Destroy immediately, so by the time this
+                // runs, _prey may already be Unity-null (destroyed). Use !_prey as the
+                // death signal, or fall back to GetHealth() if still accessible.
+                bool preyDestroyed = !_prey;   // Unity fake-null = GameObject destroyed
+                bool preyDead = !preyDestroyed && _prey.GetHealth() <= 0f;
+
+                if (preyDestroyed || preyDead)
                 {
-                    _killPos            = _prey.transform.position;
+                    // Use the last cached position — the reference may be null already.
+                    _killPos            = preyDestroyed ? _lastPreyPos : _prey.transform.position;
                     _currentDrop        = null;
                     _dropTimer          = 0f;
                     _dropScanDelayTimer = DropScanDelay;
@@ -163,7 +171,7 @@ namespace Companions
                     if (_ai != null) _ai.StopMoving();
 
                     CompanionsPlugin.Log.LogInfo(
-                        $"[Hunt] Prey \"{_prey.m_name}\" killed — moving to collect drops at {_killPos:F1}");
+                        $"[Hunt] Prey killed (destroyed={preyDestroyed}) — collecting drops at {_killPos:F1}");
                 }
                 else
                 {
@@ -178,10 +186,20 @@ namespace Companions
             // CombatAI is engaged in hunt mode — check prey status
             Character target = _combatAI.TargetCreature;
 
-            if (target != null && target.IsDead())
+            // Continuously cache the last known target position so the disengaged
+            // path can use it even after the GameObject is destroyed.
+            if (target != null)
+                _lastPreyPos = target.transform.position;
+
+            // Character.IsDead() returns false for all non-player characters — check
+            // health instead. Also handle Unity-null (destroyed between frames).
+            bool targetDestroyed = !target;
+            bool targetDead = !targetDestroyed && target.GetHealth() <= 0f;
+
+            if (targetDestroyed || targetDead)
             {
                 // Prey just died while CombatAI is still in its last frame — disengage and collect
-                _killPos = target.transform.position;
+                _killPos = target != null ? target.transform.position : _lastPreyPos;
                 _combatAI.Disengage();
                 _currentDrop        = null;
                 _dropTimer          = 0f;

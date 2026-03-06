@@ -201,7 +201,7 @@ namespace Companions
             SpawnStarterCompanion   = Bind(cfg, "General", "SpawnStarterCompanion", true, "Spawn a free companion when entering a new world for the first time");
             MaxCarryWeight          = Bind(cfg, "General", "MaxCarryWeight", 300f, "Maximum carry weight for companions", new AcceptableValueRange<float>(50f, 2000f));
             BaseHealth              = Bind(cfg, "General", "BaseHealth", 25f, "Base HP before food bonuses", new AcceptableValueRange<float>(1f, 500f));
-            BaseStamina             = Bind(cfg, "General", "BaseStamina", 25f, "Base stamina before food bonuses", new AcceptableValueRange<float>(1f, 500f));
+            BaseStamina             = Bind(cfg, "General", "BaseStamina", 50f, "Base stamina before food bonuses", new AcceptableValueRange<float>(1f, 500f));
             MaxFoodSlots            = Bind(cfg, "General", "MaxFoodSlots", 3, "Number of food slots", new AcceptableValueRange<int>(1, 5));
             MaxLeashDistance        = Bind(cfg, "General", "MaxLeashDistance", 50f, "StayHome teleport-home leash distance", new AcceptableValueRange<float>(10f, 200f));
             FollowTeleportDistance  = Bind(cfg, "General", "FollowTeleportDistance", 50f, "Distance from player before companion warps", new AcceptableValueRange<float>(20f, 200f));

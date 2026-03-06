@@ -6,7 +6,7 @@ namespace Companions
     /// Custom stamina system for companions. Valheim's stamina is Player-only,
     /// so this provides a lightweight equivalent with regen/drain and ZDO persistence.
     ///
-    /// Base stamina = 25. Food provides additional stamina via CompanionFood.
+    /// Base stamina = 50 by default. Food provides additional stamina via CompanionFood.
     /// MaxStamina = BaseStamina + food bonuses (dynamic).
     ///
     /// Stamina is consumed by:

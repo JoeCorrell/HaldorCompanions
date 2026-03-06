@@ -77,6 +77,11 @@ namespace Companions
             _smelt       = GetComponent<SmeltController>();
         }
 
+        private void OnDestroy()
+        {
+            UnclaimStation();
+        }
+
         private void Update()
         {
             if (_nview == null || _nview.GetZDO() == null || !_nview.IsOwner()) return;
@@ -357,6 +362,7 @@ namespace Companions
                 float oldDur = item.m_durability;
                 float maxDur = item.GetMaxDurability();
                 item.m_durability = maxDur;
+                _humanoid?.GetInventory()?.m_onChanged?.Invoke(); // sync durability to ZDO
 
                 // Play repair VFX
                 _targetStation.m_repairItemDoneEffects.Create(

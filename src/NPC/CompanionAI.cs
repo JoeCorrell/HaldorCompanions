@@ -834,6 +834,7 @@ namespace Companions
             {
                 _body.position = seatPos;
                 _body.velocity = Vector3.zero;
+                ResetLiquidState();
                 _body.useGravity = false;
                 _body.isKinematic = true;
             }
@@ -913,6 +914,7 @@ namespace Companions
                     {
                         _body.position = disembarkPos;
                         _body.velocity = Vector3.zero;
+                        ResetLiquidState();
                     }
                     teleported = true;
                     CompanionsPlugin.Log.LogDebug(
@@ -942,6 +944,7 @@ namespace Companions
                 {
                     _body.position = spawnPos;
                     _body.velocity = Vector3.zero;
+                    ResetLiquidState();
                 }
                 CompanionsPlugin.Log.LogDebug(
                     $"[AI] Ship detach — teleported near player at {spawnPos:F1}");
@@ -1168,6 +1171,7 @@ namespace Companions
                         {
                             _body.position = transform.position;
                             _body.velocity = Vector3.zero;
+                            ResetLiquidState();
                         }
                         _tombstoneNavStuckTime = 0f;
                         // Next frame dist will be < TombstoneLootRange → loot
@@ -1662,6 +1666,7 @@ namespace Companions
                             {
                                 _body.position = _pendingShipLadder.m_targetPos.position;
                                 _body.velocity = Vector3.zero;
+                                ResetLiquidState();
                             }
                         }
 
@@ -2933,6 +2938,7 @@ namespace Companions
             {
                 _body.position = targetPos;
                 _body.linearVelocity = Vector3.zero;
+                ResetLiquidState();
             }
 
             CompanionsPlugin.Log.LogDebug(
@@ -4154,6 +4160,17 @@ namespace Companions
             if (m_follow != null) return "Follow";
             if (_setup != null && _setup.GetStayHome()) return "StayHome";
             return "Idle";
+        }
+
+        /// <summary>
+        /// Resets stuck liquid/wet state after a Rigidbody teleport.
+        /// Setting _body.position directly bypasses Unity trigger events, so
+        /// WaterVolume.OnTriggerExit never fires and m_waterLevel stays at the
+        /// old water surface, causing SE_Wet to be re-applied every frame forever.
+        /// </summary>
+        private void ResetLiquidState()
+        {
+            (m_character as IWaterInteractable)?.SetLiquidLevel(-10000f, LiquidType.Water, null);
         }
     }
 }

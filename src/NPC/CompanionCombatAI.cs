@@ -292,9 +292,10 @@ namespace Companions
 
             // Circulate while charging — melee only (RV sets
             // circulateWhileCharging=false for ranged weapon users)
-            bool isRangedWeapon = weapon != null && weapon.m_shared.m_aiAttackRange > 10f;
+            bool isRangedWeapon = weapon != null &&
+                (weapon.m_shared.m_aiAttackRange > 10f || weapon.m_shared.m_itemType == ItemDrop.ItemData.ItemType.Bow);
             if (_targetCreature != null && weapon != null && !canAttack
-                && !_character.InAttack() && !isRangedWeapon)
+                && !_character.InAttack() && !isRangedWeapon && !HuntMode)
             {
                 // Keep circulating while blocking — face enemy handled in UpdateBlocking
                 if (isBlocking)
@@ -522,10 +523,12 @@ namespace Companions
                 }
             }
 
-            // Validate current creature target
+            // Validate current creature target.
+            // Character.IsDead() returns false for all non-player characters, so also
+            // check GetHealth() <= 0 to detect death before the GameObject is destroyed.
             if (_targetCreature != null)
             {
-                if (_targetCreature.IsDead())
+                if (_targetCreature.IsDead() || _targetCreature.GetHealth() <= 0f)
                 {
                     CompanionsPlugin.Log.LogInfo(
                         $"[CombatAI] Target \"{_targetCreature.m_name}\" died");

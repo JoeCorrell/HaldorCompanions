@@ -32,6 +32,8 @@ namespace Companions
                 if (__instance.GetComponent<CompanionSetup>() == null) return;
 
                 var weapon = ReflectionHelper.GetRightItem(__instance);
+                if (weapon == null)
+                    weapon = ReflectionHelper.GetLeftItem(__instance); // bows equip in left hand
                 if (weapon == null || !weapon.m_shared.m_useDurability) return;
 
                 float before = weapon.m_durability;

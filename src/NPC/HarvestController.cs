@@ -83,6 +83,8 @@ namespace Companions
         private static float OverweightThreshold => ModConfig.HarvestOverweightThreshold.Value;
         private static readonly int s_pickedHash = "picked".GetStableHashCode();
         private float _overweightMsgTimer;
+        private Container _cachedChest;
+        private float     _chestScanTimer;
 
         // ── Per-instance scan buffer (thread-safe with multiple companions) ─
         private readonly Collider[]  _scanBuffer = new Collider[1024];
@@ -146,6 +148,11 @@ namespace Companions
             Log($"Awake — nview={_nview != null} ai={_ai != null} " +
                 $"humanoid={_humanoid != null} character={_character != null} " +
                 $"setup={_setup != null} instanceId={id}");
+        }
+
+        private void OnDestroy()
+        {
+            UnclaimTarget();
         }
 
         private void Update()
@@ -222,6 +229,7 @@ namespace Companions
                 return;
             }
             _overweightMsgTimer -= Time.deltaTime;
+            _chestScanTimer     -= Time.deltaTime;
 
             // Pause harvesting while combat AI is active — it owns movement
             if (_ai != null && _ai.IsInCombat)
@@ -997,8 +1005,13 @@ namespace Companions
                     ResetToIdle();
                     return;
                 }
-                // Re-read weapon after equip
+                // Re-read weapon after equip — may still be null if EquipTool deferred
                 weapon = ReflectionHelper.GetRightItem(_humanoid);
+                if (weapon == null)
+                {
+                    _attackTimer = AttackRetry;
+                    return;
+                }
             }
 
             // Log attack preconditions
@@ -1883,9 +1896,14 @@ namespace Companions
         /// <summary>
         /// Find nearest Container (chest) within 50m that has free slots.
         /// Skips companions, characters, in-use chests, and full inventories.
+        /// Result is cached for 5s to avoid per-frame FindObjectsByType scans.
         /// </summary>
         private Container FindNearestChest()
         {
+            if (_chestScanTimer > 0f)
+                return _cachedChest;
+            _chestScanTimer = 5f;
+
             Container best = null;
             float bestDist = float.MaxValue;
             int scanned = 0, skipped = 0;
@@ -1913,6 +1931,7 @@ namespace Companions
                     $"(scanned={scanned} skipped={skipped})");
             else
                 Log($"FindNearestChest — NONE found (scanned={scanned} skipped={skipped})");
+            _cachedChest = best;
             return best;
         }
 
