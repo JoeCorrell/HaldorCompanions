@@ -416,7 +416,9 @@ namespace Companions
             if (dest != null && target.name.IndexOf("stub", System.StringComparison.OrdinalIgnoreCase) >= 0)
                 return CompanionSetup.ModeGatherWood;
 
-            if (target.GetComponent<MineRock5>() != null) return CompanionSetup.ModeGatherStone;
+            // MineRock5 (multi-node boulders) excluded — AI can't reliably
+            // navigate between nodes without getting stuck.
+            if (target.GetComponent<MineRock5>() != null) return -1;
             if (target.GetComponent<MineRock>() != null) return CompanionSetup.ModeGatherStone;
 
             if (dest != null && dest.m_damages.m_pickaxe != HitData.DamageModifier.Immune
@@ -463,17 +465,19 @@ namespace Companions
             ResetToIdle();
             RestoreLoadout();
 
-            // Restore follow target based on Follow toggle and StayHome state
+            // Restore follow target — StayHome takes priority over Follow.
             bool follow = _setup != null && _setup.GetFollow();
             bool stayHome = _setup != null && _setup.GetStayHome() && _setup.HasHomePosition();
-            if (_ai != null && follow && Player.m_localPlayer != null)
+            if (_ai != null && stayHome)
+            {
+                _ai.SetFollowTarget(null);
+                _ai.SetPatrolPointAt(_setup.GetHomePosition());
+                Log("Restored patrol to home (StayHome active)");
+            }
+            else if (_ai != null && follow && Player.m_localPlayer != null)
             {
                 _ai.SetFollowTarget(Player.m_localPlayer.gameObject);
                 Log("Restored follow target to player (Follow=ON)");
-            }
-            else if (stayHome)
-            {
-                Log("StayHome active, Follow OFF — NOT restoring follow to player");
             }
             else
             {
@@ -506,11 +510,15 @@ namespace Companions
                 Log($"ResetToIdle (directed harvest complete) — restored loadout");
             }
 
-            // Restore follow target so companion follows player between targets
-            // based on Follow toggle and StayHome state
+            // Restore follow target — StayHome takes priority over Follow.
             bool follow = _setup != null && _setup.GetFollow();
             bool stayHome = _setup != null && _setup.GetStayHome() && _setup.HasHomePosition();
-            if (_ai != null && follow && Player.m_localPlayer != null)
+            if (_ai != null && stayHome)
+            {
+                _ai.SetFollowTarget(null);
+                _ai.SetPatrolPointAt(_setup.GetHomePosition());
+            }
+            else if (_ai != null && follow && Player.m_localPlayer != null)
                 _ai.SetFollowTarget(Player.m_localPlayer.gameObject);
 
             if (prevState != State_Idle)
@@ -657,7 +665,7 @@ namespace Companions
                     if (_ai != null) _ai.StopMoving();
                     if (IsRockLikeTarget())
                     {
-                        _lockedAttackFaceTarget = earlyPos;
+                        _lockedAttackFaceTarget = GetRockFacePosition();
                         _attackFaceLocked = true;
                     }
                     else
@@ -860,7 +868,7 @@ namespace Companions
                 if (_ai != null) _ai.StopMoving();
                 if (rockLikeTarget)
                 {
-                    _lockedAttackFaceTarget = targetPos;
+                    _lockedAttackFaceTarget = GetRockFacePosition();
                     _attackFaceLocked = true;
                 }
                 else
@@ -904,15 +912,16 @@ namespace Companions
             // During attack, shuffle closer if beyond actual hit range.
             // NavMesh stop distance is imprecise — the companion can end up 1m short
             // and hit the ground instead of the target. This nudges them closer.
-            // Rocks always use aggressive shuffle — pickaxes have short range and
-            // being even slightly too far causes ground-digging.
+            // ONLY for low targets (stumps/logs) — rocks should stay planted once
+            // arrived. The shuffle's MoveToPoint fights with StopMoving and causes
+            // the companion to run back and forth over rocks.
             if (_state == State_Attacking && _target != null && _ai != null
-                && (IsLowTarget() || IsRockLikeTarget()))
+                && IsLowTarget() && !IsRockLikeTarget())
             {
                 Vector3 effectivePos = GetEffectiveTargetPosition();
                 float dist = Vector3.Distance(transform.position, effectivePos);
                 float range = GetAttackRange();
-                bool needsCloser = _swingCount >= 2 || _totalAttempts >= 2 || IsLowTarget() || IsRockLikeTarget();
+                bool needsCloser = _swingCount >= 2 || _totalAttempts >= 2;
                 float shuffleThreshold = needsCloser ? range * 0.5f : range * 0.8f;
                 float shuffleGoal     = needsCloser ? range * 0.15f : range * 0.5f;
                 if (dist > shuffleThreshold)
@@ -1007,10 +1016,16 @@ namespace Companions
             // Rocks use a tighter range + 0.8f — pickaxes have short range (~2m) and the
             // generous 1.5f margin was letting companions stay 3.5m away, hitting the ground
             // instead of the rock face.
-            Vector3 effectivePos = GetEffectiveTargetPosition();
+            // For rocks with a locked face target, use that position instead of live
+            // ClosestPoint — ClosestPoint shifts every frame as the companion moves,
+            // causing false "too far" triggers that send the companion back to Moving.
+            bool rockLike = IsRockLikeTarget();
+            Vector3 effectivePos = (rockLike && _attackFaceLocked)
+                ? _lockedAttackFaceTarget
+                : GetEffectiveTargetPosition();
             float dist = Vector3.Distance(transform.position, effectivePos);
             float range = GetAttackRange();
-            float tooFarThreshold = IsRockLikeTarget() ? range + 0.8f : range + 1.5f;
+            float tooFarThreshold = rockLike ? range + 1.2f : range + 1.5f;
             if (dist > tooFarThreshold)
             {
                 Log($"Too far from target: dist={dist:F1}m " +
@@ -1110,16 +1125,21 @@ namespace Companions
 
                 // MineRock5: detect when the active node dies (effective position shifts
                 // significantly = that node was destroyed, next closest node is elsewhere).
+                // Always reposition — boulder nodes can be spread 3-5m apart and the
+                // companion needs to walk to the correct side of the next node.
                 if (_targetType == "MineRock5" && _target != null)
                 {
                     Vector3 nowNode = GetEffectiveTargetPosition();
-                    if (Vector3.Distance(nowNode, _attackNodePos) > 1.5f)
+                    float nodeShift = Vector3.Distance(nowNode, _attackNodePos);
+                    if (nodeShift > 1.5f)
                     {
-                        Log("MineRock5 node destroyed — repositioning to next node");
+                        float distToNewNode = Vector3.Distance(transform.position, nowNode);
+                        Log($"MineRock5 node destroyed — repositioning to next node " +
+                            $"(dist={distToNewNode:F1}m shift={nodeShift:F1}m)");
+                        _attackNodePos = nowNode;
                         _reapproach = true;
                         _attackFaceLocked = false;
                         _moveTimer = 0f; _moveLogTimer = 0f; _moveTargetLocked = false;
-                        _attackNodePos = nowNode;
                         _state = State_Moving;
                         return;
                     }
@@ -1387,10 +1407,15 @@ namespace Companions
             _scanTimer = 0f; // scan immediately for next harvest target
             UnclaimTarget();
 
-            // Restore follow target based on Follow toggle
+            // Restore follow target — StayHome takes priority over Follow.
             bool follow = _setup != null && _setup.GetFollow();
             bool stayHome = _setup != null && _setup.GetStayHome() && _setup.HasHomePosition();
-            if (_ai != null && follow && Player.m_localPlayer != null)
+            if (_ai != null && stayHome)
+            {
+                _ai.SetFollowTarget(null);
+                _ai.SetPatrolPointAt(_setup.GetHomePosition());
+            }
+            else if (_ai != null && follow && Player.m_localPlayer != null)
                 _ai.SetFollowTarget(Player.m_localPlayer.gameObject);
 
             Log($"FinishDropCollection — collected {_dropsPickedUp} items, follow={follow} stayHome={stayHome}");
@@ -1687,16 +1712,9 @@ namespace Companions
             }
             else if (mode == CompanionSetup.ModeGatherOre)
             {
-                // Ore mode — only MineRock/MineRock5 that drop actual ore (not just stone)
-                var rock5 = col.GetComponentInParent<MineRock5>();
-                if (rock5 != null)
-                {
-                    bool stoneOnly = DropsOnlyStone(rock5.m_dropItems);
-                    CompanionsPlugin.Log.LogDebug(
-                        $"[Harvest] OreMode MineRock5 \"{rock5.gameObject.name}\" stoneOnly={stoneOnly} → {(stoneOnly ? "SKIP" : "ACCEPT")}");
-                    if (!stoneOnly) { type = "MineRock5"; return rock5.gameObject; }
-                }
-
+                // Ore mode — only MineRock that drops actual ore (not just stone).
+                // MineRock5 (multi-node boulders) excluded — AI can't reliably
+                // navigate between nodes without getting stuck.
                 var rock = col.GetComponentInParent<MineRock>();
                 if (rock != null)
                 {
@@ -1721,17 +1739,10 @@ namespace Companions
             }
             else // Stone
             {
-                // Stone mode — only MineRock/MineRock5 that drop stone (not ore) + Destructible rocks.
+                // Stone mode — only MineRock that drops stone (not ore) + Destructible rocks.
                 // Ore veins (copper, tin, etc.) are reserved for Ore mode.
-                var rock5 = col.GetComponentInParent<MineRock5>();
-                if (rock5 != null)
-                {
-                    bool stoneOnly = DropsOnlyStone(rock5.m_dropItems);
-                    CompanionsPlugin.Log.LogDebug(
-                        $"[Harvest] StoneMode MineRock5 \"{rock5.gameObject.name}\" stoneOnly={stoneOnly} → {(stoneOnly ? "ACCEPT" : "SKIP")}");
-                    if (stoneOnly) { type = "MineRock5"; return rock5.gameObject; }
-                }
-
+                // MineRock5 (multi-node boulders) excluded — AI can't reliably
+                // navigate between nodes without getting stuck.
                 var rock = col.GetComponentInParent<MineRock>();
                 if (rock != null)
                 {
@@ -2115,9 +2126,11 @@ namespace Companions
         private void FaceTarget()
         {
             if (_target == null || _ai == null || _character == null) return;
-            Vector3 facePoint = (_state == State_Attacking && _attackFaceLocked && IsRockLikeTarget())
-                ? _lockedAttackFaceTarget
-                : GetEffectiveTargetPosition();
+            Vector3 facePoint;
+            if (_state == State_Attacking && IsRockLikeTarget())
+                facePoint = _attackFaceLocked ? _lockedAttackFaceTarget : GetRockFacePosition();
+            else
+                facePoint = GetEffectiveTargetPosition();
 
             // For large rocks, the closest surface point can be almost directly beside
             // the companion — BaseAI.LookAt bails out when XZ distance < 0.01.
@@ -2143,6 +2156,49 @@ namespace Companions
                     transform.rotation = targetRot;
                 }
             }
+        }
+
+        /// <summary>
+        /// Returns the center position of the nearest rock node/collider.
+        /// Used for attack facing — aims at the rock face (elevated) instead of
+        /// the ground-level ClosestPoint, which causes pickaxes to hit the terrain.
+        /// </summary>
+        private Vector3 GetRockFacePosition()
+        {
+            if (_target == null) return transform.position;
+
+            if (_targetType == "MineRock5")
+            {
+                float bestDist = float.MaxValue;
+                Vector3 bestPos = _target.transform.position;
+                bool found = false;
+                foreach (Transform child in _target.transform)
+                {
+                    if (!child.gameObject.activeSelf) continue;
+                    var col = child.GetComponent<Collider>();
+                    if (col == null) continue;
+                    // Use ClosestPoint for distance ranking but return collider center
+                    Vector3 surfacePoint = col.ClosestPoint(transform.position);
+                    float dist = Vector3.Distance(transform.position, surfacePoint);
+                    if (dist < bestDist)
+                    {
+                        bestDist = dist;
+                        bestPos = col.bounds.center;
+                        found = true;
+                    }
+                }
+                if (found) return bestPos;
+            }
+
+            // MineRock / Destructible — use collider bounds center (elevated)
+            if (_targetType == "MineRock" || _targetType == "Destructible")
+            {
+                var col = _target.GetComponent<Collider>();
+                if (col != null)
+                    return col.bounds.center;
+            }
+
+            return _target.transform.position;
         }
 
         /// <summary>

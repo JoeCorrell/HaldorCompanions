@@ -43,8 +43,8 @@ namespace Companions
             public Heightmap.Biome Biome;     // required biome mask
         }
 
-        private static Dictionary<string, SeedPlantInfo> s_seedToPlant;
-        private static HashSet<string> s_cropOutputNames;  // e.g. "Carrot", "Turnip" — items dropped by grown crops
+        internal static Dictionary<string, SeedPlantInfo> s_seedToPlant;
+        internal static HashSet<string> s_cropOutputNames;  // e.g. "Carrot", "Turnip" — items dropped by grown crops
         private static bool s_mappingBuilt;
 
         // ── Components ──────────────────────────────────────────────────────
@@ -82,6 +82,11 @@ namespace Companions
         // Shared across all FarmController instances — prevents multiple companions targeting same crop
         private static readonly HashSet<int> s_claimedPickables = new HashSet<int>();
         private int _claimedPickableId;
+
+        // ── Farm zones ──────────────────────────────────────────────────────
+        private List<FarmZone> _farmZones;
+        private float _zoneRefreshTimer;
+        private int _activeZoneIndex = -1; // zone we're currently planting in
 
         // Current task tracking
         private Pickable    _targetPickable;
@@ -164,6 +169,14 @@ namespace Companions
                 return;
 
             float dt = Time.deltaTime;
+
+            // Refresh farm zones periodically (must run every frame, not just in Scanning)
+            _zoneRefreshTimer -= dt;
+            if (_zoneRefreshTimer <= 0f || _farmZones == null)
+            {
+                RefreshFarmZones();
+                _zoneRefreshTimer = 5f;
+            }
 
             switch (_phase)
             {
@@ -290,7 +303,7 @@ namespace Companions
                 RestoreFollow();
             }
             _phase = FarmPhase.Idle;
-            _scanTimer = 30f; // long backoff
+            _scanTimer = (_farmZones != null && _farmZones.Count > 0) ? 5f : 30f;
         }
 
         /// <summary>Try to find and harvest a ripe crop. Returns true if task started.</summary>
@@ -354,55 +367,138 @@ namespace Companions
                 return false;
             }
 
-            // Seeds in inventory + empty cultivated spots → plant
-            var seedInfo = FindPlantableSeedInInventory(cultivator);
-            if (seedInfo.HasValue)
+            // No zones defined → no planting
+            if (_farmZones == null || _farmZones.Count == 0)
             {
-                var info = seedInfo.Value;
-                Vector3 plantPos;
-                if (FindPlantPosition(info, out plantPos))
-                {
-                    _plantInfo = info;
-                    _plantPosition = plantPos;
-                    ClearFollowForMovement();
-                    ResetStuck();
-                    _phase = FarmPhase.MovingToPlantSpot;
-                    if (_talk != null) _talk.Say(ModLocalization.Loc("hc_speech_farm_planting"), "Farm");
-                    Log($"[Plant] Planting \"{info.SeedPrefabName}\" at {plantPos:F1}");
-                    return true;
-                }
-                Log($"[Plant] Have seed \"{info.SeedPrefabName}\" but no valid plant position");
-            }
-            else
-            {
-                Log("[Plant] No plantable seeds in inventory");
+                Log("[Plant] No farm zones defined — skipping planting");
+                return false;
             }
 
-            // Seeds in nearby chest + empty spots → fetch seeds
+            Log($"[Plant] TryScanPlant: {_farmZones.Count} zones, pos={transform.position:F1}");
+
+            // ── Zone pass — only plant inside defined zones ──
+            // Sort by distance so the companion works on the nearest zone first
             ScanNearbyChests();
-            var seedChest = FindChestWithSeeds(cultivator, out SeedPlantInfo chestSeedInfo,
-                out string seedPrefab, out int seedCount);
-            if (seedChest != null)
+            int closestFirst = -1;
+            float closestDist = float.MaxValue;
+            for (int i = 0; i < _farmZones.Count; i++)
             {
-                Vector3 plantPos;
-                if (FindPlantPosition(chestSeedInfo, out plantPos))
-                {
-                    _targetChest = seedChest;
-                    _seedPrefabToTake = seedPrefab;
-                    _seedAmountToTake = Mathf.Min(seedCount, 20);
-                    ClearFollowForMovement();
-                    ResetStuck();
-                    _phase = FarmPhase.MovingToSeedChest;
-                    Log($"[Fetch] Fetching {_seedAmountToTake}x \"{seedPrefab}\" from chest");
-                    return true;
-                }
-                Log($"[Fetch] Found seeds \"{seedPrefab}\" in chest but no plant position");
-            }
-            else
-            {
-                Log("[Fetch] No seeds in nearby chests");
+                if (!_farmZones[i].IsValid) continue;
+                float d = Vector3.Distance(transform.position, _farmZones[i].Center);
+                if (d < closestDist) { closestDist = d; closestFirst = i; }
             }
 
+            if (closestFirst < 0)
+            {
+                Log("[Plant] No valid zones found");
+                return false;
+            }
+
+            for (int pass = 0; pass < _farmZones.Count; pass++)
+            {
+                // Start from the closest zone, then wrap around
+                int zi = (closestFirst + pass) % _farmZones.Count;
+                var zone = _farmZones[zi];
+                if (!zone.IsValid) continue;
+                string cropSeed = zone.CropSeed;
+                bool anyMode = string.IsNullOrEmpty(cropSeed);
+
+                float zoneDist = Vector3.Distance(transform.position, zone.Center);
+                Log($"[Plant] Zone[{zi}] center={zone.Center:F1} hs={zone.HalfSize:F0} " +
+                    $"crop=\"{(anyMode ? "Any" : cropSeed)}\" dist={zoneDist:F0}m");
+
+                // Find seeds: specific seed for assigned zones, any seed for "Any" zones
+                SeedPlantInfo? zoneInfo = anyMode
+                    ? FindPlantableSeedInInventory(cultivator)
+                    : FindSpecificSeedInInventory(cropSeed);
+
+                if (zoneInfo.HasValue)
+                {
+                    Log($"[Plant] Zone[{zi}] has seed \"{zoneInfo.Value.SeedPrefabName}\" in inventory");
+                    Vector3 plantPos;
+                    if (FindPlantPositionInZone(zoneInfo.Value, zone, out plantPos))
+                    {
+                        _plantInfo = zoneInfo.Value;
+                        _plantPosition = plantPos;
+                        _activeZoneIndex = zi;
+                        ClearFollowForMovement();
+                        ResetStuck();
+                        _phase = FarmPhase.MovingToPlantSpot;
+                        if (_talk != null) _talk.Say(ModLocalization.Loc("hc_speech_farm_planting"), "Farm");
+                        Log($"[Zone] Planting \"{zoneInfo.Value.SeedPrefabName}\" at {plantPos:F1} in zone[{zi}] {zone.Center:F0}");
+                        return true;
+                    }
+                    Log($"[Plant] Zone[{zi}] no valid plant position (zone full or uncultivated)");
+                }
+                else
+                {
+                    Log($"[Plant] Zone[{zi}] no seed \"{cropSeed}\" in inventory");
+                }
+
+                // Check chests for seeds
+                if (anyMode)
+                {
+                    // "Any" zone — find any seed from chests
+                    SeedPlantInfo chestSeedInfo;
+                    string chestSeedPrefab;
+                    int chestSeedCount;
+                    var chest = FindChestWithSeeds(cultivator, out chestSeedInfo,
+                        out chestSeedPrefab, out chestSeedCount);
+                    if (chest != null)
+                    {
+                        Log($"[Plant] Zone[{zi}] found {chestSeedCount}x \"{chestSeedPrefab}\" in chest");
+                        Vector3 plantPos;
+                        if (FindPlantPositionInZone(chestSeedInfo, zone, out plantPos))
+                        {
+                            _targetChest = chest;
+                            _seedPrefabToTake = chestSeedPrefab;
+                            _seedAmountToTake = Mathf.Min(chestSeedCount, 20);
+                            _activeZoneIndex = zi;
+                            ClearFollowForMovement();
+                            ResetStuck();
+                            _phase = FarmPhase.MovingToSeedChest;
+                            Log($"[Zone] Fetching {_seedAmountToTake}x \"{chestSeedPrefab}\" for Any zone[{zi}] {zone.Center:F0}");
+                            return true;
+                        }
+                        Log($"[Plant] Zone[{zi}] chest seeds found but no plant position in zone");
+                    }
+                    else
+                    {
+                        Log($"[Plant] Zone[{zi}] no seeds in chests either");
+                    }
+                }
+                else
+                {
+                    // Assigned zone — find specific seed from chests
+                    SeedPlantInfo chestInfo;
+                    int chestCount;
+                    var chest = FindChestWithSpecificSeed(cropSeed, out chestInfo, out chestCount);
+                    if (chest != null)
+                    {
+                        Log($"[Plant] Zone[{zi}] found {chestCount}x \"{cropSeed}\" in chest");
+                        Vector3 plantPos;
+                        if (FindPlantPositionInZone(chestInfo, zone, out plantPos))
+                        {
+                            _targetChest = chest;
+                            _seedPrefabToTake = cropSeed;
+                            _seedAmountToTake = Mathf.Min(chestCount, 20);
+                            _activeZoneIndex = zi;
+                            ClearFollowForMovement();
+                            ResetStuck();
+                            _phase = FarmPhase.MovingToSeedChest;
+                            Log($"[Zone] Fetching {_seedAmountToTake}x \"{cropSeed}\" for zone[{zi}] {zone.Center:F0}");
+                            return true;
+                        }
+                        Log($"[Plant] Zone[{zi}] chest seeds found but no plant position in zone");
+                    }
+                    else
+                    {
+                        Log($"[Plant] Zone[{zi}] no \"{cropSeed}\" in chests either");
+                    }
+                }
+            }
+
+            Log("[Plant] All zones checked — no planting possible");
             return false;
         }
 
@@ -650,25 +746,33 @@ namespace Companions
             // Step 3: Instantiate the plant
             PlantSeed(_plantInfo, _plantPosition);
 
-            // Check for more seeds of the same type
+            // Check for more seeds of the same type — stay within the active zone
             var inv = _humanoid?.GetInventory();
-            if (inv != null && CountItemByPrefab(inv, _plantInfo.SeedPrefabName) > 0)
+            int seedsLeft = inv != null ? CountItemByPrefab(inv, _plantInfo.SeedPrefabName) : 0;
+            Log($"Post-plant: seed=\"{_plantInfo.SeedPrefabName}\" remaining={seedsLeft} " +
+                $"activeZone={_activeZoneIndex} zones={_farmZones?.Count ?? 0}");
+
+            if (seedsLeft > 0 && _activeZoneIndex >= 0 && _farmZones != null
+                && _activeZoneIndex < _farmZones.Count)
             {
-                // Try to find next plant position
+                var zone = _farmZones[_activeZoneIndex];
                 Vector3 nextPos;
-                if (FindPlantPosition(_plantInfo, out nextPos))
+                if (zone.IsValid && FindPlantPositionInZone(_plantInfo, zone, out nextPos))
                 {
                     _plantPosition = nextPos;
                     ResetStuck();
                     _phase = FarmPhase.MovingToPlantSpot;
-                    Log($"More seeds — next plant spot at {nextPos:F1}");
+                    Log($"More seeds — next plant spot at {nextPos:F1} in zone[{_activeZoneIndex}] {zone.Center:F0}");
                     return;
                 }
+                Log($"Zone[{_activeZoneIndex}] full or no positions — will re-scan all zones");
             }
 
-            // No more seeds or no more valid positions
+            // Zone done or no more seeds — re-scan to find next zone
+            _activeZoneIndex = -1;
             _phase = FarmPhase.Scanning;
             _scanTimer = 0f;
+            Log("Transitioning to Scanning for next zone");
         }
 
         // ── Moving to output chest ──────────────────────────────────────────
@@ -770,6 +874,9 @@ namespace Companions
         // ══════════════════════════════════════════════════════════════════════
         //  Seed → Plant Mapping
         // ══════════════════════════════════════════════════════════════════════
+
+        /// <summary>Public entry point for UI code to ensure seed mapping is built.</summary>
+        internal static void BuildSeedMappingPublic() => BuildSeedMapping();
 
         private static void BuildSeedMapping()
         {
@@ -998,9 +1105,8 @@ namespace Companions
         {
             result = Vector3.zero;
 
-            // Grid step = max of configured spacing and vanilla minimum (2 * growRadius).
-            // Previous bug: max(PlantSpacing, GrowRadius) * 2  doubled the CONFIGURED spacing too.
-            float spacing = Mathf.Max(PlantSpacing, info.GrowRadius * 2f);
+            // Grid step = max of configured spacing and plant grow radius.
+            float spacing = Mathf.Max(PlantSpacing, info.GrowRadius);
             float radius = ScanRadius;
             Vector3 center = transform.position;
 
@@ -1052,9 +1158,9 @@ namespace Companions
                             continue;
                     }
 
-                    // Spacing check — no existing Plant, Pickable, or building Piece within grow radius
+                    // Spacing check — no existing Plant, Pickable, or building Piece nearby
                     int hits = Physics.OverlapSphereNonAlloc(
-                        candidate, info.GrowRadius, _spacingBuffer, _spaceMask);
+                        candidate, info.GrowRadius * 0.5f, _spacingBuffer, _spaceMask);
                     bool blocked = false;
                     for (int i = 0; i < hits; i++)
                     {
@@ -1069,6 +1175,22 @@ namespace Companions
                     }
                     if (blocked) continue;
 
+                    // Don't plant inside zones assigned to a different crop
+                    if (_farmZones != null)
+                    {
+                        bool wrongZone = false;
+                        foreach (var zone in _farmZones)
+                        {
+                            if (!zone.IsValid || string.IsNullOrEmpty(zone.CropSeed)) continue;
+                            if (zone.Contains(candidate) && zone.CropSeed != info.SeedPrefabName)
+                            {
+                                wrongZone = true;
+                                break;
+                            }
+                        }
+                        if (wrongZone) continue;
+                    }
+
                     // Pick closest valid position to companion
                     float dist = Vector3.Distance(transform.position, candidate);
                     if (dist < bestDist)
@@ -1081,6 +1203,129 @@ namespace Companions
             }
 
             return found;
+        }
+
+        /// <summary>
+        /// Find a valid plant position constrained to a specific farm zone.
+        /// Same grid algorithm as FindPlantPosition but bounded by zone extents.
+        /// </summary>
+        private bool FindPlantPositionInZone(SeedPlantInfo info, FarmZone zone, out Vector3 result)
+        {
+            result = Vector3.zero;
+            float spacing = Mathf.Max(PlantSpacing, info.GrowRadius);
+            float hs = zone.HalfSize;
+
+            // Generate grid in zone-local space, snap to spacing
+            float gridMin = Mathf.Ceil(-hs / spacing) * spacing;
+            float gridMax = Mathf.Floor(hs / spacing) * spacing;
+
+            float bestDist = float.MaxValue;
+            bool found = false;
+            int totalCells = 0, noCultivated = 0, blocked = 0, noBiome = 0, noHeight = 0;
+
+            for (float lx = gridMin; lx <= gridMax; lx += spacing)
+            {
+                for (float lz = gridMin; lz <= gridMax; lz += spacing)
+                {
+                    totalCells++;
+                    // Transform local grid position to world space
+                    Vector3 candidate = zone.LocalToWorld(lx, lz);
+
+                    float groundHeight;
+                    if (!ZoneSystem.instance.GetGroundHeight(candidate, out groundHeight))
+                    { noHeight++; continue; }
+                    candidate.y = groundHeight;
+
+                    if (info.Biome != 0)
+                    {
+                        Heightmap.Biome biome = Heightmap.FindBiome(candidate);
+                        if ((biome & info.Biome) == 0) { noBiome++; continue; }
+                    }
+
+                    if (info.NeedsCultivated)
+                    {
+                        var hm = Heightmap.FindHeightmap(candidate);
+                        if (hm == null || !hm.IsCultivated(candidate))
+                        { noCultivated++; continue; }
+                    }
+
+                    int hits = Physics.OverlapSphereNonAlloc(
+                        candidate, info.GrowRadius * 0.5f, _spacingBuffer, _spaceMask);
+                    bool isBlocked = false;
+                    for (int i = 0; i < hits; i++)
+                    {
+                        var col = _spacingBuffer[i];
+                        if (col.GetComponent<Plant>() != null ||
+                            col.GetComponent<Pickable>() != null ||
+                            col.GetComponent<Piece>() != null)
+                        {
+                            isBlocked = true;
+                            break;
+                        }
+                    }
+                    if (isBlocked) { blocked++; continue; }
+
+                    float dist = Vector3.Distance(transform.position, candidate);
+                    if (dist < bestDist)
+                    {
+                        bestDist = dist;
+                        result = candidate;
+                        found = true;
+                    }
+                }
+            }
+            Log($"FindPlantPositionInZone: cells={totalCells} noHeight={noHeight} noBiome={noBiome} " +
+                $"noCultivated={noCultivated} blocked={blocked} found={found} " +
+                $"seed=\"{info.SeedPrefabName}\" needsCultivated={info.NeedsCultivated} zone={zone.Center:F1}");
+            return found;
+        }
+
+        /// <summary>Find a specific seed by prefab name in companion inventory.</summary>
+        private SeedPlantInfo? FindSpecificSeedInInventory(string seedPrefabName)
+        {
+            var inv = _humanoid?.GetInventory();
+            if (inv == null || s_seedToPlant == null) return null;
+
+            foreach (var item in inv.GetAllItems())
+            {
+                if (item?.m_dropPrefab == null) continue;
+                if (item.m_dropPrefab.name != seedPrefabName) continue;
+                SeedPlantInfo info;
+                if (s_seedToPlant.TryGetValue(seedPrefabName, out info))
+                    return info;
+            }
+            return null;
+        }
+
+        /// <summary>Reload farm zones from companion ZDO (called periodically).</summary>
+        private void RefreshFarmZones()
+        {
+            var zdo = _nview?.GetZDO();
+            _farmZones = FarmZoneSerializer.Load(zdo);
+        }
+
+        /// <summary>Find a chest that has a specific seed type.</summary>
+        private Container FindChestWithSpecificSeed(string seedPrefabName,
+            out SeedPlantInfo seedInfo, out int seedCount)
+        {
+            seedInfo = default;
+            seedCount = 0;
+            if (!s_seedToPlant.TryGetValue(seedPrefabName, out seedInfo))
+                return null;
+
+            foreach (var chest in _nearbyChests)
+            {
+                if (chest == null) continue;
+                var inv = chest.GetInventory();
+                if (inv == null) continue;
+                var item = inv.GetItem(seedPrefabName);
+                if (item != null)
+                {
+                    seedCount = item.m_stack;
+                    return chest;
+                }
+            }
+            return null;
         }
 
         /// <summary>Find a chest containing seeds that can be planted.</summary>
@@ -1352,16 +1597,16 @@ namespace Companions
             if (_ai == null) return;
             bool follow = _setup != null && _setup.GetFollow();
             bool stayHome = _setup != null && _setup.GetStayHome() && _setup.HasHomePosition();
-            if (follow && Player.m_localPlayer != null)
-            {
-                _ai.SetFollowTarget(Player.m_localPlayer.gameObject);
-                Log("Restored follow target to player");
-            }
-            else if (stayHome)
+            if (stayHome)
             {
                 _ai.SetFollowTarget(null);
                 _ai.SetPatrolPointAt(_setup.GetHomePosition());
-                Log("Restored patrol to home");
+                Log("Restored patrol to home (StayHome active)");
+            }
+            else if (follow && Player.m_localPlayer != null)
+            {
+                _ai.SetFollowTarget(Player.m_localPlayer.gameObject);
+                Log("Restored follow target to player");
             }
         }
 

@@ -302,6 +302,7 @@ namespace Companions
 
             // Farming (harvest crops, plant seeds, manage chests)
             go.AddComponent<FarmController>();
+            go.AddComponent<FarmZoneVisual>();
             CompanionsPlugin.Log.LogInfo($"[CompanionPrefabs]   + FarmController ({def.PrefabName})");
 
             // Hunting (hunt boar/deer/chicken with bow in ModeHunt)

@@ -1,5 +1,51 @@
 # Changelog
 
+## 1.2.1
+
+### Farm Zones
+- Added **Farm Zones** — designate square planting areas where companions plant specific crops in a grid
+- Place zones via right-click on the Farm radial segment, or with a configurable hotkey (default Alt+Z)
+- Scroll wheel resizes zones, LMB places, RMB deletes existing zones, Escape exits
+- Crop picker popup lets you assign a specific crop or "Any Crop" per zone
+- Up to 4 zones per companion, saved to ZDO (persists across sessions)
+- Companions only plant inside defined zones — no zones means no planting
+- Zone rotation support via Q/E keys during placement
+- Camera zoom is blocked while placing zones to prevent accidental scrolling
+
+### Cooking
+- Companions can now **cook for themselves** — when hungry, they find a nearby Cauldron, gather ingredients from chests, and craft a meal
+
+### Potion Support
+- Right-clicking a **potion or mead** in a companion's inventory now makes them consume it
+- Status effects (healing, stamina, resistance, etc.) are applied to the companion and displayed in the player's HUD bar
+- Duplicate effects are prevented — if the same potion is already active, consumption is blocked
+- Stamina potions manually restore CompanionStamina (since vanilla SE_Stats targets Player only)
+
+### Harvesting Fixes
+- Fixed companions **running back and forth over rocks** — removed the LateUpdate shuffle for rock targets during Attacking state so companions stay planted once they arrive
+- Fixed companions **digging holes in the ground** instead of hitting rocks — attack facing now targets the rock's collider center (elevated) instead of the ground-level surface closest point
+- Fixed companions **not finishing boulders** (MineRock5) — when a node is destroyed, the companion always repositions to the next node instead of trying to attack from a distance
+- Stabilized the "too far" distance check for rocks by using the locked face target position instead of live ClosestPoint, which was shifting every frame and causing false re-approach triggers
+- Removed **MineRock5 (boulders)** from stone and ore gathering — boulders had persistent pathfinding and targeting issues and are no longer targeted by gather modes or directed commands
+
+### Stay Home Fixes
+- Fixed companions **running in one direction and getting teleported back** when Stay Home was activated — Follow toggle (default ON) was overriding StayHome throughout the codebase, causing the companion to walk toward the player and get yanked back by the hard leash
+- Fixed StayHome being overridden after **completing gather, smelt, farm, hunt, cook, or rest tasks** — all controllers now check StayHome before restoring follow target to the player
+- Fixed StayHome being overridden on **companion respawn** — spawn restore now correctly patrols at home instead of following the player
+- Fixed stale random movement target causing **consistent directional drift** after entering StayHome — `ResetRandomMovement()` is now called once on wander-OFF entry to flush the old target
+- StayHome is now checked before Follow in all follow-restore paths across 10 files (CompanionAI, CompanionSetup, CompanionRadialMenu, HarvestController, HuntController, SmeltController, FarmController, CookController, CompanionRest, CompanionManager)
+
+### UI
+- Enlarged the radial menu inner ring background slightly for better visual clarity
+- Moved companion name above the inner ring background
+- Moved hovered action text and state indicator above the outer radial ring
+
+### Water Fixes
+- Fixed companions **glitching out and running in random directions** near water — extended the NavMesh bypass to activate on any water contact (not just full swimming depth), preventing erratic pathfinding at shoreline edges
+- Context steer fallback state is now cleared when entering water, preventing stale obstacle avoidance directions from causing random movement
+- Fixed companions **drowning with 0 stamina** — pathfinding agent now switches to `HumanoidAvoidWater` when stamina drops below 50%, routing companions around water instead of through it
+- Water bypass (straight-line swimming) is now skipped when wading with low stamina, preventing companions from walking into deep water they can't escape
+
 ## 1.2.0
 
 ### HomeLife System (Stay Home Overhaul)

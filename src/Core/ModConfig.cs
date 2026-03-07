@@ -186,6 +186,8 @@ namespace Companions
         internal static ConfigEntry<KeyCode> DirectTargetKey;
         internal static ConfigEntry<KeyCode> RadialMenuKey;
         internal static ConfigEntry<KeyCode> ConfigPanelKey;
+        internal static ConfigEntry<KeyCode> FarmZoneKey;
+        internal static ConfigEntry<KeyCode> FarmZoneModifier;
 
         // ══════════════════════════════════════════════════════════════════════
         //  Speech Display
@@ -296,7 +298,7 @@ namespace Companions
             // ── Farming ──────────────────────────────────────────────────────
             FarmScanRadius          = Bind(cfg, "Farming", "ScanRadius", 30f, "Crop/soil scan radius", new AcceptableValueRange<float>(5f, 100f));
             FarmScanInterval        = Bind(cfg, "Farming", "ScanInterval", 4f, "Seconds between farm scans", new AcceptableValueRange<float>(1f, 30f));
-            FarmPlantSpacing        = Bind(cfg, "Farming", "PlantSpacing", 1.5f, "Min spacing between crops (uses max of this and plant grow radius)", new AcceptableValueRange<float>(0.5f, 3f));
+            FarmPlantSpacing        = Bind(cfg, "Farming", "PlantSpacing", 0.75f, "Min spacing between crops (uses max of this and plant grow radius)", new AcceptableValueRange<float>(0.25f, 3f));
             FarmUseDistance         = Bind(cfg, "Farming", "UseDistance", 2f, "Interaction range for crops and chests", new AcceptableValueRange<float>(1f, 5f));
 
             // ── Fishing ─────────────────────────────────────────────────────
@@ -346,6 +348,8 @@ namespace Companions
             DirectTargetKey         = Bind(cfg, "Controls", "DirectTargetKey", KeyCode.Z, "Directed command / focus-fire key");
             RadialMenuKey           = Bind(cfg, "Controls", "RadialMenuKey", KeyCode.E, "Radial command menu key (hold while hovering companion)");
             ConfigPanelKey          = Bind(cfg, "Controls", "ConfigPanelKey", KeyCode.F8, "Open the in-game config panel");
+            FarmZoneKey             = Bind(cfg, "Controls", "FarmZoneKey", KeyCode.Z, "Farm zone placement key (press with modifier to open zone editor)");
+            FarmZoneModifier        = Bind(cfg, "Controls", "FarmZoneModifier", KeyCode.LeftAlt, "Modifier key for farm zone placement (hold this + FarmZoneKey)");
 
             // ── Speech Display ───────────────────────────────────────────────
             MaleShowSpeechText      = Bind(cfg, "Speech Display", "MaleShowOverheadText", false, "Show overhead speech text for male companions");

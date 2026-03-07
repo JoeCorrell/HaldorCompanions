@@ -1518,16 +1518,16 @@ namespace Companions
             if (_ai == null) return;
             bool follow = _setup != null && _setup.GetFollow();
             bool stayHome = _setup != null && _setup.GetStayHome() && _setup.HasHomePosition();
-            if (follow && Player.m_localPlayer != null)
-            {
-                _ai.SetFollowTarget(Player.m_localPlayer.gameObject);
-                Log("Restored follow target to player (Follow=ON)");
-            }
-            else if (stayHome)
+            if (stayHome)
             {
                 _ai.SetFollowTarget(null);
                 _ai.SetPatrolPointAt(_setup.GetHomePosition());
-                Log("Restored patrol to home (StayHome ON, Follow OFF)");
+                Log("Restored patrol to home (StayHome active)");
+            }
+            else if (follow && Player.m_localPlayer != null)
+            {
+                _ai.SetFollowTarget(Player.m_localPlayer.gameObject);
+                Log("Restored follow target to player (Follow=ON)");
             }
             else
             {

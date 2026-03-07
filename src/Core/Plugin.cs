@@ -17,7 +17,7 @@ namespace Companions
     {
         public const string PluginGUID = "com.profmags.companions";
         public const string PluginName = "Offline Companions";
-        public const string PluginVersion = "1.2.0";
+        public const string PluginVersion = "1.2.1";
 
         private static Harmony _harmony;
         internal static ManualLogSource Log;
@@ -50,6 +50,7 @@ namespace Companions
             Game.m_playerInitialSpawn += CompanionManager.SpawnStarterCompanion;
             gameObject.AddComponent<CompanionVoice>();
             ConfigPanel.Create();
+            FarmZonePlacer.EnsureInstance();
         }
 
         private void Update()

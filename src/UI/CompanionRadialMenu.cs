@@ -39,6 +39,7 @@ namespace Companions
         private const int ActionRepair      = 15;   // toggle mode: periodic building repair in 50m
         private const int ActionRestock     = 16;   // toggle mode: periodic campfire/light restock in 50m
         private const int ActionCook        = 17;
+        private const int ActionEditFarmZones = 18;
         // Must match CompanionSetup.ModeHunt/ModeFarm/ModeFish — SetActionMode()
         // passes ActionId directly as the ZDO mode value.
         private const int ActionHunt        = 7;
@@ -62,18 +63,18 @@ namespace Companions
         private static readonly Color ActiveDot        = new Color(0.40f, 0.85f, 0.40f, 1f);
         private static readonly Color InactiveDot      = new Color(0.5f, 0.5f, 0.5f, 0.5f);
 
-        private const float RingRadius     = 290f;
-        private const float SegSize        = 115f;
-        private const float HighlightSize  = 90f;
-        private const float IconSize       = 87f;
-        private const float DeadZonePx     = 30f;
+        private const float RingRadius     = 247f;
+        private const float SegSize        = 98f;
+        private const float HighlightSize  = 77f;
+        private const float IconSize       = 74f;
+        private const float DeadZonePx     = 26f;
         private const float DeadZoneStick  = 0.3f;
 
         // Inner ring (combat stances)
-        private const float InnerRingRadius = 85f;
-        private const float InnerSegSize    = 80f;
-        private const float InnerIconSize   = 87f;
-        private const float InnerThresholdPx    = 190f;  // mouse dist < this → inner ring
+        private const float InnerRingRadius = 72f;
+        private const float InnerSegSize    = 68f;
+        private const float InnerIconSize   = 74f;
+        private const float InnerThresholdPx    = 162f;  // mouse dist < this → inner ring
         private const float InnerThresholdStick = 0.55f; // stick magnitude < this → inner ring
 
         // ── Animation ──────────────────────────────────────────────────────
@@ -373,6 +374,16 @@ namespace Companions
             {
                 ExecuteSelectedAction();
                 RefreshSegmentStates();
+            }
+
+            // Right-click on Farm segment opens farm zone editor
+            if (_animState == AnimState.Open && _useReleasedSinceOpen
+                && Input.GetMouseButtonDown(1) && !_hoveringInner
+                && _hoveredIndex >= 0 && _hoveredIndex < _segments.Count
+                && _segments[_hoveredIndex].ActionId == ActionFarm)
+            {
+                Hide();
+                FarmZonePlacer.Enter(_companion);
             }
 
             RefreshVisuals();
@@ -792,6 +803,10 @@ namespace Companions
                 case ActionDespawn:
                     DoDespawn();
                     return;
+                case ActionEditFarmZones:
+                    Hide();
+                    FarmZonePlacer.Enter(_companion);
+                    return;
             }
 
             // Overhead speech on any action
@@ -848,8 +863,8 @@ namespace Companions
             {
                 if (!_companion.HasHomePosition())
                     _companion.SetHomePosition(_companion.transform.position);
-                // Only set patrol if Follow toggle is OFF — Follow overrides StayHome
-                if (_companionAI != null && !_companion.GetFollow())
+                // Always clear follow and set patrol — StayHome means stay home.
+                if (_companionAI != null)
                 {
                     _companionAI.SetFollowTarget(null);
                     _companionAI.SetPatrolPointAt(_companion.GetHomePosition());
@@ -871,16 +886,12 @@ namespace Companions
 
             // Auto-enable StayHome if not already active
             if (!_companion.GetStayHome())
-            {
                 _companion.SetStayHome(true);
-                if (_companionAI != null && !_companion.GetFollow())
-                {
-                    _companionAI.SetFollowTarget(null);
-                    _companionAI.SetPatrolPointAt(pos);
-                }
-            }
-            else if (_companionAI != null)
+
+            // Always clear follow and set patrol — setting home means stay here.
+            if (_companionAI != null)
             {
+                _companionAI.SetFollowTarget(null);
                 _companionAI.SetPatrolPointAt(pos);
             }
 
@@ -931,6 +942,9 @@ namespace Companions
 
             string name = _companionNview.GetZDO()?.GetString(CompanionSetup.NameHash, "Companion") ?? "Companion";
             CompanionsPlugin.Log.LogInfo($"[Radial] Despawn — permanently removing \"{name}\"");
+
+            // Mark pin for removal — this is a permanent destroy, not a zone unload
+            _companion.PrepareForDespawn();
 
             // Drop tombstone with inventory before destruction
             _companion.DespawnWithTombstone();
@@ -1369,7 +1383,6 @@ namespace Companions
                 IconColor = new Color(0.90f, 0.55f, 0.20f)
             });
 
-
             // Inner ring: combat stances
             _innerSegments.Clear();
             int currentStance = _companion.GetCombatStance();
@@ -1434,7 +1447,7 @@ namespace Companions
             bgRT.anchorMin = new Vector2(0.5f, 0.5f);
             bgRT.anchorMax = new Vector2(0.5f, 0.5f);
             bgRT.pivot = new Vector2(0.5f, 0.5f);
-            bgRT.sizeDelta = new Vector2(680f, 680f);
+            bgRT.sizeDelta = new Vector2(578f, 578f);
             var bgImg = _bgCircle.GetComponent<Image>();
             bgImg.sprite = GetDonutSprite();
             bgImg.color = BgColor;
@@ -1450,7 +1463,7 @@ namespace Companions
             ccRT.anchorMin = new Vector2(0.5f, 0.5f);
             ccRT.anchorMax = new Vector2(0.5f, 0.5f);
             ccRT.pivot = new Vector2(0.5f, 0.5f);
-            ccRT.sizeDelta = new Vector2(160f, 60f);
+            ccRT.sizeDelta = new Vector2(136f, 51f);
             _centerCanvasGroup = _centerContainer.GetComponent<CanvasGroup>();
             _centerCanvasGroup.blocksRaycasts = false;
 
@@ -1462,7 +1475,7 @@ namespace Companions
             nameRT.anchorMax = new Vector2(0.5f, 0.5f);
             nameRT.pivot = new Vector2(0.5f, 0.5f);
             nameRT.sizeDelta = new Vector2(160f, 20f);
-            nameRT.anchoredPosition = new Vector2(0f, 14f);
+            nameRT.anchoredPosition = new Vector2(0f, 135f);
 
             // Center text — hovered action name
             _centerAction = MakeText(_centerContainer.transform, "CenterAction", "", font, 15f,
@@ -1471,8 +1484,8 @@ namespace Companions
             actRT.anchorMin = new Vector2(0.5f, 0.5f);
             actRT.anchorMax = new Vector2(0.5f, 0.5f);
             actRT.pivot = new Vector2(0.5f, 0.5f);
-            actRT.sizeDelta = new Vector2(160f, 18f);
-            actRT.anchoredPosition = new Vector2(0f, -4f);
+            actRT.sizeDelta = new Vector2(200f, 18f);
+            actRT.anchoredPosition = new Vector2(0f, 325f);
 
             // Center text — state (ON/OFF)
             _centerState = MakeText(_centerContainer.transform, "CenterState", "", font, 14f,
@@ -1482,7 +1495,7 @@ namespace Companions
             stateRT.anchorMax = new Vector2(0.5f, 0.5f);
             stateRT.pivot = new Vector2(0.5f, 0.5f);
             stateRT.sizeDelta = new Vector2(80f, 16f);
-            stateRT.anchoredPosition = new Vector2(0f, -20f);
+            stateRT.anchoredPosition = new Vector2(0f, 307f);
 
             _root.SetActive(false);
             _built = true;
@@ -1607,7 +1620,7 @@ namespace Companions
             innerBgRT.anchorMin = new Vector2(0.5f, 0.5f);
             innerBgRT.anchorMax = new Vector2(0.5f, 0.5f);
             innerBgRT.pivot = new Vector2(0.5f, 0.5f);
-            float innerBgSize = (InnerRingRadius + InnerSegSize * 0.5f + 10f) * 2f;
+            float innerBgSize = (InnerRingRadius + InnerSegSize * 0.5f + 20f) * 2f;
             innerBgRT.sizeDelta = new Vector2(innerBgSize, innerBgSize);
             var innerBgImg = _innerBgCircle.GetComponent<Image>();
             innerBgImg.sprite = GetCircleSprite();
@@ -1762,6 +1775,7 @@ namespace Companions
                 case ActionStancePassive:    return "Passive";
                 case ActionStanceRanged:     return "Ranged";
                 case ActionStanceMelee:      return "Melee";
+                case ActionEditFarmZones:     return "FarmZones";
                 case ActionDespawn:          return "Despawn";
                 default:                     return null;
             }
@@ -1871,6 +1885,22 @@ namespace Companions
                     DrawLine(pixels, size, c - 6, c - 16, c - 4, c - 26, w, 2.5f);
                     DrawLine(pixels, size, c + 2, c - 18, c + 4, c - 28, w, 2.5f);
                     DrawLine(pixels, size, c + 8, c - 14, c + 10, c - 24, w, 2.5f);
+                    break;
+
+                case ActionEditFarmZones:
+                    // Grid — 3x3 grid of small squares
+                    float gs = 16f; // grid cell spacing
+                    for (int gx = -1; gx <= 1; gx++)
+                    for (int gy = -1; gy <= 1; gy++)
+                    {
+                        float cx2 = c + gx * gs;
+                        float cy2 = c + gy * gs;
+                        float hs = 5f;
+                        DrawLine(pixels, size, cx2 - hs, cy2 - hs, cx2 + hs, cy2 - hs, w, 3f);
+                        DrawLine(pixels, size, cx2 + hs, cy2 - hs, cx2 + hs, cy2 + hs, w, 3f);
+                        DrawLine(pixels, size, cx2 + hs, cy2 + hs, cx2 - hs, cy2 + hs, w, 3f);
+                        DrawLine(pixels, size, cx2 - hs, cy2 + hs, cx2 - hs, cy2 - hs, w, 3f);
+                    }
                     break;
             }
 

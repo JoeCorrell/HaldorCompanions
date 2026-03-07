@@ -418,9 +418,15 @@ namespace Companions
             _state       = HuntState.Scanning;
             _scanTimer   = 0f;  // scan immediately for next prey
 
-            // Restore follow if enabled
+            // Restore follow — StayHome takes priority over Follow.
             bool follow = _setup != null && _setup.GetFollow();
-            if (_ai != null && follow && Player.m_localPlayer != null)
+            bool stayHome = _setup != null && _setup.GetStayHome() && _setup.HasHomePosition();
+            if (_ai != null && stayHome)
+            {
+                _ai.SetFollowTarget(null);
+                _ai.SetPatrolPointAt(_setup.GetHomePosition());
+            }
+            else if (_ai != null && follow && Player.m_localPlayer != null)
                 _ai.SetFollowTarget(Player.m_localPlayer.gameObject);
         }
 

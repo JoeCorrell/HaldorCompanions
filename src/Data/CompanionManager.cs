@@ -258,11 +258,16 @@ namespace Companions
             if (data.HasHomePos && ai != null)
                 ai.SetPatrolPointAt(data.HomePos);
 
-            // Restore follow target — Follow and HasHomePos are NOT mutually exclusive.
+            // Restore follow target — StayHome takes priority over Follow.
             // A companion can have a home position AND be in follow mode (follows player,
             // returns home when told to stay). Without this, companions with a home pos
             // spawn stuck with no follow target and get killed repeatedly.
-            if (data.Follow && Player.m_localPlayer != null)
+            if (data.StayHome && data.HasHomePos && ai != null)
+            {
+                ai.SetFollowTarget(null);
+                ai.SetPatrolPointAt(data.HomePos);
+            }
+            else if (data.Follow && Player.m_localPlayer != null)
                 ai?.SetFollowTarget(Player.m_localPlayer.gameObject);
 
             // Grace period — prevent immediate tombstone recovery and movement

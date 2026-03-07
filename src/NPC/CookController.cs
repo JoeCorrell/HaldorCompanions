@@ -1339,13 +1339,14 @@ namespace Companions
             if (_ai == null) return;
             bool follow = _setup != null && _setup.GetFollow();
             bool stayHome = _setup != null && _setup.GetStayHome() && _setup.HasHomePosition();
-            if (follow && Player.m_localPlayer != null)
+            if (stayHome)
+            {
+                _ai.SetFollowTarget(null);
+                _ai.SetPatrolPointAt(_setup.GetHomePosition());
+            }
+            else if (follow && Player.m_localPlayer != null)
             {
                 _ai.SetFollowTarget(Player.m_localPlayer.gameObject);
-            }
-            else if (stayHome)
-            {
-                _ai.SetPatrolPoint();
             }
         }
 

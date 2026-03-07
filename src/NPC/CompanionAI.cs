@@ -194,6 +194,7 @@ namespace Companions
 
         // ── StayHome patrol enforcement ─────────────────────────────────────
         private float _homePatrolTimer;
+        private bool _homeStayReset; // one-shot flag: ResetRandomMovement on wander-OFF entry
 
         // ══════════════════════════════════════════════════════════════════════
         //  Formation Following
@@ -545,11 +546,30 @@ namespace Companions
                 return true;
             }
 
-            // Swimming bypass: NavMesh water tiles are 2m below the surface,
+            // Water bypass: NavMesh water tiles are 2m below the surface,
             // causing SnapToNavMesh/FindPath to fail or produce erratic waypoints.
-            // Water has no obstacles — swim straight toward the target.
-            if (m_character.IsSwimming())
+            // Even shallow water (InWater but not IsSwimming) confuses NavMesh at
+            // shoreline edges — FindPath produces erratic waypoints that make the
+            // companion run in random directions. Water has no obstacles — walk/swim
+            // straight toward the target.
+            //
+            // Exception: wading with low stamina — don't bypass NavMesh, let the
+            // HumanoidAvoidWater agent route around water instead. Bypassing to
+            // straight-line movement could send them into deep water.
+            bool wadingLowStamina = !m_character.IsSwimming()
+                && _companionStamina != null && _companionStamina.MaxStamina > 0f
+                && (_companionStamina.Stamina / _companionStamina.MaxStamina) < 0.5f;
+
+            if ((m_character.IsSwimming() || m_character.InWater()) && !wadingLowStamina)
             {
+                // Clear context steer state — it was likely triggered by NavMesh
+                // failures near the water edge and its raycasts can't see water.
+                if (_inContextSteerFallback)
+                {
+                    _inContextSteerFallback = false;
+                    _ctxSmoothedDir = Vector3.zero;
+                }
+
                 Vector3 dir = point - transform.position;
                 dir.y = 0f;
                 dir.Normalize();
@@ -1098,18 +1118,20 @@ namespace Companions
         /// </summary>
         private void RestoreFollowOrPatrol()
         {
+            // StayHome takes priority over Follow — same ordering as ApplyFollowMode.
+            bool stayHome = _setup != null && _setup.GetStayHome() && _setup.HasHomePosition();
             bool follow = _setup != null && _setup.GetFollow();
-            if (follow && Player.m_localPlayer != null)
-            {
-                SetFollowTarget(Player.m_localPlayer.gameObject);
-                CompanionsPlugin.Log.LogDebug("[AI] RestoreFollowOrPatrol → follow player (Follow ON)");
-            }
-            else if (_setup != null && _setup.GetStayHome() && _setup.HasHomePosition())
+            if (stayHome)
             {
                 SetFollowTarget(null);
                 SetPatrolPointAt(_setup.GetHomePosition());
                 CompanionsPlugin.Log.LogDebug(
                     $"[AI] RestoreFollowOrPatrol → patrol at home {_setup.GetHomePosition():F1}");
+            }
+            else if (follow && Player.m_localPlayer != null)
+            {
+                SetFollowTarget(Player.m_localPlayer.gameObject);
+                CompanionsPlugin.Log.LogDebug("[AI] RestoreFollowOrPatrol → follow player (Follow ON)");
             }
             else
             {
@@ -1411,17 +1433,6 @@ namespace Companions
         /// </summary>
         private bool EnforceHomePatrol(float dt)
         {
-            // Follow toggle ON overrides StayHome — companion follows player
-            if (_setup != null && _setup.GetFollow())
-            {
-                _returningHome = false;
-                if (m_randomMoveRange > 10f)
-                    m_randomMoveRange = 4f;
-                if (m_randomMoveInterval < 100f)
-                    m_randomMoveInterval = SuppressedMoveInterval;
-                return false;
-            }
-
             if (_setup == null || !_setup.GetStayHome() || !_setup.HasHomePosition())
             {
                 // Not in StayHome — restore defaults
@@ -1430,6 +1441,7 @@ namespace Companions
                 if (m_randomMoveInterval < 100f)
                     m_randomMoveInterval = SuppressedMoveInterval;
                 _returningHome = false;
+                _homeStayReset = false;
                 return false;
             }
             if (m_follow != null) return false; // following something actively
@@ -1449,12 +1461,27 @@ namespace Companions
                     ResetRandomMovement(); // flush the old ~9999s timer
                 }
                 _returningHome = false;
+                _homeStayReset = false; // allow re-reset if wander toggles OFF again
             }
             else
             {
                 m_randomMoveRange = 0f; // stay put at home
                 if (m_randomMoveInterval < 100f)
                     m_randomMoveInterval = SuppressedMoveInterval;
+
+                // Clear stale random movement target — without this, the companion
+                // may walk toward a m_randomMoveTarget set from a previous state
+                // (wander, gather, or even Vector3.zero default), causing the
+                // "running in one direction" loop where the hard leash teleports
+                // them back and they immediately head the same way.
+                // ResetRandomMovement sets m_reachedRandomMoveTarget=true and
+                // refreshes the timer from m_randomMoveInterval (now 9999), so
+                // IdleMovement will just call StopMoving().
+                if (!_homeStayReset)
+                {
+                    _homeStayReset = true;
+                    ResetRandomMovement();
+                }
 
                 // Wander OFF but far from home — walk back directly.
                 // RandomMovement with range=0 can't compute a return vector,
@@ -1544,6 +1571,21 @@ namespace Companions
             if (UpdateHazardRecovery(dt))
                 return true; // survival overrides all other AI
 
+            // Proactive water avoidance — prevent entering water when stamina < 50%.
+            // When already swimming, allow normal movement (don't strand mid-water).
+            // Two layers: (1) m_avoidWater flag for IsValidRandomMovePoint/flee checks,
+            // (2) m_pathAgentType swap to HumanoidAvoidWater so FindPath itself routes
+            // around water instead of through it. Without (2), MoveTo/Follow still
+            // pathfind through water even with m_avoidWater set.
+            bool lowSwimStamina = _companionStamina != null
+                && _companionStamina.MaxStamina > 0f
+                && (_companionStamina.Stamina / _companionStamina.MaxStamina) < 0.5f;
+            bool shouldAvoidWater = lowSwimStamina && !m_character.IsSwimming();
+            m_avoidWater = shouldAvoidWater;
+            m_pathAgentType = shouldAvoidWater
+                ? Pathfinding.AgentType.HumanoidAvoidWater
+                : Pathfinding.AgentType.Humanoid;
+
             // Periodic blacklist cleanup
             CleanupBlacklist(dt);
 
@@ -1597,8 +1639,7 @@ namespace Companions
 
             // StayHome hard leash — if companion strays beyond their home radius
             // (e.g. during combat chase), teleport them back and disengage.
-            if (_setup != null && _setup.GetStayHome() && _setup.HasHomePosition()
-                && !_setup.GetFollow())
+            if (_setup != null && _setup.GetStayHome() && _setup.HasHomePosition())
             {
                 float distFromHome = Utils.DistanceXZ(transform.position, _setup.GetHomePosition());
                 if (distFromHome > _setup.GetHomeRadius())
@@ -2442,24 +2483,36 @@ namespace Companions
         {
             if (target == null) { IdleMovement(dt); return; }
 
-            // Swimming bypass: skip formation logic and swim straight toward the player.
+            // Water bypass: skip formation logic and swim/wade straight toward the player.
             // NavMesh pathfinding is unreliable in water (tiles 2m below surface).
-            if (m_character.IsSwimming())
+            // Includes shallow water (InWater) — shoreline NavMesh edges cause erratic
+            // pathfinding that makes the companion run in random directions.
+            //
+            // Exception: wading with low stamina — don't bypass NavMesh, let the
+            // HumanoidAvoidWater agent route around water. Bypassing to straight-line
+            // movement could walk them into deep water and drown.
             {
-                float swimDist = Vector3.Distance(transform.position, target.transform.position);
-                if (swimDist > 3f)
+                bool wadingLow = !m_character.IsSwimming()
+                    && _companionStamina != null && _companionStamina.MaxStamina > 0f
+                    && (_companionStamina.Stamina / _companionStamina.MaxStamina) < 0.5f;
+
+                if ((m_character.IsSwimming() || m_character.InWater()) && !wadingLow)
                 {
-                    Vector3 dir = target.transform.position - transform.position;
-                    dir.y = 0f;
-                    dir.Normalize();
-                    MoveTowards(dir, false);
+                    float swimDist = Vector3.Distance(transform.position, target.transform.position);
+                    if (swimDist > 3f)
+                    {
+                        Vector3 dir = target.transform.position - transform.position;
+                        dir.y = 0f;
+                        dir.Normalize();
+                        MoveTowards(dir, false);
+                    }
+                    else
+                    {
+                        StopMoving();
+                    }
+                    ClearFollowMovementOverrides();
+                    return;
                 }
-                else
-                {
-                    StopMoving();
-                }
-                ClearFollowMovementOverrides();
-                return;
             }
 
             // Init formation slot from ZDO if not set
@@ -3073,7 +3126,7 @@ namespace Companions
             }
 
             // Skip if at home patrol point (intentionally stationary)
-            if (_setup != null && _setup.GetStayHome() && _setup.HasHomePosition() && !_setup.GetFollow())
+            if (_setup != null && _setup.GetStayHome() && _setup.HasHomePosition())
             {
                 float distHome = Vector3.Distance(transform.position, _setup.GetHomePosition());
                 if (distHome < 4f)

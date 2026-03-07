@@ -440,6 +440,14 @@ namespace Companions
                 { "hc_cmd_smelt_1", "I'll keep the fires burning." },
                 { "hc_cmd_smelt_2", "Time to smelt." },
                 { "hc_cmd_smelt_3", "I'll tend the furnace." },
+
+                // ── Farm Zones ──
+                { "hc_radial_farmzones", "Farm Zones" },
+                { "hc_farmzone_title", "Select Crop" },
+                { "hc_farmzone_any", "Any Crop" },
+                { "hc_farmzone_hint", "[LMB] Place  [RMB] Remove  [Scroll] Resize  [RMB+Scroll] Rotate  [Esc] Exit" },
+                { "hc_farmzone_hint_gamepad", "[A] Place  [X] Remove  [Bumpers] Resize  [D-Pad] Rotate  [Start] Exit" },
+                { "hc_farmzone_full", "Maximum zones reached (4)" },
             };
         }
     }

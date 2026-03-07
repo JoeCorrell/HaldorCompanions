@@ -9,7 +9,7 @@
 <br/>
 
 <p align="center">
-<a href="https://github.com/JoeCorrell/OfflineCompanions/releases"><img src="https://img.shields.io/badge/Version-1.2.0-c9a44a?style=for-the-badge&labelColor=0d1117" alt="Version"></a>
+<a href="https://github.com/JoeCorrell/OfflineCompanions/releases"><img src="https://img.shields.io/badge/Version-1.2.1-c9a44a?style=for-the-badge&labelColor=0d1117" alt="Version"></a>
 <a href="#-requirements"><img src="https://img.shields.io/badge/BepInEx-5.4.2200+-e06c20?style=for-the-badge&labelColor=0d1117" alt="BepInEx"></a>
 <a href="#-requirements"><img src="https://img.shields.io/badge/Valheim-0.219+-4ade80?style=for-the-badge&labelColor=0d1117" alt="Valheim"></a>
 <a href="#"><img src="https://img.shields.io/badge/License-MIT-7c3aed?style=for-the-badge&labelColor=0d1117" alt="License"></a>
@@ -107,6 +107,7 @@ The companion's name is shown in the center. Active toggles show their current O
 | **Forage** | Mode | Autonomously find and pick berry bushes, mushrooms, flowers, and ground items nearby |
 | **Smelt** | Mode | Autonomously refill kilns and furnaces with fuel/ore from chests, collect smelted output |
 | **Farm** | Mode | Autonomously harvest ripe crops, replant seeds, and deposit produce into chests |
+| **Farm Zones** | Action | Define square planting zones with specific crop assignments (right-click Farm segment) |
 | **Fish** | Mode | Autonomously fish nearby water — requires fishing rod + bait in inventory |
 | **Hunt** | Mode | Autonomously hunt Boar, Deer, Chicken, and Hare with ranged weapons |
 | **Repair Buildings** | Mode | Periodically scan for and repair damaged player-built structures within 50m |
@@ -139,7 +140,7 @@ The companion's name is shown in the center. Active toggles show their current O
 
 Companions **auto-equip the best gear** from their inventory: best weapon, shield, chest, legs, helmet, shoulder, and utility item. Items equip one at a time with proper animation. Broken items (0 durability) are skipped and unequipped.
 
-Right-click an item to use/equip it. Right-click food to feed it to the companion. Drag items between your inventory and theirs using vanilla drag-and-drop.
+Right-click an item to use/equip it. Right-click food to feed it to the companion. Right-click a **potion or mead** to make the companion consume it — the status effect is applied and displayed in the player's HUD bar. Drag items between your inventory and theirs using vanilla drag-and-drop.
 
 Press **F7** while the panel is open to enter **UI Reposition Mode** — click and drag the panel to move it anywhere on screen. Press **F7** again to confirm. Your custom position is saved and persists across sessions.
 
@@ -263,7 +264,7 @@ Set a companion to **Gather Wood**, **Gather Stone**, **Gather Ore**, or **Forag
 
 ### Gather Behavior
 - **Wood** - chops trees, fallen logs, and stumps. Prioritizes fallen logs and stumps over standing trees (3x distance penalty on standing trees).
-- **Stone** - mines rock formations (MineRock, MineRock5).
+- **Stone** - mines rock formations (MineRock).
 - **Ore** - mines ore deposits (pickaxe-vulnerable destructibles that are chop-immune).
 - **Forage** - walks to and picks berry bushes, mushrooms, flowers, dandelions, branches, and stones. No tool required.
 
@@ -335,6 +336,15 @@ Set a companion to **Farm** via the radial wheel and they'll autonomously manage
 3. **Fetch seeds** from a nearby chest when inventory runs low
 4. **Plant seeds** on empty cultivated soil in a grid layout
 5. **Deposit produce** into a nearby output chest
+
+### Farm Zones
+Designate square planting areas where companions plant specific crops in a grid layout. Right-click the **Farm** radial segment to enter zone placement mode, or use the configurable hotkey (default **Alt+Z**).
+
+- **Place zones**: LMB to place a zone (up to 4 per companion), scroll wheel to resize (2m-15m), Q/E to rotate
+- **Assign crops**: after placing a zone, a crop picker popup lets you assign a specific crop or "Any Crop"
+- **Remove zones**: RMB on an existing zone to delete it, Escape to exit placement mode
+- **Zone-aware planting**: companions only plant inside defined zones — with no zones defined, planting is disabled
+- **ZDO persistence**: zones persist across sessions, zone transitions, and server restarts
 
 ### Smart Behavior
 - **Crop detection**: only picks cultivated crops — ignores wild pickables (berries, mushrooms, thistle, etc.)
@@ -515,7 +525,8 @@ Companions have **three food slots** that work exactly like player food. Same bo
 - Food provides health regen, stamina regen, and Eitr bonuses
 - Companions **auto-consume food** from their inventory when a slot is empty
 - **Meads are used automatically** - health meads when below 50% HP, stamina meads when below 25% stamina (10s cooldown)
-- Status effects from food and meads are applied on consumption
+- **Potions** can be manually given by right-clicking them in the companion's inventory — status effects (healing, resistance, stamina, etc.) are applied and shown in the player's HUD bar alongside the player's own effects
+- Duplicate potion effects are prevented — if the same effect is already active, consumption is blocked
 
 Feed food by right-clicking consumables in the companion's inventory, or let auto-consume handle it. They'll speak up when hungry.
 

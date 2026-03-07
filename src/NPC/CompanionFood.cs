@@ -694,16 +694,88 @@ namespace Companions
             return true;
         }
 
-        private static bool IsMeadItem(ItemDrop.ItemData item)
+        /// <summary>
+        /// Returns true for consumable items that work via status effects only
+        /// (potions/meads — no food stats).
+        /// </summary>
+        internal static bool IsPotionItem(ItemDrop.ItemData item)
         {
             if (item == null || item.m_shared == null) return false;
             if (item.m_shared.m_itemType != ItemDrop.ItemData.ItemType.Consumable) return false;
             if (item.m_shared.m_consumeStatusEffect == null) return false;
-            // Meads have no food stats — they work entirely through status effects.
-            // Items with food stats are regular food handled by TryAutoConsume.
+            // Potions/meads have no food stats — they work entirely through status effects.
+            // Items with food stats are regular food handled by TryConsumeItem/TryAutoConsume.
             return item.m_shared.m_food <= 0f
                 && item.m_shared.m_foodStamina <= 0f
                 && item.m_shared.m_foodEitr <= 0f;
+        }
+
+        /// <summary>
+        /// Manually consume a potion/mead from the companion's inventory (right-click).
+        /// Applies the status effect, plays animation, removes one from stack.
+        /// Returns false if the effect is already active or item is invalid.
+        /// </summary>
+        public bool TryConsumePotion(ItemDrop.ItemData item)
+        {
+            if (!_initialized) TryInit();
+            if (_nview == null || !_nview.IsOwner()) return false;
+            if (_humanoid == null || _character == null || item == null) return false;
+            if (item.m_shared?.m_consumeStatusEffect == null) return false;
+
+            var inv = _humanoid.GetInventory();
+            if (inv == null || !inv.ContainsItem(item)) return false;
+
+            // Check status effect not already active
+            if (_seman == null) _seman = _character.GetSEMan();
+            var se = item.m_shared.m_consumeStatusEffect;
+            if (_seman != null)
+            {
+                if (_seman.HaveStatusEffect(se.NameHash()))
+                {
+                    CompanionsPlugin.Log.LogDebug(
+                        $"[Food] Potion REJECTED \"{item.m_shared.m_name}\" — " +
+                        $"effect already active on \"{_character?.m_name ?? "?"}\"");
+                    return false;
+                }
+                if (!string.IsNullOrEmpty(se.m_category)
+                    && _seman.HaveStatusEffectCategory(se.m_category))
+                {
+                    CompanionsPlugin.Log.LogDebug(
+                        $"[Food] Potion REJECTED \"{item.m_shared.m_name}\" — " +
+                        $"category \"{se.m_category}\" already active on \"{_character?.m_name ?? "?"}\"");
+                    return false;
+                }
+            }
+
+            // Apply status effect
+            if (_seman != null)
+                _seman.AddStatusEffect(se, true);
+
+            // For stamina potions, manually restore CompanionStamina since
+            // SE_Stats.m_staminaUpFront targets Player.AddStamina (no-op on NPCs).
+            if (_stamina != null && se is SE_Stats stats && stats.m_staminaUpFront > 0f)
+                _stamina.Restore(stats.m_staminaUpFront);
+
+            // Play eat/drink animation + sound effects
+            string animTrigger = _setup != null && _setup.CanWearArmor() ? "eat" : "consume";
+            if (_zanim != null) _zanim.SetTrigger(animTrigger);
+            if (_humanoid.m_consumeItemEffects != null)
+                _humanoid.m_consumeItemEffects.Create(transform.position, Quaternion.identity);
+
+            // Remove one from inventory
+            inv.RemoveOneItem(item);
+
+            CompanionsPlugin.Log.LogDebug(
+                $"[Food] POTION consumed \"{item.m_shared.m_name}\" " +
+                $"se=\"{se.m_name}\" companion=\"{_character?.m_name ?? "?"}\"");
+
+            _meadCooldownTimer = MeadCooldown;
+            return true;
+        }
+
+        private static bool IsMeadItem(ItemDrop.ItemData item)
+        {
+            return IsPotionItem(item);
         }
 
         private static MeadKind ClassifyMead(ItemDrop.ItemData item)

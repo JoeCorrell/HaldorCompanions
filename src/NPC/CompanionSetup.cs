@@ -94,9 +94,14 @@ namespace Companions
         private bool           _uiFrozen;
         private bool           _dead;
 
-        // Minimap pin — live-updating, owner-only
+        // Minimap pin — live-updating, owner-only.
+        // Pins persist across zone unloads via a static dictionary keyed by ZDOID.
         private Minimap.PinData _minimapPin;
-        private Minimap _lastMinimapInstance;
+        private ZDOID _zdoid = ZDOID.None;
+        private bool _removePinOnDestroy;
+        private static Minimap s_pinMinimapInstance;
+        private static readonly Dictionary<ZDOID, Minimap.PinData> s_persistentPins =
+            new Dictionary<ZDOID, Minimap.PinData>();
 
         /// <summary>
         /// When true, auto-equip is suppressed (used by CompanionHarvest to keep tools equipped).
@@ -289,6 +294,10 @@ namespace Companions
                 if (!GetFollow())
                     return;
 
+                // StayHome active: companion is anchored — don't restore follow
+                if (GetStayHome() && HasHomePosition())
+                    return;
+
                 // All active modes (everything except Stay): companion should follow
                 // player when no directed navigation is active and Follow toggle is ON.
                 if (mode != ModeStay)
@@ -307,14 +316,13 @@ namespace Companions
         {
             if (Minimap.instance == null) return;
 
-            // Detect stale pin from Minimap instance change (scene reload, logout/login).
-            // When the Minimap is recreated, it calls ClearPins() which removes all pins
-            // from its internal list. Our _minimapPin reference becomes orphaned — still
-            // non-null but no longer tracked by the Minimap, so it's invisible.
-            if (_lastMinimapInstance != Minimap.instance)
+            // Detect Minimap instance change (scene reload, logout/login).
+            // ClearPins() wipes all pins — our references are now orphaned.
+            if (s_pinMinimapInstance != Minimap.instance)
             {
+                s_pinMinimapInstance = Minimap.instance;
+                s_persistentPins.Clear();
                 _minimapPin = null;
-                _lastMinimapInstance = Minimap.instance;
             }
 
             // Only show pin for the local player's companions
@@ -325,6 +333,9 @@ namespace Companions
                 return;
             }
 
+            // Cache ZDOID — ZNetView clears its reference before OnDestroy runs
+            _zdoid = zdo.m_uid;
+
             string owner = zdo.GetString(OwnerHash, "");
             long localPid = Player.m_localPlayer.GetPlayerID();
             if (localPid == 0L) return;
@@ -333,6 +344,13 @@ namespace Companions
             {
                 RemoveMinimapPin();
                 return;
+            }
+
+            // Reclaim a persistent pin from a previous zone load
+            if (_minimapPin == null && s_persistentPins.TryGetValue(_zdoid, out var existingPin))
+            {
+                _minimapPin = existingPin;
+                s_persistentPins.Remove(_zdoid);
             }
 
             // Create pin if it doesn't exist
@@ -508,19 +526,21 @@ namespace Companions
             bool follow = GetFollow();
             CompanionsPlugin.Log.LogDebug($"[Setup] ApplyFollowMode — mode={mode} stayHome={stayHome} follow={follow} force={force}");
 
+            // StayHome takes priority over Follow — companion is anchored at home.
+            // Check stayHome first in all branches so follow never overrides it.
             switch (mode)
             {
                 case ModeFollow:
-                    if (follow && Player.m_localPlayer != null)
-                    {
-                        _ai.SetFollowTarget(Player.m_localPlayer.gameObject);
-                        CompanionsPlugin.Log.LogDebug($"[Setup]   → Follow player (mode={mode})");
-                    }
-                    else if (stayHome)
+                    if (stayHome)
                     {
                         _ai.SetFollowTarget(null);
                         _ai.SetPatrolPointAt(GetHomePosition());
                         CompanionsPlugin.Log.LogDebug($"[Setup]   → StayHome patrol at {GetHomePosition():F1}");
+                    }
+                    else if (follow && Player.m_localPlayer != null)
+                    {
+                        _ai.SetFollowTarget(Player.m_localPlayer.gameObject);
+                        CompanionsPlugin.Log.LogDebug($"[Setup]   → Follow player (mode={mode})");
                     }
                     else
                     {
@@ -576,16 +596,16 @@ namespace Companions
                             break;
                         }
                     }
-                    if (follow && Player.m_localPlayer != null)
-                    {
-                        _ai.SetFollowTarget(Player.m_localPlayer.gameObject);
-                        CompanionsPlugin.Log.LogDebug($"[Setup]   → Follow player (mode={mode})");
-                    }
-                    else if (stayHome)
+                    if (stayHome)
                     {
                         _ai.SetFollowTarget(null);
                         _ai.SetPatrolPointAt(GetHomePosition());
                         CompanionsPlugin.Log.LogDebug($"[Setup]   → Gather+StayHome patrol at {GetHomePosition():F1}");
+                    }
+                    else if (follow && Player.m_localPlayer != null)
+                    {
+                        _ai.SetFollowTarget(Player.m_localPlayer.gameObject);
+                        CompanionsPlugin.Log.LogDebug($"[Setup]   → Follow player (mode={mode})");
                     }
                     else
                     {
@@ -609,16 +629,16 @@ namespace Companions
                     CompanionsPlugin.Log.LogDebug($"[Setup]   → Stay/patrol at {(stayHome ? GetHomePosition() : transform.position):F1}");
                     break;
                 default:
-                    if (follow && Player.m_localPlayer != null)
-                    {
-                        _ai.SetFollowTarget(Player.m_localPlayer.gameObject);
-                        CompanionsPlugin.Log.LogDebug($"[Setup]   → Follow player (default fallback, mode={mode})");
-                    }
-                    else if (stayHome)
+                    if (stayHome)
                     {
                         _ai.SetFollowTarget(null);
                         _ai.SetPatrolPointAt(GetHomePosition());
                         CompanionsPlugin.Log.LogDebug($"[Setup]   → StayHome patrol (default fallback, mode={mode})");
+                    }
+                    else if (follow && Player.m_localPlayer != null)
+                    {
+                        _ai.SetFollowTarget(Player.m_localPlayer.gameObject);
+                        CompanionsPlugin.Log.LogDebug($"[Setup]   → Follow player (default fallback, mode={mode})");
                     }
                     else
                     {
@@ -686,6 +706,15 @@ namespace Companions
         }
 
         // ── Death / Despawn System ───────────────────────────────────────
+
+        /// <summary>
+        /// Marks the minimap pin for removal on destroy instead of persisting it.
+        /// Call before permanently destroying a companion (despawn).
+        /// </summary>
+        internal void PrepareForDespawn()
+        {
+            _removePinOnDestroy = true;
+        }
 
         /// <summary>
         /// Called by the radial menu when the player confirms a despawn.
@@ -953,7 +982,20 @@ namespace Companions
         private void OnDestroy()
         {
             _allCompanions.Remove(this);
-            RemoveMinimapPin();
+
+            // Death or despawn — remove pin permanently (death pin replaces it)
+            if (_dead || _removePinOnDestroy)
+            {
+                RemoveMinimapPin();
+                if (_zdoid != ZDOID.None) s_persistentPins.Remove(_zdoid);
+            }
+            // Zone unload — persist pin at last known position for the minimap
+            else if (_minimapPin != null && _zdoid != ZDOID.None)
+            {
+                s_persistentPins[_zdoid] = _minimapPin;
+                _minimapPin = null;
+            }
+
             UnregisterInventoryCallback();
             if (_visEquip != null)
                 _companionVisEquips.Remove(_visEquip);

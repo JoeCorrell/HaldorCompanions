@@ -311,10 +311,16 @@ namespace Companions
             int mode = _nview?.GetZDO()?.GetInt(
                 CompanionSetup.ActionModeHash, CompanionSetup.ModeFollow)
                 ?? CompanionSetup.ModeFollow;
+            bool stayHome = _setup != null && _setup.GetStayHome() && _setup.HasHomePosition();
             if (mode == CompanionSetup.ModeStay)
             {
                 _ai.SetFollowTarget(null);
                 _ai.SetPatrolPoint();
+            }
+            else if (stayHome)
+            {
+                _ai.SetFollowTarget(null);
+                _ai.SetPatrolPointAt(_setup.GetHomePosition());
             }
             else if (Player.m_localPlayer != null)
             {
@@ -396,10 +402,16 @@ namespace Companions
                     int mode = _nview?.GetZDO()?.GetInt(
                         CompanionSetup.ActionModeHash, CompanionSetup.ModeFollow)
                         ?? CompanionSetup.ModeFollow;
+                    bool stayHome = _setup != null && _setup.GetStayHome() && _setup.HasHomePosition();
                     if (mode == CompanionSetup.ModeStay)
                     {
                         _ai.SetFollowTarget(null);
                         _ai.SetPatrolPoint();
+                    }
+                    else if (stayHome)
+                    {
+                        _ai.SetFollowTarget(null);
+                        _ai.SetPatrolPointAt(_setup.GetHomePosition());
                     }
                     else if (Player.m_localPlayer != null)
                     {
@@ -454,10 +466,16 @@ namespace Companions
             int mode = _nview?.GetZDO()?.GetInt(
                 CompanionSetup.ActionModeHash, CompanionSetup.ModeFollow)
                 ?? CompanionSetup.ModeFollow;
+            bool stayHome = _setup != null && _setup.GetStayHome() && _setup.HasHomePosition();
             if (mode == CompanionSetup.ModeStay)
             {
                 _ai.SetFollowTarget(null);
                 _ai.SetPatrolPoint();
+            }
+            else if (stayHome)
+            {
+                _ai.SetFollowTarget(null);
+                _ai.SetPatrolPointAt(_setup.GetHomePosition());
             }
             else if (Player.m_localPlayer != null)
             {
@@ -668,11 +686,17 @@ namespace Companions
             int mode = _nview?.GetZDO()?.GetInt(
                 CompanionSetup.ActionModeHash, CompanionSetup.ModeFollow)
                 ?? CompanionSetup.ModeFollow;
+            bool stayHome = _setup != null && _setup.GetStayHome() && _setup.HasHomePosition();
 
             if (mode == CompanionSetup.ModeStay)
             {
                 _ai.SetFollowTarget(null);
                 _ai.SetPatrolPoint();
+            }
+            else if (stayHome)
+            {
+                _ai.SetFollowTarget(null);
+                _ai.SetPatrolPointAt(_setup.GetHomePosition());
             }
             else if (Player.m_localPlayer != null)
             {

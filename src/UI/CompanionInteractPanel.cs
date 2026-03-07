@@ -1310,6 +1310,10 @@ namespace Companions
             if (IsConsumableItem(item) && _companionFood != null)
                 changed = _companionFood.TryConsumeItem(item);
 
+            // Potion/mead — items with status effects but no food stats
+            if (!changed && CompanionFood.IsPotionItem(item) && _companionFood != null)
+                changed = _companionFood.TryConsumePotion(item);
+
             // Fall back to use (equip/unequip toggle)
             if (!changed && _companionHumanoid != null)
             {
