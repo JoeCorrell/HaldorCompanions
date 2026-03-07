@@ -56,6 +56,7 @@ namespace Companions
         internal const int ModeFish             = 9;
         internal const int ModeRepairBuildings  = 15;
         internal const int ModeRestock          = 16;
+        internal const int ModeCook             = 17;
 
         // Combat stances
         internal const int StanceBalanced = 0;
@@ -64,7 +65,7 @@ namespace Companions
         internal const int StanceMelee    = 3;
 
         internal static float MaxLeashDistance => ModConfig.MaxLeashDistance.Value;
-        private const int ActionModeSchemaVersion = 2;
+        private const int ActionModeSchemaVersion = 3;
 
         // ── Reflection ───────────────────────────────────────────────────────
         private static readonly MethodInfo _updateVisuals =
@@ -403,7 +404,8 @@ namespace Companions
             if (mode == 2) mode = ModeStay;
             bool isValidMode = (mode >= ModeFollow && mode <= ModeFish)
                             || mode == ModeRepairBuildings
-                            || mode == ModeRestock;
+                            || mode == ModeRestock
+                            || mode == ModeCook;
             if (!isValidMode) mode = ModeFollow;
 
             zdo.Set(ActionModeHash, mode);
@@ -533,6 +535,7 @@ namespace Companions
                 case ModeSmelt:
                 case ModeFarm:
                 case ModeHunt:
+                case ModeCook:
                     // Don't override follow target if a controller is actively driving movement.
                     // Skip this guard when force=true (UI close restoration).
                     if (!force)
@@ -563,6 +566,13 @@ namespace Companions
                         {
                             CompanionsPlugin.Log.LogDebug(
                                 $"[Setup]   → Hunt mode={mode}, hunt active — skipping follow override");
+                            break;
+                        }
+                        var cookCheck = GetComponent<CookController>();
+                        if (cookCheck != null && cookCheck.IsActive)
+                        {
+                            CompanionsPlugin.Log.LogDebug(
+                                $"[Setup]   → Cook mode={mode}, cook active — skipping follow override");
                             break;
                         }
                     }

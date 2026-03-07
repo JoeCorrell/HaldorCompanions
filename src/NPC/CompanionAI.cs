@@ -216,6 +216,7 @@ namespace Companions
         private HuntController _hunt;
         private FishController _fish;
         private HomesteadController _homestead;
+        private CookController _cook;
         private DoorHandler _doorHandler;
         private CompanionRest _rest;
         private CompanionTalk _talk;
@@ -243,6 +244,7 @@ namespace Companions
             _hunt = GetComponent<HuntController>();
             _fish = GetComponent<FishController>();
             _homestead = GetComponent<HomesteadController>();
+            _cook = GetComponent<CookController>();
             _doorHandler = GetComponent<DoorHandler>();
             _rest = GetComponent<CompanionRest>();
             _talk = GetComponent<CompanionTalk>();
@@ -2052,6 +2054,7 @@ namespace Companions
                 (_smelt != null && _smelt.IsActive) ||
                 (_farm != null && _farm.IsActive) ||
                 (_homestead != null && _homestead.IsActive) ||
+                (_cook != null && _cook.IsActive) ||
                 (_doorHandler != null && _doorHandler.IsActive) ||
                 (_hunt != null && _hunt.IsActive) ||
                 (_fish != null && _fish.IsActive) ||
@@ -2419,6 +2422,7 @@ namespace Companions
             _harvest?.NotifyActionModeChanged();
             _hunt?.NotifyActionModeChanged();
             _fish?.NotifyActionModeChanged();
+            _cook?.NotifyActionModeChanged();
             if (_smelt != null) _smelt.NotifyActionModeChanged();
             if (_farm != null) _farm.NotifyActionModeChanged();
 
@@ -3048,6 +3052,7 @@ namespace Companions
                                (_harvest != null && _harvest.IsActive) ||
                                (_smelt != null && _smelt.IsActive) ||
                                (_farm != null && _farm.IsActive) ||
+                               (_cook != null && _cook.IsActive) ||
                                (_repair != null && _repair.IsActive) ||
                                (_hunt != null && _hunt.IsActive) ||
                                IsRepairBuildActive ||
@@ -3328,6 +3333,7 @@ namespace Companions
                                (_harvest != null && _harvest.IsActive) ||
                                (_smelt != null && _smelt.IsActive) ||
                                (_farm != null && _farm.IsActive) ||
+                               (_cook != null && _cook.IsActive) ||
                                (_repair != null && _repair.IsActive) ||
                                (_hunt != null && _hunt.IsActive) ||
                                IsRepairBuildActive ||
@@ -4107,19 +4113,20 @@ namespace Companions
             bool smelting = _smelt != null && (_smelt.IsActive || _smelt.IsSmeltMode());
             bool farming = _farm != null && (_farm.IsActive || _farm.IsFarmMode());
             bool homesteading = _homestead != null && _homestead.IsActive;
+            bool cooking = _cook != null && (_cook.IsActive || _cook.IsCookMode());
             bool handlingDoor = _doorHandler != null && _doorHandler.IsActive;
 
             // StayHome with wander OFF: companion is intentionally stationary
             // at home — don't flag as stuck. Also suppress during return-home.
             // Follow OFF + StayHome OFF: companion is idle with no movement target.
             bool stayingHome = _setup != null && _setup.GetStayHome()
-                && !_setup.GetWander() && !harvesting && !smelting && !farming;
+                && !_setup.GetWander() && !harvesting && !smelting && !farming && !cooking;
             bool followOffIdle = _setup != null && !_setup.GetFollow()
-                && !_setup.GetStayHome() && !harvesting && !smelting && !farming;
+                && !_setup.GetStayHome() && !harvesting && !smelting && !farming && !cooking;
             bool intentionallyStationary = stayingHome || _returningHome || followOffIdle;
 
             if (moved < 0.1f && !inAttack && !atFollowDist && !harvesting
-                && !repairing && !smelting && !farming && !homesteading && !handlingDoor && !intentionallyStationary)
+                && !repairing && !smelting && !farming && !cooking && !homesteading && !handlingDoor && !intentionallyStationary)
                 _stuckDetectTimer += dt;
             else
                 _stuckDetectTimer = 0f;
@@ -4212,6 +4219,7 @@ namespace Companions
             if (IsRepairBuildActive) return $"RepairBuild:{_rbPhase}";
             if (IsRestockActive) return $"Restock:{_rsPhase}";
             if (_homestead != null && _homestead.IsActive) return "Homestead";
+            if (_cook != null && _cook.IsActive) return "Cook";
             if (_doorHandler != null && _doorHandler.IsActive) return "Door";
             if (_rest != null && _rest.IsResting) return "Resting";
             if (_rest != null && _rest.IsNavigating) return "RestNav";

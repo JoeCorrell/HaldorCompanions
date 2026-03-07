@@ -352,8 +352,7 @@ namespace Companions
 
             UpdateGrid();
 
-            // Update home zone slider visibility and visual ring
-            UpdateHomeZoneUI();
+            // Home zone UI removed from inventory panel
 
             // Inject our UIGroupHandler into vanilla's group system for gamepad support
             InjectGamepadGroups();
@@ -380,7 +379,7 @@ namespace Companions
                 $"[UI] HideInternal reason={reason} closeGui={closeInventoryGuiIfNoTakeover} " +
                 $"companionContainer={ContainerName(_companionContainer)}");
 
-            // Hide home zone visual ring
+            // Hide home zone visual ring (if shown by radial menu)
             _homeZoneVisual?.Hide();
 
             // Restore vanilla gamepad groups before hiding
@@ -634,8 +633,7 @@ namespace Companions
             // Build food slots at the bottom (expand panel height to fit)
             BuildFoodSlots();
 
-            // Build home zone radius slider (below food slots)
-            BuildHomeZoneSlider();
+            // Home zone slider removed from inventory panel
 
             // Fix any broken TMP fonts in the cloned hierarchy
             TMP_FontAsset font = GetFont();

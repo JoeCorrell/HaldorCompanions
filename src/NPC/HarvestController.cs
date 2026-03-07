@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using UnityEngine;
 
@@ -57,6 +58,11 @@ namespace Companions
         // ── Blacklist — tracks unreachable targets to prevent infinite stuck loops ──
         private readonly Dictionary<int, float> _blacklist = new Dictionary<int, float>();
         private static float BlacklistDuration => ModConfig.HarvestBlacklistDuration.Value;
+
+        // ── Forage filter — cached from config ──
+        private static HashSet<string> _forageFilter;
+        private static string          _forageFilterRaw;
+        private static bool            _forageAll = true;
 
         private const HarvestState State_Idle           = HarvestState.Idle;
         private const HarvestState State_Moving         = HarvestState.Moving;
@@ -636,18 +642,52 @@ namespace Companions
                 return;
             }
 
+            // Early arrival — if already horizontally within attack range, skip pathfinding.
+            // Handles standing on top of ore: NavMesh can't path to a point below,
+            // but the companion can swing from where it is.
+            {
+                Vector3 earlyPos = GetEffectiveTargetPosition();
+                Vector3 earlyDir = earlyPos - transform.position;
+                earlyDir.y = 0f;
+                float earlyRange = _targetType == "Pickable" ? 1.5f : GetAttackRange();
+                if (earlyDir.magnitude <= earlyRange)
+                {
+                    Log($"Early arrival — already within horizontal range " +
+                        $"(horiz={earlyDir.magnitude:F1} range={earlyRange:F1})");
+                    if (_ai != null) _ai.StopMoving();
+                    if (IsRockLikeTarget())
+                    {
+                        _lockedAttackFaceTarget = earlyPos;
+                        _attackFaceLocked = true;
+                    }
+                    else
+                        _attackFaceLocked = false;
+                    FaceTarget();
+                    _reapproach = false;
+                    _attackTimer = 0.3f;
+                    _state = State_Attacking;
+                    if (_targetType == "MineRock5")
+                        _attackNodePos = GetEffectiveTargetPosition();
+                    return;
+                }
+            }
+
             float dt = Time.deltaTime;
 
             // Don't count time toward stuck timeout while locked in attack animation —
             // the companion physically can't move, so it's not a pathfinding failure.
-            // When actively moving (vel > 1 m/s), accumulate slower — the companion
-            // is making progress, just pathing around obstacles. Only count full speed
-            // when truly stuck (vel near zero).
+            // Check velocity TOWARD the target, not total velocity — a companion
+            // circling a tree on a slope has high speed but zero approach progress.
+            // Only slow the timer when genuinely closing distance (toward speed > 1 m/s).
             bool inAttack = _humanoid != null && _humanoid.InAttack();
             if (!inAttack)
             {
-                float vel = _character?.GetVelocity().magnitude ?? 0f;
-                float stuckRate = vel > 1f ? 0.2f : 1f;
+                Vector3 velVec = _character?.GetVelocity() ?? Vector3.zero;
+                Vector3 dirToTgt = _target.transform.position - transform.position;
+                dirToTgt.y = 0f;
+                float towardSpeed = dirToTgt.sqrMagnitude > 0.01f
+                    ? Vector3.Dot(velVec, dirToTgt.normalized) : 0f;
+                float stuckRate = towardSpeed > 1f ? 0.3f : 1f;
                 _moveTimer += dt * stuckRate;
             }
 
@@ -1530,6 +1570,9 @@ namespace Companions
                 var pickable = col.GetComponentInParent<Pickable>();
                 if (pickable == null) continue;
 
+                // Config filter — skip items not in the ForageItems list
+                if (!IsForageItemAllowed(pickable)) continue;
+
                 var go = pickable.gameObject;
                 if (!_seenIds.Add(go.GetInstanceID())) continue;
 
@@ -1589,6 +1632,39 @@ namespace Companions
             return best;
         }
 
+        private static bool IsForageItemAllowed(Pickable pickable)
+        {
+            RefreshForageFilter();
+            if (_forageAll) return true;
+            if (pickable.m_itemPrefab == null) return false;
+            string prefabName = Utils.GetPrefabName(pickable.m_itemPrefab);
+            return _forageFilter.Contains(prefabName);
+        }
+
+        private static void RefreshForageFilter()
+        {
+            string raw = ModConfig.ForageItems.Value;
+            if (raw == _forageFilterRaw) return;
+            _forageFilterRaw = raw;
+
+            if (string.IsNullOrWhiteSpace(raw) || raw.Trim() == "*")
+            {
+                _forageAll = true;
+                _forageFilter = null;
+                return;
+            }
+
+            _forageAll = false;
+            _forageFilter = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var parts = raw.Split(',');
+            for (int i = 0; i < parts.Length; i++)
+            {
+                string item = parts[i].Trim();
+                if (item.Length > 0)
+                    _forageFilter.Add(item);
+            }
+        }
+
         private static GameObject GetHarvestCandidateWithType(Collider col, int mode, out string type)
         {
             type = null;
@@ -1630,7 +1706,18 @@ namespace Companions
                     if (!stoneOnly) { type = "MineRock"; return rock.gameObject; }
                 }
 
-                // Skip Destructible — ore deposits use MineRock/MineRock5
+                // Destructible with DropOnDestroyed (e.g. muddy scrap piles)
+                var oDest = col.GetComponentInParent<Destructible>();
+                if (oDest != null
+                    && oDest.m_damages.m_pickaxe != HitData.DamageModifier.Immune)
+                {
+                    var dropComp = oDest.GetComponent<DropOnDestroyed>();
+                    if (dropComp != null && !DropsOnlyStone(dropComp.m_dropWhenDestroyed))
+                    {
+                        type = "Destructible";
+                        return oDest.gameObject;
+                    }
+                }
             }
             else // Stone
             {
@@ -1672,26 +1759,21 @@ namespace Companions
         }
 
         /// <summary>
-        /// Returns true if a DropTable only contains Stone drops (no ore).
-        /// Used to distinguish regular rock deposits from ore veins.
+        /// Returns true if a DropTable only contains stone-type drops (Stone, Flint)
+        /// and no actual ore. Used to distinguish regular rock deposits from ore veins.
         /// </summary>
         private static bool DropsOnlyStone(DropTable table)
         {
             if (table == null || table.m_drops.Count == 0)
-            {
-                CompanionsPlugin.Log.LogDebug("[Harvest] DropsOnlyStone: table null/empty → true");
                 return true;
-            }
-            bool result = true;
             foreach (var drop in table.m_drops)
             {
-                string itemName = drop.m_item != null ? drop.m_item.name : "NULL";
-                CompanionsPlugin.Log.LogDebug($"[Harvest] DropsOnlyStone: drop item=\"{itemName}\"");
                 if (drop.m_item == null) continue;
-                if (drop.m_item.name != "Stone") result = false;
+                string name = drop.m_item.name;
+                if (name != "Stone" && name != "Flint")
+                    return false;
             }
-            CompanionsPlugin.Log.LogDebug($"[Harvest] DropsOnlyStone → {result}");
-            return result;
+            return true;
         }
 
         /// <summary>
@@ -1944,7 +2026,7 @@ namespace Companions
             Container best = null;
             float bestDist = float.MaxValue;
             int scanned = 0, skipped = 0;
-            foreach (var c in Object.FindObjectsByType<Container>(FindObjectsSortMode.None))
+            foreach (var c in UnityEngine.Object.FindObjectsByType<Container>(FindObjectsSortMode.None))
             {
                 if (c == null) continue;
                 scanned++;

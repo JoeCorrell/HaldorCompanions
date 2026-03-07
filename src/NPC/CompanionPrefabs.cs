@@ -313,6 +313,9 @@ namespace Companions
 
             // Autonomous base maintenance (refuel fires, repair buildings, sort chests)
             go.AddComponent<HomesteadController>();
+
+            // Autonomous cooking, brewing, and fermenting
+            go.AddComponent<CookController>();
         }
 
         private static void RegisterPrefab(GameObject go, ZNetScene zNetScene)
@@ -352,7 +355,7 @@ namespace Companions
             c.m_jumpForceTiredFactor = 0.6f;
 
             c.m_canSwim          = true;
-            c.m_swimDepth        = 1f;
+            c.m_swimDepth        = 2f;
             c.m_swimSpeed        = ModConfig.SwimSpeed.Value;
             c.m_swimTurnSpeed    = 100f;
             c.m_swimAcceleration = 0.05f;

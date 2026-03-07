@@ -298,6 +298,7 @@ namespace Companions
                 { "hc_radial_hunt", "Hunt" },
                 { "hc_radial_farm", "Farm" },
                 { "hc_radial_fish", "Fish" },
+                { "hc_radial_cook", "Cook" },
                 { "hc_radial_repair", "Repair" },
                 { "hc_radial_restock", "Restock" },
                 { "hc_radial_despawn", "Despawn" },
@@ -361,6 +362,13 @@ namespace Companions
                 { "hc_speech_no_chest", "No chest nearby to unload!" },
                 { "hc_speech_no_bow", "I need a bow and arrows to shoot!" },
                 { "hc_speech_overweight", "My back is hurting from all this weight!" },
+
+                // ── Speech: Cooking ──
+                { "hc_speech_cook_cooking", "Let me cook something." },
+                { "hc_speech_cook_brewing", "Brewing a batch." },
+                { "hc_speech_cook_fermenter", "Into the fermenter." },
+                { "hc_speech_cook_tapping", "This batch is ready!" },
+                { "hc_speech_cook_storing", "Putting these away." },
 
                 // ── Speech: Fishing ──
                 { "hc_speech_fish_need_rod", "I need a fishing rod." },

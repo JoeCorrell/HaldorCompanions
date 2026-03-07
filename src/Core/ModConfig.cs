@@ -105,6 +105,7 @@ namespace Companions
         internal static ConfigEntry<float> HarvestOverweightThreshold;
         internal static ConfigEntry<float> HarvestDropScanRadius;
         internal static ConfigEntry<float> HarvestBlacklistDuration;
+        internal static ConfigEntry<string> ForageItems;
         internal static ConfigEntry<float> HomeZoneRadius;
 
         // ══════════════════════════════════════════════════════════════════════
@@ -282,6 +283,7 @@ namespace Companions
             HarvestOverweightThreshold = Bind(cfg, "Harvest", "OverweightThreshold", 298f, "Stop gathering at this carry weight", new AcceptableValueRange<float>(50f, 500f));
             HarvestDropScanRadius   = Bind(cfg, "Harvest", "DropScanRadius", 8f, "Drop collection scan radius", new AcceptableValueRange<float>(2f, 20f));
             HarvestBlacklistDuration = Bind(cfg, "Harvest", "BlacklistDuration", 60f, "Seconds a failed target stays blacklisted", new AcceptableValueRange<float>(5f, 300f));
+            ForageItems              = Bind(cfg, "Harvest", "ForageItems", "*", "Comma-separated item prefab names to forage (e.g. Mushroom,Raspberry,Thistle). Use * for all pickables");
             HomeZoneRadius           = Bind(cfg, "StayHome", "HomeZoneRadius", 50f, "Default gather/homestead zone radius in meters around home position", new AcceptableValueRange<float>(5f, 200f));
 
             // ── Smelting ─────────────────────────────────────────────────────

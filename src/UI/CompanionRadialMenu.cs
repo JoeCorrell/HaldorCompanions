@@ -38,6 +38,7 @@ namespace Companions
         private const int ActionCommand     = 14;
         private const int ActionRepair      = 15;   // toggle mode: periodic building repair in 50m
         private const int ActionRestock     = 16;   // toggle mode: periodic campfire/light restock in 50m
+        private const int ActionCook        = 17;
         // Must match CompanionSetup.ModeHunt/ModeFarm/ModeFish — SetActionMode()
         // passes ActionId directly as the ZDO mode value.
         private const int ActionHunt        = 7;
@@ -53,7 +54,7 @@ namespace Companions
         private const int ActionDespawn        = 30;
 
         // ── Style ──────────────────────────────────────────────────────────
-        private static readonly Color BgColor          = new Color(0.14f, 0.11f, 0.08f, 0.82f);
+        private static readonly Color BgColor          = new Color(0.14f, 0.11f, 0.08f, 0.90f);
         private static readonly Color HighlightHover   = new Color(0.83f, 0.64f, 0.31f, 0.30f);
         private static readonly Color HighlightActive  = new Color(0.45f, 0.35f, 0.18f, 0.15f);
         private static readonly Color TextNormal       = new Color(0.85f, 0.80f, 0.65f, 1f);
@@ -69,9 +70,9 @@ namespace Companions
         private const float DeadZoneStick  = 0.3f;
 
         // Inner ring (combat stances)
-        private const float InnerRingRadius = 120f;
+        private const float InnerRingRadius = 85f;
         private const float InnerSegSize    = 80f;
-        private const float InnerIconSize   = 58f;
+        private const float InnerIconSize   = 87f;
         private const float InnerThresholdPx    = 190f;  // mouse dist < this → inner ring
         private const float InnerThresholdStick = 0.55f; // stick magnitude < this → inner ring
 
@@ -109,6 +110,7 @@ namespace Companions
         private Canvas    _canvas;
         private GameObject _root;
         private GameObject _bgCircle;       // outer ring donut
+        private GameObject _innerBgCircle;  // inner ring background
         private GameObject _centerContainer;
         private TextMeshProUGUI _centerName;
         private TextMeshProUGUI _centerAction;
@@ -149,6 +151,7 @@ namespace Companions
         private AnimState _animState = AnimState.Closed;
         private float     _animTimer;
         private CanvasGroup _bgCanvasGroup;
+        private CanvasGroup _innerBgCanvasGroup;
         private CanvasGroup _centerCanvasGroup;
         private readonly List<CanvasGroup>    _segCanvasGroups  = new List<CanvasGroup>();
         private readonly List<RectTransform>  _segRTs           = new List<RectTransform>();
@@ -187,7 +190,7 @@ namespace Companions
             // All action icons (outer ring)
             int[] allActions = {
                 ActionFollow, ActionGatherWood, ActionGatherStone, ActionGatherOre,
-                ActionForage, ActionSmelt, ActionHunt, ActionFarm, ActionFish,
+                ActionForage, ActionSmelt, ActionHunt, ActionFarm, ActionFish, ActionCook,
                 ActionStayHome, ActionSetHome,
                 ActionWander, ActionAutoPickup, ActionCommand,
                 ActionRepair, ActionRestock,
@@ -462,7 +465,7 @@ namespace Companions
                     _segLabels[i].color = hovered ? TextHover : TextNormal;
 
                 if (_segIcons[i] != null)
-                    _segIcons[i].color = hovered ? Color.white : new Color(0.9f, 0.9f, 0.9f, 0.85f);
+                    _segIcons[i].color = hovered ? Color.white : new Color(0.9f, 0.9f, 0.9f, 0.90f);
             }
 
             // Inner ring
@@ -487,7 +490,7 @@ namespace Companions
                     _innerSegLabels[i].color = hovered ? TextHover : TextNormal;
 
                 if (_innerSegIcons[i] != null)
-                    _innerSegIcons[i].color = hovered ? Color.white : new Color(0.9f, 0.9f, 0.9f, 0.85f);
+                    _innerSegIcons[i].color = hovered ? Color.white : new Color(0.9f, 0.9f, 0.9f, 0.90f);
             }
 
             // Center text — show hovered segment from either ring
@@ -528,6 +531,8 @@ namespace Companions
             if (_bgCanvasGroup != null) _bgCanvasGroup.alpha = 0f;
             var bgRT = _bgCircle.GetComponent<RectTransform>();
             bgRT.localScale = Vector3.zero;
+            if (_innerBgCanvasGroup != null) _innerBgCanvasGroup.alpha = 0f;
+            if (_innerBgCircle != null) _innerBgCircle.GetComponent<RectTransform>().localScale = Vector3.zero;
 
             // Center text — start invisible
             if (_centerCanvasGroup != null) _centerCanvasGroup.alpha = 0f;
@@ -573,6 +578,12 @@ namespace Companions
             bgRT.localScale = Vector3.one * Mathf.Max(0f, bgEased);
             if (_bgCanvasGroup != null)
                 _bgCanvasGroup.alpha = Mathf.Clamp01(EaseOutQuad(bgT));
+            if (_innerBgCircle != null)
+            {
+                _innerBgCircle.GetComponent<RectTransform>().localScale = Vector3.one * Mathf.Max(0f, bgEased);
+                if (_innerBgCanvasGroup != null)
+                    _innerBgCanvasGroup.alpha = Mathf.Clamp01(EaseOutQuad(bgT));
+            }
 
             // ── Center text ──
             if (_centerCanvasGroup != null)
@@ -659,6 +670,8 @@ namespace Companions
                     // Snap to final state
                     bgRT.localScale = Vector3.one;
                     if (_bgCanvasGroup != null) _bgCanvasGroup.alpha = 1f;
+                    if (_innerBgCircle != null) _innerBgCircle.GetComponent<RectTransform>().localScale = Vector3.one;
+                    if (_innerBgCanvasGroup != null) _innerBgCanvasGroup.alpha = 1f;
                     if (_centerCanvasGroup != null) _centerCanvasGroup.alpha = 1f;
                     for (int i = 0; i < count; i++)
                     {
@@ -758,6 +771,7 @@ namespace Companions
                 case ActionFish:
                 case ActionRepair:
                 case ActionRestock:
+                case ActionCook:
                     SetActionMode(outerSeg.ActionId);
                     break;
                 case ActionStayHome:
@@ -809,6 +823,10 @@ namespace Companions
             // Notify FishController of mode change
             var fish = _companion.GetComponent<FishController>();
             fish?.NotifyActionModeChanged();
+
+            // Notify CookController of mode change
+            var cook = _companion.GetComponent<CookController>();
+            cook?.NotifyActionModeChanged();
 
             // Reset repair/restock state machines on mode change
             var ai = _companion.GetComponent<CompanionAI>();
@@ -1300,6 +1318,11 @@ namespace Companions
                     IsMode = true, IsActive = currentMode == CompanionSetup.ModeFish,
                     IconColor = new Color(0.30f, 0.55f, 0.85f)
                 });
+                _segments.Add(new Segment {
+                    Label = ModLocalization.Loc("hc_radial_cook"), ActionId = ActionCook,
+                    IsMode = true, IsActive = currentMode == CompanionSetup.ModeCook,
+                    IconColor = new Color(0.85f, 0.55f, 0.25f)
+                });
             }
 
             _segments.Add(new Segment {
@@ -1432,7 +1455,7 @@ namespace Companions
             _centerCanvasGroup.blocksRaycasts = false;
 
             // Center text — companion name
-            _centerName = MakeText(_centerContainer.transform, "CenterName", "", font, 14f,
+            _centerName = MakeText(_centerContainer.transform, "CenterName", "", font, 18f,
                 new Color(0.83f, 0.64f, 0.31f, 1f), TextAlignmentOptions.Center);
             var nameRT = _centerName.GetComponent<RectTransform>();
             nameRT.anchorMin = new Vector2(0.5f, 0.5f);
@@ -1442,7 +1465,7 @@ namespace Companions
             nameRT.anchoredPosition = new Vector2(0f, 14f);
 
             // Center text — hovered action name
-            _centerAction = MakeText(_centerContainer.transform, "CenterAction", "", font, 12f,
+            _centerAction = MakeText(_centerContainer.transform, "CenterAction", "", font, 15f,
                 TextNormal, TextAlignmentOptions.Center);
             var actRT = _centerAction.GetComponent<RectTransform>();
             actRT.anchorMin = new Vector2(0.5f, 0.5f);
@@ -1452,7 +1475,7 @@ namespace Companions
             actRT.anchoredPosition = new Vector2(0f, -4f);
 
             // Center text — state (ON/OFF)
-            _centerState = MakeText(_centerContainer.transform, "CenterState", "", font, 11f,
+            _centerState = MakeText(_centerContainer.transform, "CenterState", "", font, 14f,
                 ActiveDot, TextAlignmentOptions.Center);
             var stateRT = _centerState.GetComponent<RectTransform>();
             stateRT.anchorMin = new Vector2(0.5f, 0.5f);
@@ -1524,21 +1547,6 @@ namespace Companions
                 hlImg.color = Color.clear;
                 hlImg.raycastTarget = false;
 
-                // Icon background (colored circle)
-                var iconBgGO = new GameObject("IconBg", typeof(RectTransform), typeof(Image));
-                iconBgGO.transform.SetParent(segGO.transform, false);
-                var iconBgRT = iconBgGO.GetComponent<RectTransform>();
-                iconBgRT.anchorMin = new Vector2(0.5f, 0.5f);
-                iconBgRT.anchorMax = new Vector2(0.5f, 0.5f);
-                iconBgRT.pivot = new Vector2(0.5f, 0.5f);
-                iconBgRT.sizeDelta = new Vector2(IconSize, IconSize);
-                iconBgRT.anchoredPosition = Vector2.zero;
-                var iconBgImg = iconBgGO.GetComponent<Image>();
-                iconBgImg.sprite = GetCircleSprite();
-                var bgTint = seg.IconColor * 0.35f;
-                iconBgImg.color = new Color(bgTint.r, bgTint.g, bgTint.b, 0.5f);
-                iconBgImg.raycastTarget = false;
-
                 // Icon (texture-based)
                 var iconGO = new GameObject("Icon", typeof(RectTransform), typeof(Image));
                 iconGO.transform.SetParent(segGO.transform, false);
@@ -1546,15 +1554,15 @@ namespace Companions
                 iconRT.anchorMin = new Vector2(0.5f, 0.5f);
                 iconRT.anchorMax = new Vector2(0.5f, 0.5f);
                 iconRT.pivot = new Vector2(0.5f, 0.5f);
-                iconRT.sizeDelta = new Vector2(IconSize * 0.975f, IconSize * 0.975f);
+                iconRT.sizeDelta = new Vector2(IconSize, IconSize);
                 iconRT.anchoredPosition = Vector2.zero;
                 var iconImg = iconGO.GetComponent<Image>();
                 iconImg.sprite = GetActionIcon(seg.ActionId);
-                iconImg.color = new Color(0.9f, 0.9f, 0.9f, 0.85f);
+                iconImg.color = new Color(0.9f, 0.9f, 0.9f, 0.90f);
                 iconImg.raycastTarget = false;
 
                 // Label
-                var label = MakeText(segGO.transform, "Label", seg.Label, font, 9f,
+                var label = MakeText(segGO.transform, "Label", seg.Label, font, 12f,
                     TextNormal, TextAlignmentOptions.Center);
                 var labelRT = label.GetComponent<RectTransform>();
                 labelRT.anchorMin = new Vector2(0f, 0f);
@@ -1589,6 +1597,24 @@ namespace Companions
                 _segCanvasGroups.Add(segCG);
                 _segRTs.Add(segRT);
             }
+
+            // ── Inner ring background ──
+            if (_innerBgCircle != null) Destroy(_innerBgCircle);
+            _innerBgCircle = new GameObject("InnerBg", typeof(RectTransform), typeof(Image),
+                typeof(CanvasGroup));
+            _innerBgCircle.transform.SetParent(_root.transform, false);
+            var innerBgRT = _innerBgCircle.GetComponent<RectTransform>();
+            innerBgRT.anchorMin = new Vector2(0.5f, 0.5f);
+            innerBgRT.anchorMax = new Vector2(0.5f, 0.5f);
+            innerBgRT.pivot = new Vector2(0.5f, 0.5f);
+            float innerBgSize = (InnerRingRadius + InnerSegSize * 0.5f + 10f) * 2f;
+            innerBgRT.sizeDelta = new Vector2(innerBgSize, innerBgSize);
+            var innerBgImg = _innerBgCircle.GetComponent<Image>();
+            innerBgImg.sprite = GetCircleSprite();
+            innerBgImg.color = BgColor;
+            innerBgImg.raycastTarget = false;
+            _innerBgCanvasGroup = _innerBgCircle.GetComponent<CanvasGroup>();
+            _innerBgCanvasGroup.blocksRaycasts = false;
 
             // ── Inner ring segments (stances + despawn) ──
             for (int i = 0; i < _innerSegmentGOs.Count; i++)
@@ -1640,21 +1666,6 @@ namespace Companions
                     iHlImg.color = Color.clear;
                     iHlImg.raycastTarget = false;
 
-                    // Icon bg
-                    var iIconBgGO = new GameObject("IconBg", typeof(RectTransform), typeof(Image));
-                    iIconBgGO.transform.SetParent(iSegGO.transform, false);
-                    var iIconBgRT = iIconBgGO.GetComponent<RectTransform>();
-                    iIconBgRT.anchorMin = new Vector2(0.5f, 0.5f);
-                    iIconBgRT.anchorMax = new Vector2(0.5f, 0.5f);
-                    iIconBgRT.pivot = new Vector2(0.5f, 0.5f);
-                    iIconBgRT.sizeDelta = new Vector2(InnerIconSize, InnerIconSize);
-                    iIconBgRT.anchoredPosition = Vector2.zero;
-                    var iIconBgImg = iIconBgGO.GetComponent<Image>();
-                    iIconBgImg.sprite = GetCircleSprite();
-                    var iBgTint = seg.IconColor * 0.35f;
-                    iIconBgImg.color = new Color(iBgTint.r, iBgTint.g, iBgTint.b, 0.5f);
-                    iIconBgImg.raycastTarget = false;
-
                     // Icon
                     var iIconGO = new GameObject("Icon", typeof(RectTransform), typeof(Image));
                     iIconGO.transform.SetParent(iSegGO.transform, false);
@@ -1662,15 +1673,15 @@ namespace Companions
                     iIconRT.anchorMin = new Vector2(0.5f, 0.5f);
                     iIconRT.anchorMax = new Vector2(0.5f, 0.5f);
                     iIconRT.pivot = new Vector2(0.5f, 0.5f);
-                    iIconRT.sizeDelta = new Vector2(InnerIconSize * 0.95f, InnerIconSize * 0.95f);
+                    iIconRT.sizeDelta = new Vector2(InnerIconSize, InnerIconSize);
                     iIconRT.anchoredPosition = Vector2.zero;
                     var iIconImg = iIconGO.GetComponent<Image>();
                     iIconImg.sprite = GetActionIcon(seg.ActionId);
-                    iIconImg.color = new Color(0.9f, 0.9f, 0.9f, 0.85f);
+                    iIconImg.color = new Color(0.9f, 0.9f, 0.9f, 0.90f);
                     iIconImg.raycastTarget = false;
 
                     // Label
-                    var iLabel = MakeText(iSegGO.transform, "Label", seg.Label, font, 7.5f,
+                    var iLabel = MakeText(iSegGO.transform, "Label", seg.Label, font, 12f,
                         TextNormal, TextAlignmentOptions.Center);
                     var iLabelRT = iLabel.GetComponent<RectTransform>();
                     iLabelRT.anchorMin = new Vector2(0f, 0f);
@@ -1746,6 +1757,7 @@ namespace Companions
                 case ActionHunt:             return "Hunt";
                 case ActionFarm:             return "Farm";
                 case ActionFish:             return "Fish";
+                case ActionCook:             return "Cook";
                 case ActionStanceBalanced:   return "Balanced";
                 case ActionStancePassive:    return "Passive";
                 case ActionStanceRanged:     return "Ranged";
@@ -1848,6 +1860,18 @@ namespace Companions
                     // Inner flame
                     DrawLine(pixels, size, c, c - 22, c, c - 12, w, 3f);
                     break;
+
+                case ActionCook:
+                    // Pot — round body with handles and steam
+                    DrawArc(pixels, size, c, c + 4, 18f, 0f, 360f, w, 5f);       // pot body
+                    DrawLine(pixels, size, c - 18, c + 22, c + 18, c + 22, w, 4f); // rim
+                    DrawLine(pixels, size, c - 22, c + 6, c - 18, c + 6, w, 4f);  // left handle
+                    DrawLine(pixels, size, c + 18, c + 6, c + 22, c + 6, w, 4f);  // right handle
+                    // Steam wisps
+                    DrawLine(pixels, size, c - 6, c - 16, c - 4, c - 26, w, 2.5f);
+                    DrawLine(pixels, size, c + 2, c - 18, c + 4, c - 28, w, 2.5f);
+                    DrawLine(pixels, size, c + 8, c - 14, c + 10, c - 24, w, 2.5f);
+                    break;
             }
 
             tex.SetPixels(pixels);
@@ -1947,20 +1971,26 @@ namespace Companions
         private static Sprite GetCircleSprite()
         {
             if (_circleSprite != null) return _circleSprite;
-            int s = 256;
+            int s = 512;
             var tex = new Texture2D(s, s, TextureFormat.RGBA32, false);
             tex.filterMode = FilterMode.Bilinear;
             var px = new Color[s * s];
             float c = (s - 1) * 0.5f;
+            float aa = 2f;
             for (int y = 0; y < s; y++)
                 for (int x = 0; x < s; x++)
                 {
                     float dx = x - c, dy = y - c;
                     float dist = Mathf.Sqrt(dx * dx + dy * dy);
                     if (dist <= c)
-                        px[y * s + x] = Color.white;
-                    else if (dist <= c + 1.5f)
-                        px[y * s + x] = new Color(1f, 1f, 1f, Mathf.Clamp01((c + 1.5f - dist) / 1.5f));
+                    {
+                        float norm = dist / c;
+                        float ga = Mathf.Lerp(1f, 0.78f, norm * norm);
+                        px[y * s + x] = new Color(1f, 1f, 1f, ga);
+                    }
+                    else if (dist <= c + aa)
+                        px[y * s + x] = new Color(1f, 1f, 1f,
+                            Mathf.Clamp01((c + aa - dist) / aa) * 0.78f);
                     else
                         px[y * s + x] = Color.clear;
                 }
@@ -1979,30 +2009,37 @@ namespace Companions
         private static Sprite GetDonutSprite()
         {
             if (_donutSprite != null) return _donutSprite;
-            int s = 256;
+            int s = 512;
             var tex = new Texture2D(s, s, TextureFormat.RGBA32, false);
             tex.filterMode = FilterMode.Bilinear;
             var px = new Color[s * s];
             float c = (s - 1) * 0.5f;
             float outerR = c;
             // Inner hole at ~56% of outer radius
-            // Visual: outer BG 540px (radius 270), hole at visual radius ~152 → 152/270 ≈ 0.563
             float innerR = c * 0.563f;
+            float aa = 2f;
+            float bandW = outerR - innerR;
             for (int y = 0; y < s; y++)
                 for (int x = 0; x < s; x++)
                 {
                     float dx = x - c, dy = y - c;
                     float dist = Mathf.Sqrt(dx * dx + dy * dy);
-                    if (dist <= innerR - 1.5f)
+                    if (dist <= innerR - aa)
                         px[y * s + x] = Color.clear;
                     else if (dist <= innerR)
-                        px[y * s + x] = new Color(1f, 1f, 1f,
-                            Mathf.Clamp01((dist - innerR + 1.5f) / 1.5f));
+                    {
+                        float edgeA = Mathf.Clamp01((dist - innerR + aa) / aa);
+                        px[y * s + x] = new Color(1f, 1f, 1f, edgeA);
+                    }
                     else if (dist <= outerR)
-                        px[y * s + x] = Color.white;
-                    else if (dist <= outerR + 1.5f)
+                    {
+                        float band = (dist - innerR) / bandW;
+                        float ga = Mathf.Lerp(1f, 0.72f, band * band);
+                        px[y * s + x] = new Color(1f, 1f, 1f, ga);
+                    }
+                    else if (dist <= outerR + aa)
                         px[y * s + x] = new Color(1f, 1f, 1f,
-                            Mathf.Clamp01((outerR + 1.5f - dist) / 1.5f));
+                            Mathf.Clamp01((outerR + aa - dist) / aa) * 0.72f);
                     else
                         px[y * s + x] = Color.clear;
                 }
@@ -2063,6 +2100,10 @@ namespace Companions
             _innerSegRTs.Clear();
             _innerSegFinalPositions.Clear();
             _innerSegments.Clear();
+
+            if (_innerBgCircle != null) Destroy(_innerBgCircle);
+            _innerBgCircle = null;
+            _innerBgCanvasGroup = null;
 
             _built = false;
         }
